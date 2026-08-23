@@ -1,0 +1,37 @@
+# Blueprint do Render: descreve o serviço inteiro, então dá pra criar tudo de uma
+# vez em vez de preencher formulário. No painel: New → Blueprint → aponte pro repo.
+#
+# Por que Render e não Vercel: aqui o processo fica de pé o tempo todo, o que é
+# requisito de WebSocket. Em plataforma serverless a função morre entre requisições
+# e a conexão do Socket.IO cai junto — a sinalização do WebRTC não sobrevive a isso.
+services:
+  - type: web
+    name: discord-clone
+    runtime: node
+    plan: free
+    # Mais perto do Brasil entre as regiões do plano grátis. Importa pouco: só o
+    # chat e a sinalização passam pelo servidor. A voz e o vídeo vão direto de uma
+    # pessoa pra outra, sem encostar aqui.
+    region: virginia
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    # O endpoint mais barato que prova que o app subiu.
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_VERSION
+        value: 20.17.0
+
+      # `sync: false` = o Render pergunta o valor na hora de aplicar e guarda só lá.
+      # É o que mantém a senha fora do repositório.
+      - key: ROOM_PASSWORD
+        sync: false
+
+# Duas variáveis ficam de fora daqui de propósito, porque só fazem sentido depois
+# que o serviço existe. Adicione as duas em Environment, no painel:
+#
+#   ORIGIN                 https://SEU-APP.onrender.com  (o endereço que o Render
+#                          te der). Tranca o CORS do Socket.IO nessa origem só.
+#
+#   TURN_CREDENTIALS_URL   a URL de credenciais do Open Relay. Sem TURN, cerca de
+#                          uma em cada cinco duplas não conecta pela internet.
+#                          Ver a seção TURN do .env.example pros outros dois modos.

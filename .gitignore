@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+server/certs/
+*.log
+selftest-report.json
+.DS_Store

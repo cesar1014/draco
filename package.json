@@ -1,0 +1,42 @@
+{
+  "name": "discord-clone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cópia do Discord com voz, vídeo e compartilhamento de tela via WebRTC.",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta npm:dev:server npm:dev:client",
+    "dev:server": "node server/index.js --dev",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "share": "concurrently -k -n app,tunnel -c blue,green npm:start npm:tunnel",
+    "lan": "npm run build && node server/index.js --https",
+    "tunnel": "cloudflared tunnel --url http://localhost:3100",
+    "icons": "node tools/make-icons.mjs",
+    "test:server": "node tools/test-signaling.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^10.0.5",
+    "selfsigned": "^5.5.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  },
+  "engines": {
+    "node": ">=20.17.0"
+  }
+}

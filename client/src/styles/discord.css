@@ -1,0 +1,1242 @@
+/* ---------------------------------------------------------------------------
+   Paleta e medidas do tema escuro do Discord. Tudo que é cor ou dimensão
+   estrutural vira variável aqui, pra não haver dois tons de cinza quase iguais
+   espalhados pelo arquivo.
+   --------------------------------------------------------------------------- */
+:root {
+  --guild-rail: #1e1f22;
+  --sidebar: #2b2d31;
+  --content: #313338;
+  --content-alt: #2e3035;
+  --input: #383a40;
+  --input-alt: #404249;
+  --modal: #313338;
+  --hover: #35373c;
+  --active: #404249;
+
+  --blurple: #5865f2;
+  --blurple-hover: #4752c4;
+  --green: #23a55a;
+  --green-hover: #1e9150;
+  --red: #f23f43;
+  --red-hover: #da373c;
+  --yellow: #f0b232;
+
+  --text: #dbdee1;
+  --text-strong: #f2f3f5;
+  --text-muted: #949ba4;
+  --text-faint: #80848e;
+  --text-link: #00a8fc;
+
+  --divider: #3f4147;
+  --shadow-low: 0 1px 0 rgba(4, 4, 5, 0.2), 0 1.5px 0 rgba(6, 6, 7, 0.05), 0 2px 0 rgba(4, 4, 5, 0.05);
+  --shadow-high: 0 8px 16px rgba(0, 0, 0, 0.24);
+
+  --rail-width: 72px;
+  --guild-size: 48px;
+  --sidebar-width: 240px;
+  --user-panel-height: 52px;
+  --header-height: 48px;
+
+  /* A gg sans do Discord não é licenciável. No Windows a Segoe UI Variable
+     chega bem perto no peso e no espaçamento. */
+  --font: "gg sans", "Segoe UI Variable Display", "Segoe UI", Inter, system-ui, -apple-system,
+    "Helvetica Neue", sans-serif;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--content);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.375;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Scrollbar fina e escura, como a do app. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1a1b1e;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #121314;
+}
+
+/* Foco visível só via teclado — mouse não deve deixar anel espalhado na tela. */
+:focus-visible {
+  outline: 2px solid var(--text-link);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Casca da aplicação: barra de servidores | lista de canais | conteúdo.
+   --------------------------------------------------------------------------- */
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.banner {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 60;
+  padding: 6px;
+  background: var(--yellow);
+  color: #1e1f22;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* --- barra de servidores --------------------------------------------------- */
+.guild-rail {
+  width: var(--rail-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  background: var(--guild-rail);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.guild-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.guild {
+  width: var(--guild-size);
+  height: var(--guild-size);
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: var(--sidebar);
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+  transition:
+    border-radius 120ms ease,
+    background 120ms ease;
+}
+.guild:hover {
+  border-radius: 14px;
+  background: var(--blurple);
+}
+.guild[data-active="true"] {
+  border-radius: 14px;
+}
+.guild.home {
+  color: #fff;
+}
+
+.guild-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+/* A pílula branca à esquerda do ícone: cresce no hover, cheia no ativo. Fica
+   colada na borda da barra, daí o cálculo em vez de um valor solto. */
+.guild-pill {
+  position: absolute;
+  left: calc((var(--rail-width) - var(--guild-size)) / -2);
+  width: 4px;
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text-strong);
+  opacity: 0;
+  transition:
+    height 120ms ease,
+    opacity 120ms ease;
+}
+.guild-slot:hover .guild-pill {
+  opacity: 1;
+  height: 20px;
+}
+.guild-pill[data-active="true"] {
+  opacity: 1;
+  height: 40px;
+}
+
+.guild-divider {
+  width: 32px;
+  height: 2px;
+  margin: 4px 0;
+  border-radius: 1px;
+  background: #35373c;
+}
+
+/* --- lista de canais ------------------------------------------------------- */
+.sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+}
+
+.sidebar-header {
+  height: var(--header-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  box-shadow: var(--shadow-low);
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.channel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 8px 8px 0;
+}
+
+.category {
+  margin-bottom: 16px;
+  padding-left: 8px;
+}
+.category h2 {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.channel {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 1px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 15px;
+  text-align: left;
+}
+.channel:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.channel[data-active="true"] {
+  background: var(--active);
+  color: var(--text-strong);
+}
+.channel[data-connected="true"] .channel-name {
+  color: var(--green);
+  font-weight: 600;
+}
+.channel svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.channel-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.voice-members {
+  list-style: none;
+  margin: 0 0 2px;
+  padding: 0 0 0 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.voice-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.voice-member:hover {
+  background: var(--hover);
+}
+.voice-member-name {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.voice-member-name[data-self="true"] {
+  color: var(--text);
+  font-weight: 500;
+}
+.voice-member-icons {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+}
+.voice-member-icons span {
+  display: inline-flex;
+}
+.voice-member-icons .danger {
+  color: var(--red);
+}
+
+/* Anel de quem está falando. `box-shadow` em vez de `border` de propósito: não
+   ocupa espaço, então o avatar não pula de tamanho a cada sílaba. */
+.avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 600;
+  user-select: none;
+  box-shadow: 0 0 0 0 rgba(35, 165, 90, 0);
+  transition: box-shadow 90ms ease;
+}
+.avatar[data-speaking="true"] {
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+/* --- tarja de voz e painel do usuário ------------------------------------- */
+.voice-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  background: var(--content-alt);
+}
+.voice-strip-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.voice-strip-info:disabled {
+  cursor: default;
+}
+.voice-strip-info:not(:disabled):hover {
+  background: var(--hover);
+}
+.voice-strip-status {
+  color: var(--green);
+  font-size: 14px;
+  font-weight: 600;
+}
+.voice-strip-status[data-trouble="true"] {
+  color: var(--yellow);
+}
+.voice-strip-channel {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.voice-strip-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.user-panel {
+  height: var(--user-panel-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  background: #232428;
+}
+.user-identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.user-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+.user-text strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.user-text span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.user-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.panel-button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.panel-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.panel-button[data-off="true"] {
+  color: var(--red);
+}
+.panel-button[data-on="true"] {
+  color: var(--green);
+}
+.panel-button.danger:hover {
+  background: rgba(242, 63, 67, 0.12);
+  color: var(--red);
+}
+.panel-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- área de conteúdo ----------------------------------------------------- */
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--content);
+}
+.content-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.content-header {
+  height: var(--header-height);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  box-shadow: var(--shadow-low);
+  color: var(--text-faint);
+}
+.content-header h1 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 600;
+}
+.content-header-meta {
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--divider);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* --- chat ----------------------------------------------------------------- */
+.chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 0;
+}
+
+.messages-intro {
+  margin-bottom: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--divider);
+}
+.messages-intro-icon {
+  width: 68px;
+  height: 68px;
+  margin-bottom: 8px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--input);
+  color: var(--text-strong);
+}
+.messages-intro h2 {
+  margin: 0 0 4px;
+  color: var(--text-strong);
+  font-size: 28px;
+}
+.messages-intro p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.message-group {
+  display: flex;
+  gap: 16px;
+  padding: 8px 0;
+}
+.message-body {
+  flex: 1;
+  min-width: 0;
+}
+.message-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.message-author {
+  font-size: 15px;
+  font-weight: 600;
+}
+.message-stamp {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.message-line {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  /* A mensagem chega como texto puro e é renderizada como texto puro; o que a
+     pessoa digitou em várias linhas continua em várias linhas. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  flex: none;
+  padding: 0 16px 24px;
+}
+.composer textarea {
+  width: 100%;
+  max-height: 200px;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--input);
+  font-size: 15px;
+  line-height: 1.375;
+  resize: none;
+}
+.composer textarea::placeholder {
+  color: var(--text-faint);
+}
+.composer textarea:focus {
+  outline: none;
+}
+
+/* --- call ----------------------------------------------------------------- */
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.stage-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-content: center;
+  overflow-y: auto;
+  background: #0e0f10;
+}
+.stage-grid[data-count="1"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tile {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--content-alt);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  transition: outline-color 90ms ease;
+}
+.tile[data-speaking="true"] {
+  outline-color: var(--green);
+}
+.tile[data-focused="true"] {
+  aspect-ratio: auto;
+  height: 100%;
+}
+
+.tile-video {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  /* Tela compartilhada nunca é cortada — perder a barra de menus de quem
+     compartilha é perder justamente o que a pessoa quer mostrar. */
+  object-fit: contain;
+}
+.tile[data-kind="camera"] .tile-video {
+  object-fit: cover;
+}
+.tile-video[data-mirror="true"] {
+  transform: scaleX(-1);
+}
+
+.tile-connecting {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.tile-footer {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-strong);
+  font-size: 13px;
+}
+.tile-footer svg {
+  flex: none;
+}
+.tile-footer .danger {
+  display: inline-flex;
+  color: var(--red);
+}
+.tile-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tile-expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.tile:hover .tile-expand,
+.tile-expand:focus-visible {
+  opacity: 1;
+}
+.tile-expand:hover {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+.stage-hint {
+  margin: 0;
+  padding: 0 16px 8px;
+  background: #0e0f10;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.stage-join {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  background: #0e0f10;
+  color: var(--text-muted);
+  text-align: center;
+}
+.stage-join h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 22px;
+}
+.stage-join p {
+  max-width: 420px;
+  margin: 0;
+  font-size: 14px;
+}
+.stage-join-button {
+  margin-top: 8px;
+  padding: 10px 22px;
+  border-radius: 8px;
+  background: var(--green);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+.stage-join-button:hover {
+  background: var(--green-hover);
+}
+
+.call-controls {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  background: #0e0f10;
+}
+.call-button {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--input);
+  color: var(--text-strong);
+}
+.call-button:hover:not(:disabled) {
+  background: var(--input-alt);
+}
+.call-button[data-on="true"] {
+  background: #f2f3f5;
+  color: #1e1f22;
+}
+.call-button[data-off="true"] {
+  background: #f2f3f5;
+  color: var(--red);
+}
+.call-button.hangup {
+  background: var(--red);
+  color: #fff;
+}
+.call-button.hangup:hover {
+  background: var(--red-hover);
+}
+.call-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Os `<audio>` dos outros. Fora da tela, mas presentes: `display: none` seria
+   arriscado demais pra algo que precisa tocar. */
+.audio-sink {
+  position: fixed;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* --- configurações -------------------------------------------------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.7);
+}
+.modal {
+  width: min(560px, 100%);
+  max-height: min(680px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--modal);
+  box-shadow: var(--shadow-high);
+}
+.modal-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 12px 20px;
+}
+.modal-header h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 20px;
+}
+.modal-close {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.modal-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+.settings-section {
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--divider);
+}
+.settings-section:last-child {
+  border-bottom: 0;
+}
+.settings-section h3 {
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.field {
+  display: block;
+  margin-bottom: 16px;
+}
+.field > span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.field em {
+  color: var(--red);
+  font-style: normal;
+}
+/* `input[type="text"]` não pega um `<input>` sem atributo `type` — seletor de
+   atributo lê o que está escrito, não o padrão. Daí a exclusão em vez da lista. */
+.field input:not([type="range"]):not([type="checkbox"]),
+.field select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--input);
+  font-size: 15px;
+}
+.field input:focus,
+.field select:focus {
+  border-color: var(--text-link);
+  outline: none;
+}
+
+.volume-row {
+  display: block;
+  margin-bottom: 12px;
+}
+.volume-row > span {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 14px;
+}
+.volume-row > span b {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--blurple);
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.toggle input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--blurple);
+}
+.toggle span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.toggle strong {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+}
+.toggle em {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: normal;
+}
+
+.meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--input);
+}
+.meter-fill {
+  height: 100%;
+  background: var(--green);
+  transition: width 60ms linear;
+}
+
+.hint {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.hint a {
+  color: var(--text-link);
+}
+.hint code,
+.join-warning code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--input);
+  font-size: 12px;
+}
+.status-ok {
+  margin: 4px 0;
+  color: var(--green);
+  font-size: 13px;
+}
+.status-warn {
+  margin: 4px 0;
+  color: var(--yellow);
+  font-size: 13px;
+}
+
+.secondary-button {
+  margin-top: 8px;
+  padding: 8px 16px;
+  border-radius: 4px;
+  background: var(--input-alt);
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 500;
+}
+.secondary-button:hover:not(:disabled) {
+  background: #4e5058;
+}
+.secondary-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.probe {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.probe li[data-ok="true"] {
+  color: var(--green);
+}
+.probe li[data-ok="false"] {
+  color: var(--text-faint);
+}
+
+/* --- tela de entrada ------------------------------------------------------ */
+.join {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 25% 15%, #5865f2, #3b40a8 45%, #1e1f22 100%);
+}
+.join-card {
+  width: min(480px, 100%);
+  padding: 32px;
+  border-radius: 8px;
+  background: var(--modal);
+  box-shadow: var(--shadow-high);
+  text-align: center;
+}
+.join-logo {
+  margin-bottom: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--blurple);
+}
+.join-card h1 {
+  margin: 0 0 8px;
+  color: var(--text-strong);
+  font-size: 24px;
+}
+.join-subtitle {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 16px;
+}
+.join-card .field {
+  text-align: left;
+}
+.join-error {
+  margin: 0 0 12px;
+  color: var(--red);
+  font-size: 13px;
+  text-align: left;
+}
+.join-submit {
+  width: 100%;
+  padding: 11px;
+  border-radius: 4px;
+  background: var(--blurple);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+}
+.join-submit:hover:not(:disabled) {
+  background: var(--blurple-hover);
+}
+.join-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.join-warning {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--yellow);
+  border-radius: 4px;
+  background: rgba(240, 178, 50, 0.1);
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: left;
+}
+
+/* --- aviso de erro de dispositivo ---------------------------------------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 90;
+  transform: translateX(-50%);
+  max-width: min(520px, calc(100% - 32px));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-left: 3px solid var(--red);
+  border-radius: 6px;
+  background: var(--content-alt);
+  box-shadow: var(--shadow-high);
+}
+.toast p {
+  margin: 0;
+  font-size: 14px;
+}
+.toast button {
+  flex: none;
+  padding: 7px 14px;
+  border-radius: 4px;
+  background: var(--red);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+}
+.toast button:hover {
+  background: var(--red-hover);
+}
+
+/* Telas estreitas: as três colunas continuam, só mais apertadas — a alternativa
+   seria esconder a lista de canais, e aí não haveria como trocar de canal. */
+@media (max-width: 820px) {
+  :root {
+    --rail-width: 58px;
+    --guild-size: 42px;
+    --sidebar-width: 196px;
+  }
+  .guild {
+    border-radius: 14px;
+  }
+  .messages-intro h2 {
+    font-size: 22px;
+  }
+  .stage-grid {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    padding: 8px;
+  }
+  .call-controls {
+    gap: 6px;
+    padding: 12px;
+  }
+  .call-button {
+    width: 42px;
+    height: 42px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Página de autoteste. Não faz parte da interface; existe pra provar que o
+   WebRTC funciona sem depender de uma segunda pessoa.
+   --------------------------------------------------------------------------- */
+.selftest {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 48px 24px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.selftest h1 {
+  font-size: 24px;
+  margin: 0 0 8px;
+  color: var(--text-strong);
+}
+
+.selftest p {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+
+.selftest button {
+  background: var(--blurple);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 18px;
+  border-radius: 4px;
+}
+
+.selftest button:hover:not(:disabled) {
+  background: var(--blurple-hover);
+}
+
+.selftest button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.selftest ol {
+  list-style: none;
+  padding: 0;
+  margin: 24px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selftest li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 4px;
+  background: var(--content-alt);
+  font-size: 14px;
+}
+
+.selftest li[data-ok="true"] .tag {
+  color: var(--green);
+}
+.selftest li[data-ok="false"] .tag {
+  color: var(--red);
+}
+
+.selftest .tag {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  width: 40px;
+}
+
+.selftest .detail {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin-left: auto;
+  padding-left: 12px;
+  text-align: right;
+}
+
+.selftest .summary {
+  margin-top: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
