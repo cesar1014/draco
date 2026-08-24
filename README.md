@@ -333,72 +333,46 @@ Mais trabalho e mais poder: uma máquina Linux sua em São Paulo, de graça, sem
 2 VMs de 1 GB e 10 TB/mês de saída. E como é máquina de verdade, **o TURN pode morar nela**, que é
 o ganho que a Opção 1 não dá.
 
-Três coisas que decidem se isso vai dar certo:
+**No painel da Oracle**, o que não tem volta ou quebra tudo se passar batido:
 
 - **Escolha `Brazil East (São Paulo)` como *home region* no cadastro.** Não muda depois, e recurso
-  Always Free só existe na home region.
-- **Abrir porta é em dois lugares.** Na *Security List* da rede, no painel, e no `iptables` de
-  dentro da máquina — a imagem da Oracle vem com tudo fechado. Esquecer o segundo é o motivo
-  clássico de "abri a porta e não responde".
-- **HTTPS precisa de domínio.** Câmera e microfone não funcionam em `http://` que não seja
-  localhost. Um subdomínio grátis do [DuckDNS](https://www.duckdns.org) resolve.
+  Always Free só existe na home region. Pede cartão pra confirmar identidade; não cobra.
+- Crie a instância em *Compute → Instances → Create*: imagem **Ubuntu 22.04**, shape
+  **VM.Standard.E2.1.Micro** — o que tem o selo *Always Free*. Baixe a chave SSH que ele oferece
+  na hora; depois não dá mais.
+- **Abrir porta é em dois lugares.** No painel (*Networking → VCN → Security List → Add Ingress
+  Rules*) e no `iptables` de dentro da máquina, que vem com tudo fechado. O script resolve o
+  segundo; o primeiro é na mão, e esquecer dele é o motivo clássico de "subiu e não responde".
 
-Com a VM de pé (Ubuntu 22.04, usuário `ubuntu`), o caminho inteiro:
+**HTTPS precisa de domínio** — câmera e microfone não funcionam em `http://` que não seja
+localhost. Crie um subdomínio grátis no [DuckDNS](https://www.duckdns.org) apontando pro IP
+público da instância. Leva um minuto e é o que faz o certificado sair sozinho.
+
+Daí, dentro da máquina (`ssh -i sua-chave ubuntu@SEU-IP`), o resto é um comando:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs git coturn caddy
+sudo apt update && sudo apt install -y git && git clone https://github.com/SEU-USUARIO/draco.git && cd draco
 ```
 
 ```bash
-git clone https://github.com/SEU-USUARIO/SEU-REPO.git draco && cd draco && npm ci && npm run build
+bash tools/deploy-oracle.sh seu-nome.duckdns.org
 ```
 
-Crie o `.env` com `ROOM_PASSWORD`, `ORIGIN=https://seu-nome.duckdns.org`, `TURN_HOST` e
-`TURN_SECRET` (a seção TURN do `.env.example` explica os três modos), suba o app como serviço:
+Ele faz o que a receita manual faria, sem as pegadinhas: 2 GB de swap (1 GB de RAM não aguenta o
+build do Vite), Node 22, `npm ci && npm run build`, serviço `draco` no systemd, Caddy pro HTTPS
+automático, coturn com `use-auth-secret` e as portas liberadas no `iptables`. No fim imprime o
+endereço e **a senha da sala**, que ele mesmo sorteia. Pode rodar de novo à vontade: o `.env` é
+preservado, ele só preenche o que estiver em branco.
 
-```bash
-sudo tee /etc/systemd/system/draco.service >/dev/null <<'EOF'
-[Unit]
-After=network.target
-[Service]
-WorkingDirectory=/home/ubuntu/draco
-ExecStart=/usr/bin/node server/index.js
-Environment=PORT=3100
-Restart=always
-User=ubuntu
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl enable --now draco
-```
+Duas coisas dele que valem saber:
 
-O Caddy resolve o HTTPS sozinho, incluindo o WebSocket, com um arquivo de duas linhas:
+- **O `external-ip` do coturn.** A Oracle entrega o IP público por NAT, então a VM não conhece o
+  próprio endereço. Sem essa linha o TURN anuncia o IP privado e a conexão nunca fecha — o script
+  detecta e escreve.
+- **O relay usa uma faixa de UDP** (49160–49200). Ela também precisa entrar na Security List,
+  junto de 443/tcp e 3478 nos dois protocolos.
 
-```bash
-sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-seu-nome.duckdns.org {
-  reverse_proxy localhost:3100
-}
-EOF
-sudo systemctl restart caddy
-```
-
-E o coturn na mesma máquina — é o que põe o relay em SP:
-
-```bash
-sudo tee -a /etc/turnserver.conf >/dev/null <<'EOF'
-listening-port=3478
-fingerprint
-use-auth-secret
-static-auth-secret=O-MESMO-DO-TURN_SECRET
-realm=seu-nome.duckdns.org
-no-multicast-peers
-EOF
-sudo systemctl enable --now coturn
-```
-
-Libere no `iptables` e na Security List: **443/tcp**, **3478/udp**, **3478/tcp**. Depois confirme
-na engrenagem → *Testar conexão*: tem que aparecer candidato **`relay`**.
+No fim, confirme pela engrenagem → *Testar conexão*: tem que aparecer candidato **`relay`**.
 
 #### Depois de mudar de endereço
 
@@ -514,7 +488,9 @@ client/
     dev/           autoteste do WebRTC
 tools/
   test-signaling.mjs  testes do servidor
+  make-brand.mjs      gera a arte do logo (node tools/make-brand.mjs)
   make-icons.mjs      gera os PNG do ícone (npm run icons)
+  deploy-oracle.sh    sobe tudo numa VM Ubuntu: build, serviço, HTTPS e TURN
 shared/ports.js  as portas de desenvolvimento, num lugar só
 ```
 
