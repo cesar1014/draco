@@ -47,6 +47,8 @@ let engine: VoiceEngine | null = null;
 let detector: SpeakingDetector | null = null;
 /** Guardado pra reconexão: o socket cai, o apelido continua o mesmo. */
 let credentials = { username: "", password: "" };
+/** Último motivo de handshake recusado, pra tela de entrada dizer a causa real. */
+let lastConnectError: string | null = null;
 
 /** Mídia recebida de um par, indexada pelo slot que o motor identificou. */
 export interface PeerMedia {
@@ -223,6 +225,16 @@ export const useStore = create<Store>()((set, get) => {
       if (reason !== "io client disconnect") set({ reconnecting: true });
     });
 
+    /**
+     * Handshake recusado — CORS errado, servidor caído, proxy no caminho. Só
+     * guarda o motivo: abortar aqui atropelaria a reconexão automática, que
+     * costuma acertar na segunda tentativa. Quem reporta é a rede de segurança
+     * em `connect`, e aí com a causa em vez de uma mensagem genérica.
+     */
+    s.on("connect_error", (error) => {
+      lastConnectError = error.message;
+    });
+
     s.on("member:joined", (member) => remember([member]));
     s.on("member:state", (member) => remember([member]));
 
@@ -309,6 +321,7 @@ export const useStore = create<Store>()((set, get) => {
 
     async connect(username, password) {
       credentials = { username: username.trim(), password };
+      lastConnectError = null;
       set({ status: "connecting", joinError: null });
 
       if (!socket) {
@@ -318,10 +331,12 @@ export const useStore = create<Store>()((set, get) => {
       socket.connect();
 
       // A tela de entrada sai quando o `identify` responde, dentro de `wire`.
-      // Aqui só resta esperar por isso — e desistir se nada voltar.
+      // Aqui só resta esperar por isso — e desistir se nada voltar. O prazo é
+      // maior que o `timeout` do socket de propósito: assim o socket já falhou e
+      // deixou o motivo em `lastConnectError` antes desta rede de segurança agir.
       await new Promise<void>((resolve) => {
         if (get().status === "ready") return resolve();
-        const timer = setTimeout(resolve, 9000);
+        const timer = setTimeout(resolve, 50000);
         const unsubscribe = useStore.subscribe((state) => {
           if (state.status !== "ready" && !state.joinError) return;
           clearTimeout(timer);
@@ -332,7 +347,14 @@ export const useStore = create<Store>()((set, get) => {
 
       if (get().status !== "ready") {
         socket.disconnect();
-        set({ status: "join", joinError: get().joinError ?? describeSocketError(undefined) });
+        // "timeout" é o próprio Socket.IO desistindo, e aí a causa provável é
+        // serviço acordando — não uma recusa. Qualquer outro texto é a recusa de
+        // verdade e vale mostrar cru: é o que permite descobrir o motivo.
+        const failure =
+          !lastConnectError || lastConnectError === "timeout"
+            ? describeSocketError("timeout")
+            : `Conexão recusada pelo servidor: ${lastConnectError}`;
+        set({ status: "join", joinError: get().joinError ?? failure });
         return;
       }
 

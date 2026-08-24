@@ -62,7 +62,11 @@ export function createSocket(): AppSocket {
     // é o defeito mais irritante que um clone de Discord pode ter.
     reconnectionDelay: 500,
     reconnectionDelayMax: 4000,
-    timeout: 8000,
+    // Generoso porque hospedagem de plano grátis desliga o serviço quando ninguém
+    // acessa, e a primeira conexão é ela acordando — leva bem mais de 8 segundos.
+    // Um teto curto aqui transforma "está acordando" em "não foi possível falar
+    // com o servidor", que manda a pessoa procurar o problema no lugar errado.
+    timeout: 45000,
   });
 }
 
@@ -85,6 +89,11 @@ export function describeSocketError(code: string | undefined): string {
       return "Esta aba já entrou. Recarregue a página.";
     case "no-channel":
       return "Esse canal de voz não existe mais.";
+    // Silêncio, não recusa: o servidor não respondeu no prazo. Em hospedagem
+    // grátis quase sempre é o serviço acordando, então a mensagem sugere esperar
+    // em vez de mandar a pessoa investigar se o servidor caiu.
+    case "timeout":
+      return "O servidor não respondeu. Se ele está num plano grátis, pode estar acordando — espere uns 30 segundos e clique em Entrar de novo.";
     default:
       return "Não foi possível falar com o servidor. Ele está rodando?";
   }
