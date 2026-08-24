@@ -13,15 +13,11 @@ export interface MessageGroupData {
   messages: Message[];
 }
 
-/**
- * Agrupa como o Discord: cada mensagem se junta à anterior se for da mesma
- * pessoa e tiver chegado pouco depois — a janela é comparada com a *última* do
- * bloco, não com a primeira, então uma conversa contínua não se parte.
- */
 export function groupMessages(messages: Message[]): MessageGroupData[] {
   const groups: MessageGroupData[] = [];
   for (const message of messages) {
     const last = groups[groups.length - 1];
+    // A janela conta a partir da *última* do bloco, senão uma conversa contínua se parte.
     const lastAt = last?.messages[last.messages.length - 1]?.at ?? 0;
     if (last && last.authorId === message.authorId && message.at - lastAt < GROUP_WINDOW_MS) {
       last.messages.push(message);
@@ -40,18 +36,27 @@ export function groupMessages(messages: Message[]): MessageGroupData[] {
 }
 
 const timeFormat = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" });
-const dateFormat = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+const dateFormat = new Intl.DateTimeFormat("pt-BR", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
 
 export function formatStamp(at: number): string {
   const when = new Date(at);
   const sameDay = when.toDateString() === new Date().toDateString();
-  return sameDay ? `Hoje às ${timeFormat.format(when)}` : `${dateFormat.format(when)} ${timeFormat.format(when)}`;
+  return sameDay
+    ? `Hoje às ${timeFormat.format(when)}`
+    : `${dateFormat.format(when)} ${timeFormat.format(when)}`;
 }
 
 export function MessageGroup({ group }: { group: MessageGroupData }) {
   return (
     <div className="message-group">
-      <Avatar member={{ username: group.username, color: group.color, speaking: false }} size={40} />
+      <Avatar
+        member={{ username: group.username, color: group.color, speaking: false }}
+        size={40}
+      />
       <div className="message-body">
         <div className="message-head">
           <span className="message-author" style={{ color: group.color }}>
@@ -61,8 +66,6 @@ export function MessageGroup({ group }: { group: MessageGroupData }) {
             {formatStamp(group.at)}
           </time>
         </div>
-        {/* Texto puro, sempre. Nada de `dangerouslySetInnerHTML`: a mensagem vem
-            de outra pessoa, e o React escapando por padrão é a defesa. */}
         {group.messages.map((message) => (
           <p key={message.id} className="message-line" title={formatStamp(message.at)}>
             {message.content}

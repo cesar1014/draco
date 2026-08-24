@@ -132,7 +132,7 @@ server.listen(port, "0.0.0.0", async () => {
     console.log(`  sinalização        ·  ${scheme}://localhost:${port}`);
     console.log(`  autoteste          ·  http://localhost:${DEV_WEB_PORT}/?selftest=1`);
   } else {
-    console.log(`  Discord clone  ·  ${scheme}://localhost:${port}`);
+    console.log(`  Draco  ·  ${scheme}://localhost:${port}`);
     for (const ip of lanAddresses()) console.log(`  na rede local  ·  ${scheme}://${ip}:${port}`);
     if (!existsSync(distDir)) {
       console.log(`  atenção        ·  sem 'dist/': rode 'npm run build' ou use 'npm run dev'`);

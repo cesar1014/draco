@@ -1,11 +1,7 @@
-import { DiscordIcon } from "@/components/Icons";
+import type { CSSProperties } from "react";
+import { BrandMark } from "@/components/Icons";
 import { useStore } from "@/state/store";
 
-/**
- * A coluna de servidores. Aqui os "servidores" são fixos e vêm do
- * `server/state.js` — não há criação de servidor neste clone —, então o papel
- * dela é dar a estrutura visual e trocar a lista de canais ao lado.
- */
 export function GuildRail() {
   const guilds = useStore((state) => state.guilds);
   const activeGuildId = useStore((state) => state.activeGuildId);
@@ -13,32 +9,27 @@ export function GuildRail() {
 
   return (
     <nav className="guild-rail" aria-label="Servidores">
-      <button type="button" className="guild home" title="Início" aria-label="Início">
-        <DiscordIcon size={28} />
-      </button>
+      <span className="guild home" title="Draco">
+        <BrandMark size={34} />
+      </span>
 
-      <div className="guild-divider" />
+      <span className="guild-divider" />
 
-      {guilds.map((guild) => {
-        const active = guild.id === activeGuildId;
-        return (
-          <div key={guild.id} className="guild-slot">
-            <span className="guild-pill" data-active={active} />
-            <button
-              type="button"
-              className="guild"
-              data-active={active}
-              style={active ? { background: guild.color } : undefined}
-              onClick={() => selectGuild(guild.id)}
-              title={guild.name}
-              aria-label={guild.name}
-              aria-current={active}
-            >
-              {guild.initials}
-            </button>
-          </div>
-        );
-      })}
+      {guilds.map((guild) => (
+        <span key={guild.id} className="guild-slot">
+          <span className="guild-pill" data-active={guild.id === activeGuildId} />
+          <button
+            type="button"
+            className="guild"
+            data-active={guild.id === activeGuildId}
+            style={{ "--guild-color": guild.color } as CSSProperties}
+            onClick={() => selectGuild(guild.id)}
+            title={guild.name}
+          >
+            {guild.initials}
+          </button>
+        </span>
+      ))}
     </nav>
   );
 }

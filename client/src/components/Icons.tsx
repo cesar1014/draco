@@ -1,11 +1,8 @@
 import type { SVGProps } from "react";
 
 /**
- * Ícones em SVG inline, desenhados no mesmo grid de 24 px do Discord.
- *
- * Não entra biblioteca de ícones aqui: são doze desenhos, e cada um custa menos
- * que a dependência custaria. Todos herdam a cor do texto (`currentColor`), então
- * quem muda a aparência é o CSS do botão, não uma prop.
+ * Ícones em SVG inline num grid de 24 px. Todos herdam `currentColor`, então quem
+ * define a aparência é o CSS do botão.
  */
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
@@ -26,9 +23,9 @@ function Icon({ size = 20, children, ...rest }: IconProps) {
   );
 }
 
-/** Risco diagonal dos ícones "desligado", igual ao do app. */
+/** Risco diagonal dos ícones "desligado". A cor acompanha o fundo do botão. */
 const Slash = () => (
-  <path d="M3.3 2 22 20.7l-1.4 1.4L1.9 3.4 3.3 2Z" stroke="#1e1f22" strokeWidth="1.2" />
+  <path d="M3.3 2 22 20.7l-1.4 1.4L1.9 3.4 3.3 2Z" stroke="var(--slash)" strokeWidth="1.4" />
 );
 
 export const MicIcon = (props: IconProps) => (
@@ -109,9 +106,22 @@ export const SpeakerIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const SpeakerOffIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M11.4 3.2a1 1 0 0 1 .6.9v15.8a1 1 0 0 1-1.6.8L5.6 17H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h2.6l4.8-3.7a1 1 0 0 1 1-.1Z" />
+    <path d="M22 9.4 20.6 8l-2.1 2.1L16.4 8 15 9.4l2.1 2.1L15 13.6l1.4 1.4 2.1-2.1 2.1 2.1 1.4-1.4-2.1-2.1L22 9.4Z" />
+  </Icon>
+);
+
 export const ExpandIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M4 4h6v2H6v4H4V4Zm10 0h6v6h-2V6h-4V4ZM4 14h2v4h4v2H4v-6Zm14 0h2v6h-6v-2h4v-4Z" />
+  </Icon>
+);
+
+export const CollapseIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M10 4h2v6H6V8h4V4Zm4 0h2v4h4v2h-6V4ZM4 14h6v6H8v-4H4v-2Zm10 0h6v2h-4v4h-2v-6Z" />
   </Icon>
 );
 
@@ -121,8 +131,112 @@ export const CloseIcon = (props: IconProps) => (
   </Icon>
 );
 
-export const DiscordIcon = (props: IconProps) => (
+export const MenuIcon = (props: IconProps) => (
   <Icon {...props}>
-    <path d="M19.3 5.4A16 16 0 0 0 15.4 4l-.3.6a12 12 0 0 1 3.5 1.8 16.7 16.7 0 0 0-10.6-.6L7.6 4a16 16 0 0 0-4 1.4C1.4 9.2.7 12.9 1 16.6a16.2 16.2 0 0 0 4.9 2.5l.7-1.1a10.4 10.4 0 0 1-1.8-.9l.4-.3a11.6 11.6 0 0 0 9.9 0l.4.3c-.5.4-1.1.7-1.8.9l.7 1.1a16.2 16.2 0 0 0 4.9-2.5c.4-4.2-.7-7.9-2.9-11.2ZM8.5 14.3c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm7 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
+    <path d="M3 5.5h18v2H3v-2Zm0 5.5h18v2H3v-2Zm0 5.5h18v2H3v-2Z" />
   </Icon>
 );
+
+/** Setinha de espelhar imagem. */
+export const FlipIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M11 2h2v20h-2V2Zm-2 3.6v12.8L2.4 12 9 5.6Zm6 0L21.6 12 15 18.4V5.6Z" />
+  </Icon>
+);
+
+/** Barrinhas de sinal, pro indicador de qualidade da conexão. */
+export const SignalIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M3 15h3v6H3v-6Zm5.5-4h3v10h-3V11ZM14 7h3v14h-3V7Zm5.5-4h3v18h-3V3Z" />
+  </Icon>
+);
+
+export const SlidersIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 6h9a3 3 0 0 1 5.7 0H20v2h-1.3a3 3 0 0 1-5.7 0H4V6Zm0 10h3.3a3 3 0 0 1 5.7 0h7v2h-7a3 3 0 0 1-5.7 0H4v-2Z" />
+  </Icon>
+);
+
+export const PlusIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7V4Z" />
+  </Icon>
+);
+
+export const SendIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M3.4 3.1 21 12 3.4 20.9 6 12 3.4 3.1ZM7.7 12l-1.4 4.9L16.4 12 6.3 7.1 7.7 12Z" />
+  </Icon>
+);
+
+const MAGNIFIER =
+  "M10.5 3a7.5 7.5 0 1 0 4.55 13.46l4.24 4.25 1.42-1.42-4.25-4.24A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Z";
+
+export const ZoomInIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d={MAGNIFIER} />
+    <path d="M9.5 7h2v2.5H14v2h-2.5V14h-2v-2.5H7v-2h2.5V7Z" />
+  </Icon>
+);
+
+export const ZoomOutIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d={MAGNIFIER} />
+    <path d="M7 9.5h7v2H7v-2Z" />
+  </Icon>
+);
+
+export const PlayIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M8 5.14a1 1 0 0 1 1.5-.87l9.2 5.36a1 1 0 0 1 0 1.73l-9.2 5.36A1 1 0 0 1 8 15.9V5.14Z" />
+  </Icon>
+);
+
+export const StopIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </Icon>
+);
+
+/** Setas pra fora: tela inteira do monitor, não só do palco. */
+export const FullscreenIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 4h7v2.2H6.2V11H4V4Zm9 0h7v7h-2.2V6.2H13V4ZM4 13h2.2v4.8H11V20H4v-7Zm13.8 0H20v7h-7v-2.2h4.8V13Z" />
+  </Icon>
+);
+
+export const ExitFullscreenIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9 4h2.2v7H4.2V8.8H9V4Zm3.8 0H15v4.8h4.8V11h-7V4ZM4.2 13h7v7H9v-4.8H4.2V13Zm8.6 0h7v2.2H15V20h-2.2v-7Z" />
+  </Icon>
+);
+
+export const GridIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 4.8A1.8 1.8 0 0 1 5.8 3h3.4A1.8 1.8 0 0 1 11 4.8v3.4A1.8 1.8 0 0 1 9.2 10H5.8A1.8 1.8 0 0 1 4 8.2V4.8Zm9 0A1.8 1.8 0 0 1 14.8 3h3.4A1.8 1.8 0 0 1 20 4.8v3.4A1.8 1.8 0 0 1 18.2 10h-3.4A1.8 1.8 0 0 1 13 8.2V4.8ZM4 15.8A1.8 1.8 0 0 1 5.8 14h3.4A1.8 1.8 0 0 1 11 15.8v3.4A1.8 1.8 0 0 1 9.2 21H5.8A1.8 1.8 0 0 1 4 19.2v-3.4Zm9 0A1.8 1.8 0 0 1 14.8 14h3.4A1.8 1.8 0 0 1 20 15.8v3.4A1.8 1.8 0 0 1 18.2 21h-3.4A1.8 1.8 0 0 1 13 19.2v-3.4Z" />
+  </Icon>
+);
+
+export const PinIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9 2h6a1 1 0 0 1 .3 1.95l-.8.27.7 5.2 2.4 2.4A1 1 0 0 1 16.9 13.5H13v7a1 1 0 1 1-2 0v-7H7.1a1 1 0 0 1-.7-1.7l2.4-2.4.7-5.2-.8-.27A1 1 0 0 1 9 2Z" />
+  </Icon>
+);
+
+/**
+ * A marca vem do PNG da arte, não de um SVG redesenhado: é a mesma imagem que o
+ * ícone do app e do PWA usam, então a identidade não se divide em duas versões.
+ */
+export function BrandMark({ size = 32, className }: { size?: number; className?: string }) {
+  return (
+    <img
+      src={size > 128 ? "/brand/logo-512.png" : "/brand/logo-256.png"}
+      width={size}
+      height={size}
+      alt=""
+      draggable={false}
+      className={className}
+      style={{ width: size, height: size }}
+    />
+  );
+}

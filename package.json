@@ -1,9 +1,9 @@
 {
-  "name": "discord-clone",
+  "name": "draco",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Cópia do Discord com voz, vídeo e compartilhamento de tela via WebRTC.",
+  "description": "Draco — voz, vídeo e compartilhamento de tela em grupo, direto entre os navegadores.",
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,magenta npm:dev:server npm:dev:client",
     "dev:server": "node server/index.js --dev",
@@ -14,6 +14,9 @@
     "lan": "npm run build && node server/index.js --https",
     "tunnel": "cloudflared tunnel --url http://localhost:3100",
     "icons": "node tools/make-icons.mjs",
+    "app": "npm --prefix desktop start",
+    "app:install": "npm --prefix desktop install",
+    "app:build": "npm --prefix desktop run dist",
     "test:server": "node tools/test-signaling.mjs",
     "typecheck": "tsc --noEmit"
   },

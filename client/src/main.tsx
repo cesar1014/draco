@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import "@/styles/discord.css";
+import "@/styles/app.css";
 import { App } from "@/App";
 import { SelfTestPage } from "@/dev/SelfTestPage";
 

@@ -59,7 +59,7 @@ export function createSocket(): AppSocket {
   return io({
     autoConnect: false,
     // Reconexão agressiva de propósito: cair da call por uma oscilação de Wi-Fi
-    // é o defeito mais irritante que um clone de Discord pode ter.
+    // é o defeito mais irritante que um app de call pode ter.
     reconnectionDelay: 500,
     reconnectionDelayMax: 4000,
     // Generoso porque hospedagem de plano grátis desliga o serviço quando ninguém

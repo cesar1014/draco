@@ -10,8 +10,8 @@ import { randomUUID } from "node:crypto";
 const MESSAGE_HISTORY = 200;
 
 export const GUILDS = [
-  { id: "g-main", name: "Meu Servidor", initials: "MS", color: "#5865f2" },
-  { id: "g-games", name: "Jogatina", initials: "JG", color: "#23a55a" },
+  { id: "g-main", name: "Meu Servidor", initials: "MS", color: "#5b6cff" },
+  { id: "g-games", name: "Jogatina", initials: "JG", color: "#3ddc97" },
 ];
 
 export const CHANNELS = [
@@ -23,8 +23,8 @@ export const CHANNELS = [
   { id: "v-jogos", guildId: "g-games", type: "voice", name: "Sala de Jogo", category: "Canais de Voz" },
 ];
 
-/** Cores de avatar do Discord, escolhidas de forma estável a partir do nome. */
-const AVATAR_COLORS = ["#5865f2", "#3ba55c", "#faa61a", "#ed4245", "#eb459e", "#9b59b6", "#1abc9c"];
+/** Cor do avatar, escolhida de forma estável a partir do nome. */
+const AVATAR_COLORS = ["#5b6cff", "#3ddc97", "#ffb457", "#ff5f7a", "#f45ec1", "#a06bff", "#4fd8ff"];
 
 /** socketId -> membro conectado */
 const members = new Map();
@@ -80,8 +80,8 @@ export function setVoiceChannel(socketId, channelId) {
   if (!member) return null;
   member.voiceChannelId = channelId;
   if (channelId === null) {
-    // Sair da call zera o que só faz sentido dentro dela, mas mute e deafen
-    // são preferências do usuário e sobrevivem — igual ao Discord.
+    // Sair da call zera o que só faz sentido dentro dela; mute e deafen são
+    // preferências da pessoa e sobrevivem.
     member.camOn = false;
     member.screenOn = false;
     member.speaking = false;

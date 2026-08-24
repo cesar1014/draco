@@ -1,14 +1,25 @@
 import { create } from "zustand";
+import { type DesktopSource } from "@/desktop";
 import {
   DEFAULT_AUDIO_SETTINGS,
+  DEFAULT_CAMERA_OPTIONS,
+  DEFAULT_SCREEN_OPTIONS,
   MediaManager,
+  cameraBitrate,
   describeMediaError,
+  normalizeCameraOptions,
+  normalizeScreenOptions,
+  screenBitrate,
   type AudioSettings,
+  type CameraOptions,
   type DeviceList,
+  type ScreenShareOptions,
 } from "@/rtc/MediaManager";
 import { SpeakingDetector, resumeAudio } from "@/rtc/SpeakingDetector";
 import { VoiceEngine } from "@/rtc/VoiceEngine";
 import { loadIceConfig } from "@/rtc/iceConfig";
+import { forgetStats, samplePeer, type PeerStats } from "@/rtc/stats";
+import { playCue, setSoundsEnabled } from "@/rtc/sounds";
 import {
   createSocket,
   describeSocketError,
@@ -28,16 +39,11 @@ import type {
 } from "@/types";
 
 /**
- * Estado da aplicação e, junto, a orquestração da call.
+ * Estado da aplicação e orquestração da call.
  *
  * O motor de WebRTC, o acesso aos dispositivos e o detector de fala vivem em
- * variáveis de módulo, **fora** do estado do React. Isso é de propósito: são
- * objetos vivos, com trilhas e sockets dentro, e colocá-los no estado faria a
- * árvore inteira re-renderizar a cada mudança de conexão. O que entra no estado
- * é só o que a tela precisa desenhar.
- *
- * O nome de cada campo segue o servidor (`server/state.js`) pra não haver
- * tradução no meio do caminho.
+ * variáveis de módulo, fora do estado do React: são objetos vivos e colocá-los no
+ * estado faria a árvore inteira re-renderizar a cada mudança de conexão.
  */
 
 export const media = new MediaManager();
@@ -45,12 +51,10 @@ export const media = new MediaManager();
 let socket: AppSocket | null = null;
 let engine: VoiceEngine | null = null;
 let detector: SpeakingDetector | null = null;
-/** Guardado pra reconexão: o socket cai, o apelido continua o mesmo. */
+let statsTimer: ReturnType<typeof setInterval> | null = null;
 let credentials = { username: "", password: "" };
-/** Último motivo de handshake recusado, pra tela de entrada dizer a causa real. */
 let lastConnectError: string | null = null;
 
-/** Mídia recebida de um par, indexada pelo slot que o motor identificou. */
 export interface PeerMedia {
   streams: Partial<Record<MediaSlot, MediaStream>>;
   /** `false` enquanto a trilha existe mas ainda não chega imagem/som. */
@@ -60,20 +64,103 @@ export interface PeerMedia {
 export interface Settings extends AudioSettings {
   cameraDeviceId: string | null;
   outputDeviceId: string | null;
+  camera: CameraOptions;
+  /** Espelhar a própria câmera, como um espelho de verdade. */
+  mirrorSelf: boolean;
+  pushToTalk: boolean;
+  pushToTalkKey: string;
+  sounds: boolean;
+  /** Desliga desfoque e animações em máquina fraca. */
+  liteMode: boolean;
+  showStats: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   ...DEFAULT_AUDIO_SETTINGS,
   cameraDeviceId: null,
   outputDeviceId: null,
+  camera: DEFAULT_CAMERA_OPTIONS,
+  mirrorSelf: true,
+  pushToTalk: false,
+  pushToTalkKey: "Space",
+  sounds: true,
+  liteMode: false,
+  showStats: false,
 };
+
+/** Preferência de volume/mute por pessoa. */
+export interface PersonPrefs {
+  volume: number;
+  muted: boolean;
+}
+
+const SETTINGS_KEY = "draco:settings";
+const SCREEN_KEY = "draco:screen";
+const PEOPLE_KEY = "draco:people";
+const STATS_INTERVAL_MS = 2000;
+
+function readJson(key: string): unknown {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "null");
+  } catch {
+    return null;
+  }
+}
+
+function writeJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Modo privado com armazenamento bloqueado: vale só nesta sessão.
+  }
+}
+
+function loadSettings(): Settings {
+  const raw = (readJson(SETTINGS_KEY) ?? {}) as Partial<Settings>;
+  const pick = <K extends keyof Settings>(key: K): Settings[K] =>
+    typeof raw[key] === typeof DEFAULT_SETTINGS[key] ? (raw[key] as Settings[K]) : DEFAULT_SETTINGS[key];
+
+  return {
+    micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : null,
+    cameraDeviceId: typeof raw.cameraDeviceId === "string" ? raw.cameraDeviceId : null,
+    outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : null,
+    echoCancellation: pick("echoCancellation"),
+    noiseSuppression: pick("noiseSuppression"),
+    autoGainControl: pick("autoGainControl"),
+    camera: normalizeCameraOptions(raw.camera),
+    mirrorSelf: pick("mirrorSelf"),
+    pushToTalk: pick("pushToTalk"),
+    pushToTalkKey: pick("pushToTalkKey"),
+    sounds: pick("sounds"),
+    liteMode: pick("liteMode"),
+    showStats: pick("showStats"),
+  };
+}
+
+/**
+ * Preferências por pessoa vão pelo apelido, não pelo id do socket: o id muda a
+ * cada reconexão e o volume que você ajustou voltaria ao padrão sozinho.
+ */
+function loadPeople(): Record<string, PersonPrefs> {
+  const raw = readJson(PEOPLE_KEY);
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, PersonPrefs> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, Partial<PersonPrefs>>)) {
+    out[key] = {
+      volume: typeof value?.volume === "number" ? Math.min(1, Math.max(0, value.volume)) : 1,
+      muted: Boolean(value?.muted),
+    };
+  }
+  return out;
+}
+
+export const personKey = (username: string): string => username.trim().toLowerCase();
 
 interface Store {
   // --- sessão -------------------------------------------------------------
   status: "join" | "connecting" | "ready";
   selfId: string | null;
   joinError: string | null;
-  /** Verdadeiro entre a queda do socket e a reidentificação. Vira a tarja no topo. */
   reconnecting: boolean;
   requiresPassword: boolean;
 
@@ -86,6 +173,8 @@ interface Store {
   // --- navegação ----------------------------------------------------------
   activeGuildId: string;
   activeChannelId: string;
+  /** Gaveta lateral no celular. */
+  sidebarOpen: boolean;
 
   // --- voz ----------------------------------------------------------------
   voiceChannelId: string | null;
@@ -94,16 +183,30 @@ interface Store {
   deafened: boolean;
   camOn: boolean;
   screenOn: boolean;
+  /** Tecla de push-to-talk pressionada agora. */
+  talking: boolean;
   remote: Record<string, PeerMedia>;
   peerStates: Record<string, RTCPeerConnectionState>;
+  stats: Record<string, PeerStats>;
   /**
-   * Volume por pessoa, 0 a 1. Ausente significa 1. O teto é 1 porque quem aplica
-   * é o `volume` do `<audio>`; passar disso exigiria rotear por Web Audio, e aí
-   * se perderia o `setSinkId` — escolher a saída de som vale mais que amplificar.
+   * Volume e mute por pessoa, indexado pelo apelido. O teto de volume é 1 porque
+   * quem aplica é o `volume` do `<audio>`; passar disso exigiria rotear por Web
+   * Audio e aí se perderia o `setSinkId`.
    */
-  peerVolumes: Record<string, number>;
-  /** Tile em destaque (clique duplo). Formato `peerId:slot`. */
-  focusedTile: string | null;
+  people: Record<string, PersonPrefs>;
+  /**
+   * Tiles em destaque, na ordem em que foram fixados. Formato `peerId:slot`.
+   * Cabem dois: com três o palco vira uma grade normal de novo.
+   */
+  focusedTiles: string[];
+  /**
+   * Telas que a pessoa mandou tocar. Transmissão de tela não abre sozinha — é o
+   * clique que liga, como no que já era costume em app de call, e assim ninguém
+   * paga decodificação de 1440p que não pediu.
+   */
+  watching: Record<string, boolean>;
+  /** Espelhamento manual por tile, aplicado sobre o padrão. */
+  flipped: Record<string, boolean>;
 
   // --- dispositivos e diagnóstico -----------------------------------------
   settings: Settings;
@@ -111,23 +214,37 @@ interface Store {
   mediaError: string | null;
   ice: IceConfigResponse | null;
   settingsOpen: boolean;
+  screenPickerOpen: boolean;
+  screenOptions: ScreenShareOptions;
 
   // --- ações --------------------------------------------------------------
   bootstrap: () => Promise<void>;
   connect: (username: string, password: string) => Promise<void>;
   selectGuild: (guildId: string) => void;
   selectChannel: (channelId: string) => void;
+  setSidebarOpen: (open: boolean) => void;
   sendChat: (content: string) => void;
   joinVoice: (channelId: string) => Promise<void>;
   leaveVoice: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
+  setTalking: (talking: boolean) => void;
   toggleCamera: () => Promise<void>;
   toggleScreen: () => Promise<void>;
-  setPeerVolume: (peerId: string, volume: number) => void;
+  startScreen: (options: ScreenShareOptions, source?: DesktopSource | null) => Promise<void>;
+  setScreenOptions: (options: ScreenShareOptions) => Promise<void>;
+  openScreenPicker: () => void;
+  closeScreenPicker: () => void;
+  setPersonVolume: (username: string, volume: number) => void;
+  togglePersonMuted: (username: string) => void;
+  resetPerson: (username: string) => void;
   applySettings: (patch: Partial<Settings>) => Promise<void>;
   refreshDevices: () => Promise<void>;
-  setFocusedTile: (tile: string | null) => void;
+  toggleFocus: (tile: string) => void;
+  clearFocus: () => void;
+  watch: (tile: string, on: boolean) => void;
+  pruneTiles: (keys: string[]) => void;
+  toggleFlip: (tile: string) => void;
   openSettings: () => void;
   closeSettings: () => void;
   dismissMediaError: () => void;
@@ -139,34 +256,78 @@ export const micLevel = () => detector?.level ?? 0;
 const byId = (members: Member[]) => Object.fromEntries(members.map((m) => [m.id, m]));
 
 export const useStore = create<Store>()((set, get) => {
-  /** Guarda o estado de voz no servidor. Ele repassa pra todos verem os ícones. */
   const publishVoiceState = (patch: Partial<VoiceFlags>) => socket?.emit("voice:state", patch);
 
   /** Mutar é `enabled = false`: a conexão continua de pé e religar é instantâneo. */
   const applyMicEnabled = () => {
     const track = media.micTrack;
-    if (track) track.enabled = !(get().muted || get().deafened);
+    if (!track) return;
+    const { muted, deafened, talking, settings } = get();
+    track.enabled = !(muted || deafened) && (!settings.pushToTalk || talking);
+  };
+
+  /** Mudo pros outros quando o push-to-talk está solto. */
+  const micSilent = () => {
+    const { muted, deafened, talking, settings } = get();
+    return muted || deafened || (settings.pushToTalk && !talking);
   };
 
   const remember = (members: Member[]) =>
     set((state) => ({ members: { ...state.members, ...byId(members) } }));
 
   /**
-   * Liga o detector de fala no microfone atual. Vale pra entrada na call e pra
-   * troca de dispositivo — em qualquer um dos dois o stream anterior morreu, e um
-   * detector apontado pra stream morto simplesmente nunca mais acusa fala.
+   * O detector precisa ser refeito a cada troca de microfone: apontado pra um
+   * stream morto ele simplesmente nunca mais acusa fala.
    */
   const startDetector = () => {
     detector?.stop();
     const micStream = media.micStream;
     if (!micStream) return;
     detector = new SpeakingDetector(micStream, (speaking) => {
-      publishVoiceState({ speaking });
-      // Eco local: o anel verde no próprio avatar não espera a ida e volta.
+      const live = speaking && !micSilent();
+      publishVoiceState({ speaking: live });
       const selfId = get().selfId;
       const selfMember = selfId ? get().members[selfId] : null;
-      if (selfMember) remember([{ ...selfMember, speaking }]);
+      if (selfMember) remember([{ ...selfMember, speaking: live }]);
     });
+  };
+
+  const startStats = () => {
+    if (statsTimer) clearInterval(statsTimer);
+    statsTimer = setInterval(() => {
+      if (!engine) return;
+      void Promise.all(
+        engine.peerIds.map(async (peerId) => {
+          const pc = engine?.peerConnection(peerId);
+          if (!pc) return null;
+          const sample = await samplePeer(peerId, pc);
+          return sample ? ([peerId, sample] as const) : null;
+        }),
+      ).then((entries) => {
+        const fresh = entries.filter(Boolean) as (readonly [string, PeerStats])[];
+        if (!fresh.length) return;
+        set((state) => ({ stats: { ...state.stats, ...Object.fromEntries(fresh) } }));
+      });
+    }, STATS_INTERVAL_MS);
+  };
+
+  const stopStats = () => {
+    if (statsTimer) clearInterval(statsTimer);
+    statsTimer = null;
+    forgetStats();
+  };
+
+  const persistPeople = () => writeJson(PEOPLE_KEY, get().people);
+
+  const updatePerson = (username: string, patch: Partial<PersonPrefs>) => {
+    const key = personKey(username);
+    set((state) => ({
+      people: {
+        ...state.people,
+        [key]: { ...prefsFor(state.people, username), ...patch },
+      },
+    }));
+    persistPeople();
   };
 
   const fromSnapshot = (snapshot: ServerSnapshot) => ({
@@ -176,11 +337,7 @@ export const useStore = create<Store>()((set, get) => {
     messages: snapshot.messages,
   });
 
-  /**
-   * Primeira seleção depois de entrar: primeiro servidor, primeiro canal de
-   * texto. Se já houver canal escolhido não mexe — numa reconexão a pessoa
-   * continua onde estava em vez de ser jogada de volta pro começo.
-   */
+  /** Numa reconexão o canal já está escolhido e a pessoa continua onde estava. */
   const ensureSelection = () => {
     if (get().activeChannelId) return;
     const guild = get().guilds[0];
@@ -189,11 +346,6 @@ export const useStore = create<Store>()((set, get) => {
     set({ activeGuildId: guild.id, activeChannelId: channel?.id ?? "" });
   };
 
-  /**
-   * Toda a fiação de eventos num lugar só, ligada uma vez por socket. Reconexão
-   * reaproveita estes mesmos ouvintes — o Socket.IO mantém o objeto, só troca o
-   * transporte por baixo.
-   */
   const wire = (s: AppSocket) => {
     s.on("connect", () => {
       void (async () => {
@@ -213,23 +365,19 @@ export const useStore = create<Store>()((set, get) => {
         });
         ensureSelection();
 
-        // Se a queda pegou a gente dentro de uma call, volta pra ela. O socket
-        // novo tem outro id, então não há como remendar: os pares são refeitos.
+        // O socket novo tem outro id, então os pares são refeitos do zero.
         const channelId = get().voiceChannelId;
         if (channelId) void get().joinVoice(channelId);
       })();
     });
 
     s.on("disconnect", (reason) => {
-      // "io client disconnect" é a gente mesmo saindo; não é queda.
       if (reason !== "io client disconnect") set({ reconnecting: true });
     });
 
     /**
-     * Handshake recusado — CORS errado, servidor caído, proxy no caminho. Só
-     * guarda o motivo: abortar aqui atropelaria a reconexão automática, que
-     * costuma acertar na segunda tentativa. Quem reporta é a rede de segurança
-     * em `connect`, e aí com a causa em vez de uma mensagem genérica.
+     * Só guarda o motivo: abortar aqui atropelaria a reconexão automática, que
+     * costuma acertar na segunda tentativa. Quem reporta é a rede em `connect`.
      */
     s.on("connect_error", (error) => {
       lastConnectError = error.message;
@@ -240,6 +388,7 @@ export const useStore = create<Store>()((set, get) => {
 
     s.on("member:left", ({ id }) => {
       engine?.removePeer(id);
+      forgetStats(id);
       set((state) => {
         const members = { ...state.members };
         const remote = { ...state.remote };
@@ -262,11 +411,14 @@ export const useStore = create<Store>()((set, get) => {
       remember([member]);
       if (get().voiceChannelId !== channelId) return;
       engine?.addPeer(member.id);
+      playCue("join");
     });
 
     s.on("voice:peer-left", ({ channelId, memberId }) => {
       if (get().voiceChannelId !== channelId) return;
       engine?.removePeer(memberId);
+      forgetStats(memberId);
+      playCue("leave");
       set((state) => {
         const remote = { ...state.remote };
         delete remote[memberId];
@@ -276,6 +428,9 @@ export const useStore = create<Store>()((set, get) => {
 
     s.on("rtc:signal", ({ from, ...payload }) => engine?.handleSignal(from, payload));
   };
+
+  const initialSettings = loadSettings();
+  setSoundsEnabled(initialSettings.sounds);
 
   return {
     status: "join",
@@ -291,22 +446,29 @@ export const useStore = create<Store>()((set, get) => {
 
     activeGuildId: "",
     activeChannelId: "",
+    sidebarOpen: false,
 
     voiceChannelId: null,
     muted: false,
     deafened: false,
     camOn: false,
     screenOn: false,
+    talking: false,
     remote: {},
     peerStates: {},
-    peerVolumes: {},
-    focusedTile: null,
+    stats: {},
+    people: loadPeople(),
+    focusedTiles: [],
+    watching: {},
+    flipped: {},
 
-    settings: DEFAULT_SETTINGS,
+    settings: initialSettings,
     devices: { mics: [], cameras: [], speakers: [] },
     mediaError: null,
     ice: null,
     settingsOpen: false,
+    screenPickerOpen: false,
+    screenOptions: normalizeScreenOptions(readJson(SCREEN_KEY) ?? DEFAULT_SCREEN_OPTIONS),
 
     async bootstrap() {
       try {
@@ -314,8 +476,8 @@ export const useStore = create<Store>()((set, get) => {
         const config = (await response.json()) as { requiresPassword?: boolean };
         set({ requiresPassword: Boolean(config.requiresPassword) });
       } catch {
-        // Sem resposta o campo de senha não aparece; se houver senha, o erro
-        // volta no `identify` com a mensagem certa. Não vale travar a tela aqui.
+        // Sem resposta o campo de senha não aparece; se houver senha, o erro volta
+        // no `identify` com a mensagem certa.
       }
     },
 
@@ -330,10 +492,8 @@ export const useStore = create<Store>()((set, get) => {
       }
       socket.connect();
 
-      // A tela de entrada sai quando o `identify` responde, dentro de `wire`.
-      // Aqui só resta esperar por isso — e desistir se nada voltar. O prazo é
-      // maior que o `timeout` do socket de propósito: assim o socket já falhou e
-      // deixou o motivo em `lastConnectError` antes desta rede de segurança agir.
+      // O prazo é maior que o `timeout` do socket de propósito: assim ele já
+      // falhou e deixou o motivo em `lastConnectError` antes desta rede agir.
       await new Promise<void>((resolve) => {
         if (get().status === "ready") return resolve();
         const timer = setTimeout(resolve, 50000);
@@ -347,9 +507,7 @@ export const useStore = create<Store>()((set, get) => {
 
       if (get().status !== "ready") {
         socket.disconnect();
-        // "timeout" é o próprio Socket.IO desistindo, e aí a causa provável é
-        // serviço acordando — não uma recusa. Qualquer outro texto é a recusa de
-        // verdade e vale mostrar cru: é o que permite descobrir o motivo.
+        // "timeout" é o Socket.IO desistindo — serviço acordando, não recusa.
         const failure =
           !lastConnectError || lastConnectError === "timeout"
             ? describeSocketError("timeout")
@@ -368,7 +526,11 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     selectChannel(channelId) {
-      set({ activeChannelId: channelId });
+      set({ activeChannelId: channelId, sidebarOpen: false });
+    },
+
+    setSidebarOpen(open) {
+      set({ sidebarOpen: open });
     },
 
     sendChat(content) {
@@ -379,9 +541,7 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     async joinVoice(channelId) {
-      // Entrar sempre parte de um clique, e é o momento certo de destravar o
-      // áudio: navegador nasce com o contexto suspenso e sem isso a pessoa
-      // entra na call sem ouvir ninguém.
+      // Entrar parte de um clique, e é o momento certo de destravar o áudio.
       resumeAudio();
       const s = socket;
       if (!s) return;
@@ -393,7 +553,7 @@ export const useStore = create<Store>()((set, get) => {
         set({ mediaError: describeMediaError(error) });
         return;
       }
-      micTrack.enabled = !(get().muted || get().deafened);
+      micTrack.enabled = !micSilent();
 
       const ice = get().ice ?? (await loadIceConfig());
       const selfId = get().selfId;
@@ -402,7 +562,8 @@ export const useStore = create<Store>()((set, get) => {
       // Uma call por vez: sair antes de entrar deixa o estado limpo mesmo quando
       // isso é uma reconexão em cima de uma call que já existia.
       engine?.close();
-      set({ remote: {}, peerStates: {} });
+      set({ remote: {}, peerStates: {}, stats: {} });
+      forgetStats();
 
       engine = new VoiceEngine({
         selfId,
@@ -437,16 +598,18 @@ export const useStore = create<Store>()((set, get) => {
       }
 
       remember(reply.peers);
-      set({ voiceChannelId: channelId, activeChannelId: channelId });
+      set({ voiceChannelId: channelId, activeChannelId: channelId, sidebarOpen: false });
 
       await engine.setLocalTrack("mic", micTrack);
-      // Só agora: com o microfone já anexado, a primeira oferta já sai com áudio.
+      // Só agora: com o microfone anexado, a primeira oferta já sai com áudio.
       engine.syncPeers(reply.peers.map((peer) => peer.id));
 
       startDetector();
+      startStats();
+      playCue("join");
 
       publishVoiceState({
-        muted: get().muted || get().deafened,
+        muted: micSilent(),
         deafened: get().deafened,
         camOn: false,
         screenOn: false,
@@ -458,35 +621,49 @@ export const useStore = create<Store>()((set, get) => {
       detector = null;
       engine?.close();
       engine = null;
+      stopStats();
       media.closeAll();
       socket?.emit("voice:leave");
+      playCue("leave");
       set({
         voiceChannelId: null,
         camOn: false,
         screenOn: false,
+        talking: false,
         remote: {},
         peerStates: {},
-        focusedTile: null,
+        stats: {},
+        focusedTiles: [],
+        watching: {},
+        screenPickerOpen: false,
       });
     },
 
     toggleMute() {
       const muted = !get().muted;
-      // Desmutar com o ouvido fechado não faz sentido — o Discord também abre os
-      // dois de uma vez.
+      // Desmutar com o ouvido fechado não faz sentido: abre os dois de uma vez.
       const deafened = muted ? get().deafened : false;
       set({ muted, deafened });
       applyMicEnabled();
-      publishVoiceState({ muted: muted || deafened, deafened });
+      playCue(muted ? "mute" : "unmute");
+      publishVoiceState({ muted: micSilent(), deafened });
     },
 
     toggleDeafen() {
       const deafened = !get().deafened;
       set({ deafened });
       applyMicEnabled();
-      // `muted` continua guardando a intenção anterior, então tirar o deafen
-      // devolve o microfone ao estado em que a pessoa o tinha deixado.
-      publishVoiceState({ muted: get().muted || deafened, deafened });
+      playCue(deafened ? "deafen" : "unmute");
+      // `muted` guarda a intenção anterior, então tirar o deafen devolve o
+      // microfone ao estado em que a pessoa o deixou.
+      publishVoiceState({ muted: micSilent(), deafened });
+    },
+
+    setTalking(talking) {
+      if (get().talking === talking) return;
+      set({ talking });
+      applyMicEnabled();
+      publishVoiceState({ muted: micSilent() });
     },
 
     async toggleCamera() {
@@ -499,12 +676,14 @@ export const useStore = create<Store>()((set, get) => {
         return;
       }
       try {
-        const track = await media.openCamera(get().settings.cameraDeviceId);
+        const options = get().settings.camera;
+        const track = await media.openCamera(get().settings.cameraDeviceId, options);
         // Webcam desconectada no meio da call: some o tile em vez de congelar.
         track.onended = () => {
           if (get().camOn) void get().toggleCamera();
         };
         await engine?.setLocalTrack("camera", track);
+        await engine?.setMaxBitrate("camera", cameraBitrate(options));
         set({ camOn: true });
         publishVoiceState({ camOn: true });
       } catch (error) {
@@ -522,36 +701,83 @@ export const useStore = create<Store>()((set, get) => {
         publishVoiceState({ screenOn: false });
         return;
       }
+      // Abre o painel de qualidade; quem captura é o botão dele. Assim a
+      // resolução escolhida vale desde o primeiro quadro.
+      set({ screenPickerOpen: true });
+    },
+
+    async startScreen(options, source = null) {
+      if (!get().voiceChannelId) return;
+      set({ screenPickerOpen: false, screenOptions: options });
+      writeJson(SCREEN_KEY, options);
+
       try {
-        const { video, audio } = await media.openScreen();
-        // O botão "Parar de compartilhar" do próprio navegador termina a trilha:
-        // sem escutar isso, os outros ficariam vendo o último quadro pra sempre.
+        const { video, audio } = await media.openScreen(options, source);
+        // O "Parar de compartilhar" do navegador termina a trilha: sem escutar
+        // isso, os outros ficariam vendo o último quadro pra sempre.
         video.onended = () => {
           if (get().screenOn) void get().toggleScreen();
         };
         await engine?.setLocalTrack("screen", video);
         await engine?.setLocalTrack("screenAudio", audio);
+        await engine?.setMaxBitrate("screen", screenBitrate(options));
         set({ screenOn: true });
         publishVoiceState({ screenOn: true });
       } catch (error) {
-        // Cancelar o seletor de janelas cai aqui como `NotAllowedError`, e não é
-        // erro nenhum — não vale abrir aviso vermelho por desistir de compartilhar.
+        // Cancelar o seletor de janelas chega como `NotAllowedError` e não é erro.
         const aborted = error instanceof Error && /NotAllowed|Abort/.test(error.name);
         if (!aborted) set({ mediaError: describeMediaError(error) });
       }
     },
 
-    setPeerVolume(peerId, volume) {
-      set((state) => ({ peerVolumes: { ...state.peerVolumes, [peerId]: volume } }));
+    closeScreenPicker() {
+      set({ screenPickerOpen: false });
+    },
+
+    openScreenPicker() {
+      if (get().voiceChannelId) set({ screenPickerOpen: true });
+    },
+
+    /** Qualidade mudou com a tela já no ar: ajusta a trilha em vez de recapturar. */
+    async setScreenOptions(options) {
+      set({ screenOptions: options });
+      writeJson(SCREEN_KEY, options);
+      if (!get().screenOn) return;
+      try {
+        await media.applyScreenOptions(options);
+        await engine?.setMaxBitrate("screen", screenBitrate(options));
+      } catch (error) {
+        set({ mediaError: describeMediaError(error) });
+      }
+    },
+
+    setPersonVolume(username, volume) {
+      updatePerson(username, { volume: Math.min(1, Math.max(0, volume)) });
+    },
+
+    togglePersonMuted(username) {
+      const current = get().people[personKey(username)];
+      updatePerson(username, { muted: !current?.muted });
+    },
+
+    resetPerson(username) {
+      updatePerson(username, { volume: 1, muted: false });
     },
 
     async applySettings(patch) {
       const settings = { ...get().settings, ...patch };
       set({ settings });
+      writeJson(SETTINGS_KEY, settings);
 
-      // Trocar microfone ou processamento de áudio exige abrir o dispositivo de
-      // novo; a trilha nova entra por `replaceTrack`, sem renegociar nem cortar
-      // o áudio de quem está ouvindo.
+      if (patch.sounds !== undefined) setSoundsEnabled(settings.sounds);
+      if (patch.pushToTalk !== undefined) {
+        set({ talking: false });
+        applyMicEnabled();
+        publishVoiceState({ muted: micSilent() });
+      }
+
+      // Trocar microfone ou processamento exige reabrir o dispositivo; a trilha
+      // nova entra por `replaceTrack`, sem renegociar nem cortar o áudio.
       const audioChanged =
         patch.micDeviceId !== undefined ||
         patch.echoCancellation !== undefined ||
@@ -561,7 +787,7 @@ export const useStore = create<Store>()((set, get) => {
       if (audioChanged && get().voiceChannelId) {
         try {
           const track = await media.openMic(settings);
-          track.enabled = !(get().muted || get().deafened);
+          track.enabled = !micSilent();
           await engine?.setLocalTrack("mic", track);
           startDetector();
         } catch (error) {
@@ -569,10 +795,25 @@ export const useStore = create<Store>()((set, get) => {
         }
       }
 
+      if (patch.camera !== undefined && patch.cameraDeviceId === undefined && get().camOn) {
+        // Só resolução/fps: ajusta a trilha viva, sem piscar a imagem.
+        try {
+          await media.applyCameraOptions(settings.camera);
+          await engine?.setMaxBitrate("camera", cameraBitrate(settings.camera));
+        } catch (error) {
+          set({ mediaError: describeMediaError(error) });
+        }
+        return;
+      }
+
       if (patch.cameraDeviceId !== undefined && get().camOn) {
         try {
-          const track = await media.openCamera(settings.cameraDeviceId);
+          const track = await media.openCamera(settings.cameraDeviceId, settings.camera);
+          track.onended = () => {
+            if (get().camOn) void get().toggleCamera();
+          };
           await engine?.setLocalTrack("camera", track);
+          await engine?.setMaxBitrate("camera", cameraBitrate(settings.camera));
         } catch (error) {
           set({ mediaError: describeMediaError(error) });
         }
@@ -583,8 +824,47 @@ export const useStore = create<Store>()((set, get) => {
       set({ devices: await media.listDevices() });
     },
 
-    setFocusedTile(tile) {
-      set({ focusedTile: tile });
+    /**
+     * Fixa ou solta um tile. O terceiro empurra o mais antigo em vez de recusar
+     * o clique: quem está apontando pra tela nova quer ver a tela nova.
+     */
+    toggleFocus(tile) {
+      set((state) => {
+        if (state.focusedTiles.includes(tile)) {
+          return { focusedTiles: state.focusedTiles.filter((key) => key !== tile) };
+        }
+        return { focusedTiles: [...state.focusedTiles, tile].slice(-2) };
+      });
+    },
+
+    clearFocus() {
+      set({ focusedTiles: [] });
+    },
+
+    watch(tile, on) {
+      set((state) => ({ watching: { ...state.watching, [tile]: on } }));
+    },
+
+    /**
+     * Some quem saiu da call ou fechou a transmissão. Sem isso, uma tela
+     * reaberta voltaria já tocando e ainda fixada de uma sessão anterior.
+     */
+    pruneTiles(keys) {
+      set((state) => {
+        const live = new Set(keys);
+        const focusedTiles = state.focusedTiles.filter((key) => live.has(key));
+        const watching = Object.fromEntries(
+          Object.entries(state.watching).filter(([key]) => live.has(key)),
+        );
+        const same =
+          focusedTiles.length === state.focusedTiles.length &&
+          Object.keys(watching).length === Object.keys(state.watching).length;
+        return same ? state : { focusedTiles, watching };
+      });
+    },
+
+    toggleFlip(tile) {
+      set((state) => ({ flipped: { ...state.flipped, [tile]: !state.flipped[tile] } }));
     },
 
     openSettings() {
@@ -608,4 +888,9 @@ export function membersInVoice(members: Record<string, Member>, channelId: strin
   return Object.values(members)
     .filter((member) => member.voiceChannelId === channelId)
     .sort((a, b) => a.username.localeCompare(b.username, "pt-BR"));
+}
+
+/** Preferências de uma pessoa, com o padrão preenchido. */
+export function prefsFor(people: Record<string, PersonPrefs>, username: string): PersonPrefs {
+  return people[personKey(username)] ?? { volume: 1, muted: false };
 }

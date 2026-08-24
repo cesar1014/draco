@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "client", "public", "icons");
 
-/** Blurple do Discord, o mesmo `--blurple` do CSS. */
+/** Azul da marca, o mesmo `--brand` do CSS. */
 const BRAND = [0x58, 0x65, 0xf2];
 
 /** Amostras por eixo dentro de cada pixel. 3×3 já deixa a borda lisa. */
@@ -131,7 +131,7 @@ function render(size, radius, glyphScale) {
 
       const g = glyph / samples;
       const i = (py * size + px) * 4;
-      // Branco por cima do blurple; o alfa é a silhueta do fundo.
+      // Branco por cima do azul; o alfa é a silhueta do fundo.
       rgba[i] = Math.round(BRAND[0] * (1 - g) + 255 * g);
       rgba[i + 1] = Math.round(BRAND[1] * (1 - g) + 255 * g);
       rgba[i + 2] = Math.round(BRAND[2] * (1 - g) + 255 * g);

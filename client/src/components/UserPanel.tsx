@@ -1,29 +1,34 @@
 import { Avatar } from "@/components/Avatar";
-import { GearIcon, HeadphoneIcon, HeadphoneOffIcon, MicIcon, MicOffIcon } from "@/components/Icons";
+import {
+  GearIcon,
+  HeadphoneIcon,
+  HeadphoneOffIcon,
+  MicIcon,
+  MicOffIcon,
+} from "@/components/Icons";
 import { useStore } from "@/state/store";
 
-/**
- * O painel de baixo à esquerda. Os dois botões daqui funcionam mesmo fora da
- * call: a intenção de mudo é guardada e aplicada na hora em que se entra, que é
- * como o Discord se comporta — quem entra mudo espera continuar mudo.
- */
+/** Rodapé da barra lateral: quem você é e os botões de microfone e ouvido. */
 export function UserPanel() {
-  const member = useStore((state) => (state.selfId ? state.members[state.selfId] : null));
+  const selfId = useStore((state) => state.selfId);
+  const members = useStore((state) => state.members);
   const muted = useStore((state) => state.muted);
   const deafened = useStore((state) => state.deafened);
+  const voiceChannelId = useStore((state) => state.voiceChannelId);
   const toggleMute = useStore((state) => state.toggleMute);
   const toggleDeafen = useStore((state) => state.toggleDeafen);
   const openSettings = useStore((state) => state.openSettings);
 
-  if (!member) return null;
+  const self = selfId ? members[selfId] : null;
+  if (!self) return null;
 
   return (
     <div className="user-panel">
       <div className="user-identity">
-        <Avatar member={member} size={32} ring />
+        <Avatar member={self} size={34} />
         <div className="user-text">
-          <strong>{member.username}</strong>
-          <span>{deafened ? "Ensurdecido" : muted ? "Sem microfone" : "Disponível"}</span>
+          <strong>{self.username}</strong>
+          <span>{voiceChannelId ? "em chamada" : "disponível"}</span>
         </div>
       </div>
 
@@ -33,28 +38,21 @@ export function UserPanel() {
           className="panel-button"
           data-off={muted}
           onClick={toggleMute}
-          title={muted ? "Ativar microfone" : "Desativar microfone"}
-          aria-pressed={muted}
+          title="Microfone (Ctrl+Shift+M)"
         >
-          {muted ? <MicOffIcon /> : <MicIcon />}
+          {muted ? <MicOffIcon size={18} /> : <MicIcon size={18} />}
         </button>
         <button
           type="button"
           className="panel-button"
           data-off={deafened}
           onClick={toggleDeafen}
-          title={deafened ? "Voltar a ouvir" : "Ensurdecer"}
-          aria-pressed={deafened}
+          title="Ouvido (Ctrl+Shift+D)"
         >
-          {deafened ? <HeadphoneOffIcon /> : <HeadphoneIcon />}
+          {deafened ? <HeadphoneOffIcon size={18} /> : <HeadphoneIcon size={18} />}
         </button>
-        <button
-          type="button"
-          className="panel-button"
-          onClick={openSettings}
-          title="Configurações de voz e vídeo"
-        >
-          <GearIcon />
+        <button type="button" className="panel-button" onClick={openSettings} title="Configurações">
+          <GearIcon size={18} />
         </button>
       </div>
     </div>

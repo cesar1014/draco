@@ -1,10 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { DiscordIcon } from "@/components/Icons";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Constellation } from "@/components/Constellation";
+import { BrandMark } from "@/components/Icons";
 import { mediaSupported } from "@/rtc/MediaManager";
 import { useStore } from "@/state/store";
 
-/** O apelido volta na próxima visita; é a única coisa que a gente guarda. */
-const NAME_KEY = "discord-clone:username";
+const NAME_KEY = "draco:username";
 
 export function JoinScreen() {
   const status = useStore((state) => state.status);
@@ -15,6 +15,10 @@ export function JoinScreen() {
 
   const [username, setUsername] = useState(() => localStorage.getItem(NAME_KEY) ?? "");
   const [password, setPassword] = useState("");
+  // Dispara a explosão da constelação assim que a conexão é aceita, antes de a
+  // tela trocar; o `pending` guarda o gesto de submit até a animação terminar.
+  const [launching, setLaunching] = useState(false);
+  const pending = useRef<{ name: string; password: string } | null>(null);
 
   useEffect(() => {
     void bootstrap();
@@ -25,20 +29,38 @@ export function JoinScreen() {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!valid || connecting) return;
+    if (!valid || connecting || launching) return;
     const name = username.trim();
     localStorage.setItem(NAME_KEY, name);
-    void connect(name, password);
+    pending.current = { name, password };
+    setLaunching(true);
   }
 
+  // A constelação explode (~700 ms) e só então conectamos: a troca de tela cai
+  // junto com o fim da animação, sem cortar no meio.
+  useEffect(() => {
+    if (!launching || !pending.current) return;
+    const { name, password } = pending.current;
+    const timer = setTimeout(() => void connect(name, password), 620);
+    return () => clearTimeout(timer);
+  }, [launching, connect]);
+
+  // Senha errada ou servidor fora: solta o botão pra pessoa tentar de novo.
+  useEffect(() => {
+    if (joinError) setLaunching(false);
+  }, [joinError]);
+
   return (
-    <div className="join">
+    <div className="join" data-launching={launching}>
+      <Constellation exploding={launching} />
+      <div className="join-glow" aria-hidden="true" />
+
       <form className="join-card" onSubmit={submit}>
         <div className="join-logo">
-          <DiscordIcon size={44} />
+          <BrandMark size={72} />
         </div>
-        <h1>Bem-vindo de volta!</h1>
-        <p className="join-subtitle">Escolha um apelido para entrar na sala.</p>
+        <h1>Draco</h1>
+        <p className="join-subtitle">Escolha um apelido e entre na sala.</p>
 
         <label className="field">
           <span>
@@ -72,17 +94,14 @@ export function JoinScreen() {
 
         {joinError && <p className="join-error">{joinError}</p>}
 
-        <button type="submit" className="join-submit" disabled={!valid || connecting}>
-          {connecting ? "Entrando…" : "Entrar"}
+        <button type="submit" className="join-submit" disabled={!valid || connecting || launching}>
+          {launching || connecting ? "Entrando…" : "Entrar"}
         </button>
 
-        {/* Sem contexto seguro não existe `getUserMedia`: o navegador some com a
-            função inteira. Melhor avisar aqui do que a pessoa descobrir quando
-            clicar em entrar na call e nada acontecer. */}
         {!mediaSupported() && (
           <p className="join-warning">
             Esta página não está em HTTPS nem em <code>localhost</code>, então o navegador bloqueia
-            microfone e câmera. O chat funciona; a call, não. Veja o README para abrir com HTTPS.
+            microfone e câmera. O chat funciona; a call, não.
           </p>
         )}
       </form>

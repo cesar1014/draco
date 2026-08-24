@@ -1,7 +1,14 @@
 node_modules/
 dist/
+desktop/out/
 .env
 server/certs/
 *.log
 selftest-report.json
 .DS_Store
+
+# Anotações e ferramentas locais, fora do repositório
+.claude/
+NOVO DISCORD.MD
+NOVO DISCORD.txt
+brand/logo-source.png

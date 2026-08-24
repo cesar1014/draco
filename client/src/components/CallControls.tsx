@@ -9,22 +9,28 @@ import {
   MicOffIcon,
   ScreenIcon,
   ScreenOffIcon,
+  SlidersIcon,
 } from "@/components/Icons";
 import { screenShareSupported } from "@/rtc/MediaManager";
 import { useStore } from "@/state/store";
 
-/** A barra flutuante da call. Mesma ordem de botões do Discord. */
 export function CallControls() {
   const muted = useStore((state) => state.muted);
   const deafened = useStore((state) => state.deafened);
   const camOn = useStore((state) => state.camOn);
   const screenOn = useStore((state) => state.screenOn);
+  const talking = useStore((state) => state.talking);
+  const pushToTalk = useStore((state) => state.settings.pushToTalk);
+  const pushToTalkKey = useStore((state) => state.settings.pushToTalkKey);
   const toggleMute = useStore((state) => state.toggleMute);
   const toggleDeafen = useStore((state) => state.toggleDeafen);
   const toggleCamera = useStore((state) => state.toggleCamera);
   const toggleScreen = useStore((state) => state.toggleScreen);
+  const openScreenPicker = useStore((state) => state.openScreenPicker);
   const leaveVoice = useStore((state) => state.leaveVoice);
   const openSettings = useStore((state) => state.openSettings);
+
+  const canShare = screenShareSupported();
 
   return (
     <div className="call-controls">
@@ -33,10 +39,9 @@ export function CallControls() {
         className="call-button"
         data-on={camOn}
         onClick={() => void toggleCamera()}
-        title={camOn ? "Desligar a câmera" : "Ligar a câmera"}
-        aria-pressed={camOn}
+        title="Câmera (Ctrl+Shift+V)"
       >
-        {camOn ? <CameraIcon size={22} /> : <CameraOffIcon size={22} />}
+        {camOn ? <CameraIcon /> : <CameraOffIcon />}
       </button>
 
       <button
@@ -44,28 +49,32 @@ export function CallControls() {
         className="call-button"
         data-on={screenOn}
         onClick={() => void toggleScreen()}
-        disabled={!screenShareSupported()}
-        title={
-          screenShareSupported()
-            ? screenOn
-              ? "Parar de compartilhar"
-              : "Compartilhar a tela"
-            : "Este navegador não permite compartilhar a tela"
-        }
-        aria-pressed={screenOn}
+        disabled={!canShare}
+        title={canShare ? "Compartilhar a tela (Ctrl+Shift+S)" : "Este navegador não compartilha tela"}
       >
-        {screenOn ? <ScreenOffIcon size={22} /> : <ScreenIcon size={22} />}
+        {screenOn ? <ScreenIcon /> : <ScreenOffIcon />}
       </button>
+
+      {screenOn && (
+        <button
+          type="button"
+          className="call-button quality"
+          onClick={openScreenPicker}
+          title="Qualidade do vídeo que está sendo transmitido"
+        >
+          <SlidersIcon />
+        </button>
+      )}
 
       <button
         type="button"
         className="call-button"
         data-off={muted}
+        data-talking={pushToTalk && talking}
         onClick={toggleMute}
-        title={muted ? "Ativar microfone" : "Desativar microfone"}
-        aria-pressed={muted}
+        title="Microfone (Ctrl+Shift+M)"
       >
-        {muted ? <MicOffIcon size={22} /> : <MicIcon size={22} />}
+        {muted ? <MicOffIcon /> : <MicIcon />}
       </button>
 
       <button
@@ -73,24 +82,33 @@ export function CallControls() {
         className="call-button"
         data-off={deafened}
         onClick={toggleDeafen}
-        title={deafened ? "Voltar a ouvir" : "Ensurdecer"}
-        aria-pressed={deafened}
+        title="Ouvido (Ctrl+Shift+D)"
       >
-        {deafened ? <HeadphoneOffIcon size={22} /> : <HeadphoneIcon size={22} />}
+        {deafened ? <HeadphoneOffIcon /> : <HeadphoneIcon />}
       </button>
 
       <button type="button" className="call-button" onClick={openSettings} title="Configurações">
-        <GearIcon size={22} />
+        <GearIcon />
       </button>
 
-      <button
-        type="button"
-        className="call-button hangup"
-        onClick={leaveVoice}
-        title="Desconectar da call"
-      >
-        <HangUpIcon size={22} />
+      <button type="button" className="call-button hangup" onClick={leaveVoice} title="Sair da chamada">
+        <HangUpIcon />
       </button>
+
+      {pushToTalk && (
+        <span className="ptt-badge" data-on={talking}>
+          {talking ? "no ar" : `segure ${keyLabel(pushToTalkKey)}`}
+        </span>
+      )}
     </div>
   );
+}
+
+/** `KeyboardEvent.code` não serve de rótulo: "Space" e "KeyF" não se leem bem. */
+export function keyLabel(code: string): string {
+  if (code === "Space") return "Espaço";
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (code.startsWith("Numpad")) return `Num ${code.slice(6)}`;
+  return code.replace("Control", "Ctrl ").replace("Left", " esq.").replace("Right", " dir.");
 }

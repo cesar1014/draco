@@ -1,58 +1,52 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Avatar } from "@/components/Avatar";
-import { CameraIcon, HeadphoneOffIcon, MicOffIcon, ScreenIcon } from "@/components/Icons";
-import { membersInVoice, useStore } from "@/state/store";
+import { CameraIcon, MicOffIcon, ScreenIcon, SpeakerOffIcon } from "@/components/Icons";
+import { PersonMenu } from "@/components/PersonMenu";
+import { membersInVoice, prefsFor, useStore } from "@/state/store";
 
-/**
- * Quem está dentro de um canal de voz, aninhado sob ele na lista de canais.
- *
- * Os ícones de mudo e de ensurdecido vêm do estado que o servidor repassa, não
- * de inspeção da mídia recebida: é o que faz o ícone aparecer no mesmo instante
- * do clique da outra pessoa, e é o que permite mostrar isso pra quem está lendo
- * o chat e nem entrou na call.
- */
+/** Quem está num canal de voz, com o menu de volume por pessoa. */
 export function VoiceChannelMembers({ channelId }: { channelId: string }) {
   const members = useStore((state) => state.members);
   const selfId = useStore((state) => state.selfId);
+  const people = useStore((state) => state.people);
+  const [openFor, setOpenFor] = useState<string | null>(null);
 
-  // `membersInVoice` cria um array novo a cada chamada; fora do selector, senão
-  // o zustand veria uma referência nova em cada notificação e nunca pararia.
   const present = useMemo(() => membersInVoice(members, channelId), [members, channelId]);
   if (present.length === 0) return null;
 
   return (
     <ul className="voice-members">
-      {present.map((member) => (
-        <li key={member.id} className="voice-member">
-          <Avatar member={member} size={24} ring />
-          <span className="voice-member-name" data-self={member.id === selfId}>
-            {member.username}
-          </span>
-          <span className="voice-member-icons">
-            {member.screenOn && (
-              <span title="Compartilhando a tela">
-                <ScreenIcon size={15} />
+      {present.map((member) => {
+        const self = member.id === selfId;
+        const prefs = prefsFor(people, member.username);
+        const open = openFor === member.id;
+
+        return (
+          <li key={member.id} className="voice-member" data-speaking={member.speaking}>
+            <button
+              type="button"
+              className="voice-member-row"
+              disabled={self}
+              aria-expanded={open}
+              onClick={() => setOpenFor(open ? null : member.id)}
+              title={self ? "Você" : `Ajustar o áudio de ${member.username}`}
+            >
+              <Avatar member={member} size={24} />
+              <span className="voice-member-name" data-self={self} data-quiet={prefs.muted}>
+                {member.username}
               </span>
-            )}
-            {member.camOn && (
-              <span title="Câmera ligada">
-                <CameraIcon size={15} />
+              <span className="voice-member-icons">
+                {prefs.muted && !self && <SpeakerOffIcon size={14} />}
+                {member.screenOn && <ScreenIcon size={14} />}
+                {member.camOn && <CameraIcon size={14} />}
+                {member.muted && <MicOffIcon size={14} />}
               </span>
-            )}
-            {member.deafened ? (
-              <span title="Ensurdecido" className="danger">
-                <HeadphoneOffIcon size={15} />
-              </span>
-            ) : (
-              member.muted && (
-                <span title="Sem microfone" className="danger">
-                  <MicOffIcon size={15} />
-                </span>
-              )
-            )}
-          </span>
-        </li>
-      ))}
+            </button>
+
+            {open && <PersonMenu member={member} onClose={() => setOpenFor(null)} />}
+          </li>
+        );
+      })}
     </ul>
   );
 }

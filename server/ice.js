@@ -32,7 +32,7 @@ function hasTurnServer(iceServers) {
  * consegue emitir credencial temporária.
  */
 function hmacCredentials(host, secret) {
-  const username = `${Math.floor(Date.now() / 1000) + HMAC_TTL_SECONDS}:discord-clone`;
+  const username = `${Math.floor(Date.now() / 1000) + HMAC_TTL_SECONDS}:draco`;
   const credential = createHmac("sha1", secret).update(username).digest("base64");
   return { urls: host.split(",").map((u) => u.trim()).filter(Boolean), username, credential };
 }

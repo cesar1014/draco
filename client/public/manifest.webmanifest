@@ -1,13 +1,13 @@
 {
-  "name": "Discord Clone — voz e vídeo",
-  "short_name": "Discord Clone",
+  "name": "Draco — voz e vídeo",
+  "short_name": "Draco",
   "description": "Call em grupo com microfone, webcam e compartilhamento de tela.",
   "lang": "pt-BR",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#1e1f22",
-  "theme_color": "#1e1f22",
+  "background_color": "#070a14",
+  "theme_color": "#070a14",
   "orientation": "any",
   "categories": ["social", "communication"],
   "icons": [

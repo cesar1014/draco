@@ -1,41 +1,29 @@
-import type { Member } from "@/types";
+import type { CSSProperties } from "react";
 
-/**
- * Iniciais do apelido, como o avatar padrão do Discord. Duas palavras viram duas
- * letras; uma palavra vira as duas primeiras letras dela.
- */
+/** Duas letras: primeira de cada palavra, ou as duas primeiras de um nome só. */
 export function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-interface AvatarProps {
-  member: Pick<Member, "username" | "color" | "speaking">;
-  size?: number;
-  /**
-   * Liga o anel verde de quem está falando. É uma opção, e não algo automático,
-   * porque fora do canal de voz o `speaking` do membro não quer dizer nada pra
-   * quem está olhando — o anel só faz sentido dentro da call.
-   */
-  ring?: boolean;
+interface AvatarMember {
+  username: string;
+  color: string;
+  speaking: boolean;
 }
 
-export function Avatar({ member, size = 32, ring = false }: AvatarProps) {
+export function Avatar({ member, size = 32 }: { member: AvatarMember; size?: number }) {
+  const style = {
+    "--avatar-size": `${size}px`,
+    "--avatar-color": member.color,
+    fontSize: `${Math.max(11, Math.round(size * 0.38))}px`,
+  } as CSSProperties;
+
   return (
-    <span
-      className="avatar"
-      data-speaking={ring && member.speaking}
-      style={{
-        width: size,
-        height: size,
-        background: member.color,
-        fontSize: Math.round(size * 0.38),
-      }}
-      aria-hidden="true"
-    >
-      {initialsOf(member.username)}
+    <span className="avatar" data-speaking={member.speaking} style={style}>
+      <span className="avatar-face">{initialsOf(member.username)}</span>
     </span>
   );
 }

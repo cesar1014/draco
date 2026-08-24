@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { HashIcon } from "@/components/Icons";
+import { HashIcon, MenuIcon, SendIcon } from "@/components/Icons";
 import { MessageGroup, groupMessages } from "@/components/MessageGroup";
 import { useStore } from "@/state/store";
 
@@ -14,14 +14,12 @@ export function ChatView({ channelId }: { channelId: string }) {
   const messages = useStore((state) => state.messages[channelId]);
   const memberCount = useStore((state) => Object.keys(state.members).length);
   const sendChat = useStore((state) => state.sendChat);
+  const setSidebarOpen = useStore((state) => state.setSidebarOpen);
 
   const [draft, setDraft] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
-  /**
-   * Rolagem automática só quando a pessoa já está no fim. Quem subiu pra ler algo
-   * antigo não deve ser arrastado pra baixo porque alguém escreveu.
-   */
+  /** Quem subiu pra ler algo antigo não deve ser arrastado pra baixo. */
   const pinned = useRef(true);
 
   const channel = channels.find((item) => item.id === channelId);
@@ -32,21 +30,16 @@ export function ChatView({ channelId }: { channelId: string }) {
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [messages]);
 
-  // Trocar de canal sempre começa no fim, como abrir a conversa pela primeira vez.
   useEffect(() => {
     pinned.current = true;
     const element = scroller.current;
     if (element) element.scrollTop = element.scrollHeight;
   }, [channelId]);
 
-  /**
-   * O campo cresce com o texto: `rows` é fixo e não acompanha Shift+Enter, então a
-   * altura vem do conteúdo. Zerar antes de medir é obrigatório — `scrollHeight`
-   * nunca diminui sozinho, e sem isso o campo só cresceria.
-   */
   useEffect(() => {
     const element = composer.current;
     if (!element) return;
+    // Zerar antes de medir: `scrollHeight` nunca diminui sozinho.
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, COMPOSER_MAX_PX)}px`;
   }, [draft]);
@@ -54,7 +47,8 @@ export function ChatView({ channelId }: { channelId: string }) {
   function trackScroll() {
     const element = scroller.current;
     if (!element) return;
-    pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < PINNED_SLACK_PX;
+    pinned.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight < PINNED_SLACK_PX;
   }
 
   function submit() {
@@ -65,7 +59,6 @@ export function ChatView({ channelId }: { channelId: string }) {
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    // Enter envia, Shift+Enter quebra linha — a convenção do Discord.
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     submit();
@@ -74,7 +67,15 @@ export function ChatView({ channelId }: { channelId: string }) {
   return (
     <div className="chat">
       <header className="content-header">
-        <HashIcon size={24} />
+        <button
+          type="button"
+          className="header-menu"
+          onClick={() => setSidebarOpen(true)}
+          title="Canais"
+        >
+          <MenuIcon size={20} />
+        </button>
+        <HashIcon size={22} />
         <h1>{channel?.name ?? "canal"}</h1>
         <span className="content-header-meta">
           {memberCount} {memberCount === 1 ? "pessoa online" : "pessoas online"}
@@ -105,6 +106,15 @@ export function ChatView({ channelId }: { channelId: string }) {
           rows={1}
           maxLength={2000}
         />
+        <button
+          type="button"
+          className="composer-send"
+          onClick={submit}
+          disabled={!draft.trim()}
+          title="Enviar"
+        >
+          <SendIcon size={18} />
+        </button>
       </div>
     </div>
   );
