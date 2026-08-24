@@ -19,7 +19,7 @@ const path = require("node:path");
  */
 
 /** Endereço publicado. `DESKTOP_URL` ou `--url=` mandam mais, pra apontar pro localhost em teste. */
-const DEFAULT_URL = "https://draco-b3c0.onrender.com";
+const DEFAULT_URL = "https://dracocall.duckdns.org";
 
 const urlFromArgv = process.argv.find((arg) => arg.startsWith("--url="))?.slice(6);
 const APP_URL = (urlFromArgv || process.env.DESKTOP_URL || DEFAULT_URL).trim().replace(/\/+$/, "");
