@@ -1,11 +1,15 @@
 @echo off
-title Draco - local
+title Draco - app
 cd /d "%~dp0"
 
 echo.
 echo   ===============================================
-echo     Draco - so nesta maquina
+echo     Draco - app de desktop
 echo   ===============================================
+echo.
+echo   O app abre o site que ja esta no ar. A diferenca
+echo   dele: ao compartilhar a tela, a escolha aparece
+echo   com as miniaturas aqui dentro, sem sair do app.
 echo.
 
 where node >nul 2>nul
@@ -20,10 +24,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist node_modules (
-  echo   Primeira vez: instalando dependencias, demora um pouco...
+if not exist desktop\node_modules (
+  echo   Primeira vez: baixando o Electron ^(uns 100 MB^), demora.
   echo.
-  call npm install
+  call npm --prefix desktop install
   if errorlevel 1 (
     echo.
     echo   A instalacao falhou. Veja a mensagem acima.
@@ -33,13 +37,7 @@ if not exist node_modules (
 )
 
 echo.
-echo   Abra no navegador:  http://localhost:5173
-echo.
-echo   Para testar a call sozinho, abra o mesmo endereco numa
-echo   janela anonima (Ctrl+Shift+N) com outro apelido.
-echo.
-echo   Para parar: feche esta janela.
+echo   Abrindo o app. Para fechar, feche a janela dele.
 echo.
 
-call npm run dev
-pause
+call npm --prefix desktop start

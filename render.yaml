@@ -6,7 +6,7 @@
 # e a conexão do Socket.IO cai junto — a sinalização do WebRTC não sobrevive a isso.
 services:
   - type: web
-    name: discord-clone
+    name: draco
     runtime: node
     plan: free
     # Mais perto do Brasil entre as regiões do plano grátis. Importa pouco: só o

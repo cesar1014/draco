@@ -7,8 +7,7 @@ server/certs/
 selftest-report.json
 .DS_Store
 
-# Anotações e ferramentas locais, fora do repositório
-.claude/
+# Anotações locais, fora do repositório
 NOVO DISCORD.MD
 NOVO DISCORD.txt
 brand/logo-source.png

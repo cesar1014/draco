@@ -1,0 +1,33 @@
+# Fly.io — a única plataforma barata com região em São Paulo (`gru`).
+# Subir: fly launch --no-deploy --copy-config  →  fly deploy
+#
+# Trocar o nome se "draco-sp" já existir: nome de app é único no mundo inteiro.
+app = "draco-sp"
+primary_region = "gru"
+
+[build]
+
+# `PORT` tem que bater com `internal_port`. O servidor lê essa variável; se as
+# duas divergirem o deploy sobe e o health check nunca passa.
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Máquina parada não é cobrada. Com ninguém na call ela dorme, e o primeiro
+  # acesso religa em segundos — é isso que mantém a conta em centavos.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/config"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

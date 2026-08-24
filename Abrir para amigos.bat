@@ -1,10 +1,10 @@
 @echo off
-title Discord Clone - aberto pros amigos
+title Draco - aberto pros amigos
 cd /d "%~dp0"
 
 echo.
 echo   ===============================================
-echo     Discord Clone - abrindo pra internet
+echo     Draco - abrindo pra internet
 echo   ===============================================
 echo.
 

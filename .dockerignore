@@ -1,0 +1,12 @@
+node_modules
+dist
+desktop
+.git
+.env
+server/certs
+brand
+tools
+*.log
+*.bat
+*.md
+selftest-report.json

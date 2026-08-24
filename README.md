@@ -1,8 +1,7 @@
-# Cópia do Discord
+# Draco
 
-Voz, webcam e compartilhamento de tela funcionando de verdade, dentro de uma casca visualmente
-fiel ao Discord: barra de servidores, canais de texto e voz, chat, painel do usuário, grade de
-vídeo e barra de controles da call.
+Voz, webcam e compartilhamento de tela numa call em grupo. A casca tem barra de servidores, canais
+de texto e voz, chat, painel do usuário, grade de vídeo e barra de controles da call.
 
 WebRTC em malha (cada pessoa conecta direto com cada pessoa), pensado pra **6–8 pessoas por
 call**. Servidor Node só faz sinalização e chat — a mídia nunca passa por ele.
@@ -42,10 +41,10 @@ winget install --id OpenJS.NodeJS.LTS
 
 ---
 
-## Instalar como aplicativo no Windows
+## Atalho pelo navegador
 
-Não é um `.exe` — é um app web, e isso é a favor de você. Mas dá pra deixar com cara de programa
-instalado: janela própria, sem barra de endereço, ícone no menu Iniciar e na barra de tarefas.
+O caminho mais curto pra ter o app com cara de programa instalado: janela própria, sem barra de
+endereço, ícone no menu Iniciar e na barra de tarefas. Não baixa nada.
 
 Com a página aberta, no **Edge**: menu `⋯` → *Aplicativos* → *Instalar este site como um
 aplicativo*. No **Chrome**: menu `⋮` → *Transmitir, salvar e compartilhar* → *Instalar página como
@@ -58,19 +57,76 @@ servidor estiver desligado, o ícone abre numa tela de erro. É atalho, não ins
 
 ---
 
+## O app de desktop (o `.exe` de verdade)
+
+O app é uma janela dedicada em volta do **mesmo site** — não uma segunda versão do projeto. O que
+só ele tem é privilégio de sistema, e isso muda duas coisas na prática:
+
+- **Seletor de tela com miniaturas dentro do app.** No navegador quem escolhe a janela é o
+  diálogo do próprio Chrome, e não há como mudar isso — é barreira de segurança.
+- **Áudio do sistema junto com a tela** (só no Windows). O som do jogo ou do vídeo vai com a
+  imagem.
+
+### Rodar sem instalar
+
+Dois cliques em **`Abrir o app.bat`**. Na primeira vez ele baixa o Electron, uns 100 MB, e demora.
+Depois abre na hora. Pelo terminal é o mesmo:
+
+```bash
+npm run app:install
+```
+
+```bash
+npm run app
+```
+
+Pra apontar o app pra um servidor diferente do publicado — o seu localhost, por exemplo:
+
+```bash
+npm --prefix desktop start -- --url=http://localhost:5173
+```
+
+### Gerar o instalador
+
+```bash
+npm run app:build
+```
+
+Sai em **`desktop/out/draco-setup-1.0.0.exe`**. Esse arquivo é o que você manda pra quem vai
+usar: dois cliques, escolhe a pasta, cria atalho na área de trabalho. Quem instala **não precisa
+de Node** nem do projeto — só do endereço do servidor estar no ar.
+
+Três coisas que travam esse comando na primeira vez:
+
+- **`Cannot create symbolic link` no meio do build.** O electron-builder descompacta as
+  ferramentas de assinatura e o Windows não deixa criar link simbólico sem permissão. Ligue o
+  **Modo de Desenvolvedor** (Configurações → Privacidade e segurança → Para desenvolvedores) ou
+  abra o terminal como administrador, e rode de novo.
+- **O endereço vai gravado dentro do `.exe`.** Está em `desktop/main.js`, na constante
+  `DEFAULT_URL`. Trocou de servidor? Corrija essa linha **antes** de gerar o instalador, senão o
+  app instalado continua abrindo o endereço velho.
+- **O Windows vai reclamar na instalação.** O instalador não é assinado — assinatura de código
+  custa algumas centenas de reais por ano. Aparece a tela azul do SmartScreen: *Mais informações*
+  → *Executar assim mesmo*. Avise quem for instalar, ou a pessoa vai achar que é vírus.
+
+---
+
 ## O que dá pra fazer
 
 | Ação | Onde |
 |---|---|
 | Entrar na call | clique num canal sob *Canais de voz* |
 | Mutar / desmutar | ícone de microfone no painel de baixo, ou na barra da call |
-| Ensurdecer | ícone de fone (também te muta, igual ao Discord) |
+| Ensurdecer | ícone de fone (também te muta) |
 | Ligar a webcam | ícone de câmera na barra da call |
 | Compartilhar a tela | ícone de monitor na barra da call, ou na tarja de voz |
 | Ver alguém em tela cheia | duplo clique no vídeo da pessoa |
+| Dar zoom no vídeo ou na tela | roda do mouse sobre o vídeo; arraste pra passear |
+| Espelhar a própria imagem | ícone de espelho no canto do tile, ou engrenagem → *Vídeo* |
+| Mudar resolução e FPS durante a transmissão | ícone de controles ao lado do monitor |
 | Sair da call | ícone vermelho de telefone |
 | Escolher microfone, saída de som e câmera | engrenagem no painel de baixo |
-| Ajustar o volume de cada pessoa | engrenagem → *Volume das pessoas* |
+| Ajustar o volume de cada pessoa | engrenagem → *Pessoas* |
 | Testar se a conexão atravessa | engrenagem → *Testar conexão* |
 
 Mutar desliga a faixa de áudio sem derrubar a conexão, então voltar a falar é instantâneo.
@@ -163,7 +219,7 @@ O `render.yaml` na raiz já descreve o serviço inteiro, então não há formul�
 **1. Ponha o projeto no GitHub.** É de lá que o Render lê o código. Uma vez só:
 
 ```bash
-git init -b main && git add -A && git commit -m "Cópia do Discord: voz, vídeo e tela"
+git init -b main && git add -A && git commit -m "Draco: voz, vídeo e tela"
 ```
 
 Crie um repositório vazio em https://github.com/new — pode ser **privado**, o Render lê
@@ -223,6 +279,136 @@ Duas coisas pra saber antes de escolher:
 
 Nada disso afeta a qualidade da call: a mídia vai direto de uma pessoa pra outra e nunca passa
 pelo Render.
+
+### Servidor em São Paulo
+
+O Render não tem região no Brasil — são cinco (Oregon, Ohio, Virgínia, Frankfurt, Singapura) e a
+região não muda depois de criar o serviço. Pra ficar em SP é trocar de plataforma.
+
+Antes de trocar, vale saber o que isso melhora e o que não melhora. A mídia é ponto a ponto e não
+encosta no servidor: sair da Virgínia pra SP deixa a página carregar mais rápido, a entrada na
+call responder na hora e o chat ficar instantâneo — **não melhora a voz**. Quem melhora a voz é o
+**TURN em São Paulo**: quando a conexão direta falha, hoje o seu áudio sobe até os EUA e volta.
+
+#### Opção 1 — Fly.io, região `gru`
+
+A única plataforma barata com datacenter em São Paulo. O `Dockerfile` e o `fly.toml` da raiz já
+estão prontos; o `fly.toml` traz `primary_region = "gru"`.
+
+```bash
+powershell -c "irm https://fly.io/install.ps1 | iex"
+```
+
+Feche e abra o terminal (o instalador põe o `fly` no PATH), crie a conta e suba:
+
+```bash
+fly auth signup
+```
+
+```bash
+fly launch --copy-config --no-deploy
+```
+
+Ele pergunta o nome do app — o do arquivo é `draco-sp`, troque se já estiver tomado — e confirma a
+região. **Não** deixe ele criar banco de dados nem Redis: não há nada pra guardar.
+
+```bash
+fly secrets set ROOM_PASSWORD=suasenha ORIGIN=https://SEU-APP.fly.dev
+```
+
+```bash
+fly deploy
+```
+
+O endereço final é `https://SEU-APP.fly.dev`. Preço: `shared-cpu-1x` de 256 MB em `gru` custa
+**US$ 3,14/mês** rodando o mês inteiro — acima dos R$ 10, então o `fly.toml` liga o
+`auto_stop_machines`: sem ninguém acessando, a máquina desliga, e máquina parada não é cobrada. Em
+uso de algumas horas por dia a conta fica em centavos. Religar leva uns segundos, muito menos que
+o meio minuto do plano grátis do Render. Banda de saída é US$ 0,04/GB e a mídia não passa por lá,
+então some na conta. Exige cartão cadastrado mesmo gastando pouco.
+
+#### Opção 2 — Oracle Cloud Always Free, grátis pra sempre
+
+Mais trabalho e mais poder: uma máquina Linux sua em São Paulo, de graça, sem prazo de validade —
+2 VMs de 1 GB e 10 TB/mês de saída. E como é máquina de verdade, **o TURN pode morar nela**, que é
+o ganho que a Opção 1 não dá.
+
+Três coisas que decidem se isso vai dar certo:
+
+- **Escolha `Brazil East (São Paulo)` como *home region* no cadastro.** Não muda depois, e recurso
+  Always Free só existe na home region.
+- **Abrir porta é em dois lugares.** Na *Security List* da rede, no painel, e no `iptables` de
+  dentro da máquina — a imagem da Oracle vem com tudo fechado. Esquecer o segundo é o motivo
+  clássico de "abri a porta e não responde".
+- **HTTPS precisa de domínio.** Câmera e microfone não funcionam em `http://` que não seja
+  localhost. Um subdomínio grátis do [DuckDNS](https://www.duckdns.org) resolve.
+
+Com a VM de pé (Ubuntu 22.04, usuário `ubuntu`), o caminho inteiro:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs git coturn caddy
+```
+
+```bash
+git clone https://github.com/SEU-USUARIO/SEU-REPO.git draco && cd draco && npm ci && npm run build
+```
+
+Crie o `.env` com `ROOM_PASSWORD`, `ORIGIN=https://seu-nome.duckdns.org`, `TURN_HOST` e
+`TURN_SECRET` (a seção TURN do `.env.example` explica os três modos), suba o app como serviço:
+
+```bash
+sudo tee /etc/systemd/system/draco.service >/dev/null <<'EOF'
+[Unit]
+After=network.target
+[Service]
+WorkingDirectory=/home/ubuntu/draco
+ExecStart=/usr/bin/node server/index.js
+Environment=PORT=3100
+Restart=always
+User=ubuntu
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now draco
+```
+
+O Caddy resolve o HTTPS sozinho, incluindo o WebSocket, com um arquivo de duas linhas:
+
+```bash
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+seu-nome.duckdns.org {
+  reverse_proxy localhost:3100
+}
+EOF
+sudo systemctl restart caddy
+```
+
+E o coturn na mesma máquina — é o que põe o relay em SP:
+
+```bash
+sudo tee -a /etc/turnserver.conf >/dev/null <<'EOF'
+listening-port=3478
+fingerprint
+use-auth-secret
+static-auth-secret=O-MESMO-DO-TURN_SECRET
+realm=seu-nome.duckdns.org
+no-multicast-peers
+EOF
+sudo systemctl enable --now coturn
+```
+
+Libere no `iptables` e na Security List: **443/tcp**, **3478/udp**, **3478/tcp**. Depois confirme
+na engrenagem → *Testar conexão*: tem que aparecer candidato **`relay`**.
+
+#### Depois de mudar de endereço
+
+Três lugares apontam pro servidor antigo e não se corrigem sozinhos:
+
+| Onde | O que fazer |
+|---|---|
+| `ORIGIN` no servidor novo | a URL nova, exata — é ela que destranca o WebSocket |
+| `desktop/main.js`, `DEFAULT_URL` | a URL nova, e gerar o instalador de novo |
+| atalho instalado pelo navegador | desinstalar e instalar do endereço novo |
 
 ---
 
