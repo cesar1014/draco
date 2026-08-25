@@ -1,4 +1,7 @@
-# Draco
+# Draco — guia de operação
+
+Como rodar na sua máquina, gerar o `.exe`, chamar amigos por um link e publicar com endereço fixo.
+Para a visão geral do projeto, volte ao [README](../README.md).
 
 Voz, webcam e compartilhamento de tela numa call em grupo. A casca tem barra de servidores, canais
 de texto e voz, chat, painel do usuário, grade de vídeo e barra de controles da call.
