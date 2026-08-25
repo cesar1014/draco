@@ -416,17 +416,6 @@ O guia detalhado está em [`docs/GUIA.md`](docs/GUIA.md).
 
 ---
 
-## Limitações atuais
-
-- A arquitetura de mídia é uma **malha P2P**. Em grupos maiores, o upload de cada participante cresce conforme novas pessoas entram.
-- O histórico do chat fica em memória e é apagado quando o servidor reinicia.
-- Compartilhamento de tela pelo navegador móvel depende das APIs disponibilizadas pelo sistema/navegador e não possui a mesma capacidade do desktop.
-- O instalador Windows ainda não possui atualização automática nativa.
-- Um instalador sem assinatura de código pode acionar avisos do Windows SmartScreen.
-
-Para grupos maiores no futuro, a evolução natural da arquitetura de mídia é migrar de malha P2P para um **SFU**.
-
----
 
 ## Roadmap
 
