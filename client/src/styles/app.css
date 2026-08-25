@@ -2755,12 +2755,6 @@ button.guild:active {
   }
 }
 
-/* Quem fala fica marcado na lista lateral por um aro fino e parado. O brilho
-   borrado que pulsava dizia a mesma coisa piscando sem parar. */
-.voice-member[data-speaking="true"] .avatar {
-  box-shadow: 0 0 0 2px var(--good);
-}
-
 .tile-action {
   transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
     transform var(--t) var(--spring);
