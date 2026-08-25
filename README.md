@@ -1,171 +1,458 @@
 <div align="center">
 
-<img src="client/public/brand/logo-256.png" alt="Draco" width="132" />
+<img src="client/public/brand/logo-256.png" alt="Draco" width="150" />
 
 # Draco
 
-**Voz, webcam e tela compartilhada em grupo — no navegador, no celular e num `.exe` de Windows.**
+### Call em grupo com voz, câmera e compartilhamento de tela — simples, rápido e direto.
 
-*Nasceu quando a câmera e o compartilhamento de tela do Discord pararam no Brasil.*
+**Web · Mobile/PWA · Windows Desktop**
 
-A mídia vai direto de uma pessoa pra outra. O servidor só apresenta quem é quem.
+[![Status](https://img.shields.io/badge/status-em%20desenvolvimento-8b5cf6?style=for-the-badge)](#)
+[![Desktop](https://img.shields.io/badge/desktop-v1.0.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=111827)](#)
+[![Electron](https://img.shields.io/badge/Electron-Windows-47848F?style=for-the-badge&logo=electron&logoColor=white)](#)
+[![WebRTC](https://img.shields.io/badge/WebRTC-P2P-22C55E?style=for-the-badge)](#)
 
-![WebRTC](https://img.shields.io/badge/WebRTC-malha%20P2P-5b6cff?style=flat-square)
-![React](https://img.shields.io/badge/React%2019-TypeScript-4fd8ff?style=flat-square)
-![Node](https://img.shields.io/badge/Node%20+%20Socket.IO-sinaliza%C3%A7%C3%A3o-3ddc97?style=flat-square)
-![Electron](https://img.shields.io/badge/Electron-app%20de%20Windows-9b8cff?style=flat-square)
-![Hospedagem](https://img.shields.io/badge/servidor-S%C3%A3o%20Paulo-ffb457?style=flat-square)
+**Servidor oficial:** [dracocall.duckdns.org](https://dracocall.duckdns.org)
 
 </div>
 
 ---
 
-## De onde veio
+## Sobre o Draco
 
-Passo o dia no Discord com os amigos. Aí, aqui no Brasil, a câmera e o compartilhamento de tela
-simplesmente saíram do ar — de um dia pro outro, o que a gente mais usava virou botão desligado.
-Ficar esperando voltar era uma opção. A outra era descobrir o quanto daquilo eu conseguia escrever.
+O **Draco** é um app de comunicação em tempo real criado com foco no que mais importa durante uma call: **áudio estável, webcam, compartilhamento de tela, controle individual de cada pessoa e uma interface rápida**.
 
-Sobrou a pergunta boa: o que exatamente é difícil ali? Não a lista de emoji nem o cargo de
-moderador — a call. Entrar num canal e ouvir seis pessoas ao mesmo tempo, com webcam e tela no
-meio, sem eco e sem travar.
+A mesma experiência funciona pelo navegador, no celular e no aplicativo para Windows. No desktop, o Electron adiciona recursos que o navegador sozinho não consegue oferecer da mesma forma, como um seletor próprio de telas e janelas com miniaturas e captura de áudio do sistema no Windows.
 
-Draco é a resposta que eu escrevi. Canais de voz e de texto, chat, grade de vídeo, controles de
-call — e por baixo o WebRTC na mão, sem SDK de terceiro. É o que eu e meus amigos usamos de
-verdade, num servidor de 1 GB em São Paulo que custa zero por mês. A tela voltou, a câmera voltou,
-e agora elas são minhas.
+O projeto usa **WebRTC** para transportar áudio, câmera e tela diretamente entre os participantes sempre que possível. O servidor cuida da sinalização, presença, canais, chat e configuração de conexão.
 
-O nome e o dragão vêm daí: era pra ter cara de coisa própria, não de cópia.
+> O objetivo do Draco não é ser uma cópia de outro app. Ele nasceu para ser uma solução própria, leve e focada em calls.
 
 ---
 
-## Como conversa
+## Principais recursos
 
-Cada pessoa fala direto com cada pessoa. O servidor participa da apresentação e sai de cena — ele
-nunca vê áudio nem vídeo, e por isso uma máquina mínima aguenta a sala.
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🎙️ Áudio
+
+- Calls de voz em grupo
+- Mute e deafen
+- Push-to-talk configurável
+- Escolha de microfone e saída de áudio
+- Cancelamento de eco
+- Redução de ruído
+- Controle automático de ganho
+- Indicador de atividade do microfone
+- Volume individual de cada pessoa de **0% a 200%**
+- Silenciar uma pessoa apenas para você
+
+</td>
+<td width="50%" valign="top">
+
+### 📹 Câmera
+
+- Escolha de câmera
+- **360p, 480p, 720p e 1080p**
+- **15, 24, 30 ou 60 FPS**
+- Espelhamento da própria câmera
+- Troca entre câmera frontal e traseira no celular
+- Ajuste de qualidade durante a call
+- Zoom e movimentação da visualização
+- Tela cheia por participante
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🖥️ Compartilhamento de tela
+
+- Compartilhamento de tela ou janela
+- **720p, 1080p ou resolução nativa**
+- **15, 24, 30 ou 60 FPS**
+- Controle de bitrate por qualidade
+- Áudio do sistema no app para Windows
+- Seletor próprio com miniaturas no Electron
+- Ajustes sem precisar sair da transmissão
+
+</td>
+<td width="50%" valign="top">
+
+### 💬 Experiência
+
+- Canais de voz e texto
+- Chat em tempo real
+- Interface responsiva para desktop e celular
+- PWA para adicionar à tela inicial
+- Sons de entrada/saída configuráveis
+- Modo leve para PCs mais antigos
+- Diagnóstico de conexão WebRTC
+- Estatísticas de latência, perda de pacotes e tráfego
+
+</td>
+</tr>
+</table>
+
+---
+
+## Atualizações do aplicativo
+
+O Draco foi estruturado para que **a maioria das atualizações não obrigue o usuário a baixar outro instalador**.
+
+O aplicativo de Windows funciona como uma camada nativa do Electron em volta da versão web publicada em:
+
+```text
+https://dracocall.duckdns.org
+```
+
+Isso significa que alterações no React, layout, chamadas, chat e boa parte das funcionalidades chegam ao usuário quando ele **abre ou reinicia o Draco**.
+
+### Quando NÃO precisa baixar outro `.exe`
+
+Normalmente não é necessário reinstalar quando a atualização altera apenas:
+
+- interface e design;
+- componentes React;
+- canais e chat;
+- lógica de WebRTC executada pela página;
+- configurações de câmera e tela implementadas no front-end;
+- correções no servidor;
+- melhorias de desempenho do site;
+- recursos que não dependem de uma nova API nativa do Electron.
+
+Basta publicar a nova versão no servidor. Na próxima abertura, o app carrega o código atualizado.
+
+### Quando precisa de uma nova versão do app
+
+É necessário gerar e distribuir um novo instalador quando houver alteração em arquivos ou recursos nativos do desktop, por exemplo:
+
+```text
+desktop/main.js
+desktop/preload.js
+desktop/icon.png
+desktop/package.json
+```
+
+Alguns exemplos:
+
+- adicionar novas APIs do Electron;
+- mudar permissões nativas;
+- alterar o seletor de telas/janelas;
+- modificar a integração com o Windows;
+- trocar o endereço padrão do servidor dentro do app;
+- atualizar a versão do Electron por necessidade do aplicativo.
+
+> **Importante:** atualmente o projeto não possui um auto-updater nativo para substituir o `.exe`/instalação do Electron. Se uma atualização exigir mudança na parte desktop, será necessário distribuir uma nova versão do instalador.
+
+---
+
+## Como funciona
 
 ```mermaid
 flowchart TB
-    S(["Servidor · Node + Socket.IO<br/>quem entrou, quem saiu, chat"])
-    A["Você"]
-    B["Amigo"]
-    C["Amiga"]
-    A -. "oferta e resposta" .-> S
-    B -. "oferta e resposta" .-> S
-    C -. "oferta e resposta" .-> S
-    A === B
-    A === C
-    B === C
+    SERVER["Draco Server<br/>Node · Express · Socket.IO"]
+    A["Usuário A"]
+    B["Usuário B"]
+    C["Usuário C"]
+
+    A -. "sinalização / presença / chat" .-> SERVER
+    B -. "sinalização / presença / chat" .-> SERVER
+    C -. "sinalização / presença / chat" .-> SERVER
+
+    A <== "WebRTC" ==> B
+    A <== "WebRTC" ==> C
+    B <== "WebRTC" ==> C
 ```
 
-Linha grossa é voz, webcam e tela: ponto a ponto, criptografadas pelo próprio WebRTC. Linha
-pontilhada é só combinação — e é a única coisa que passa pelo servidor.
+### Mídia
+
+Microfone, câmera e compartilhamento de tela usam WebRTC. Quando a rede permite, a mídia segue diretamente entre os participantes.
+
+### Sinalização
+
+O servidor usa Socket.IO para coordenar entrada e saída de usuários, canais, ofertas/respostas SDP, candidatos ICE e mensagens do chat.
+
+### TURN
+
+Quando uma conexão direta não é possível por causa da rede/NAT/firewall, o Draco pode utilizar um servidor TURN como relay.
 
 ---
 
-## O que dá pra fazer
+## Tecnologias
 
-|  | |
+| Camada | Tecnologia |
 |---|---|
-| **Voz em grupo** | canal de voz com detecção de fala, push-to-talk, mudo e ensurdecer |
-| **Webcam** | 360p a 1080p, 15 a 60 fps, escolhidos por você — e trocar no meio da call não pisca |
-| **Tela** | com o som do sistema junto, resolução e fps ajustáveis enquanto transmite |
-| **Volume por pessoa** | de 0 a **200%**, pra quem tem microfone fraco, com limitador contra estouro |
-| **Silenciar só pra você** | vale por apelido e continua valendo quando a pessoa voltar |
-| **Zoom e destaque** | roda do mouse sobre o vídeo, arrasta pra passear, duplo clique pra tela cheia |
-| **Celular** | layout próprio, gaveta de canais e troca entre câmera frontal e traseira |
-| **Chat** | mensagens por canal, agrupadas por autor |
-| **Diagnóstico** | kb/s, latência e perda por pessoa, e um teste de conexão que mostra os candidatos ICE |
+| Interface | React 19 + TypeScript |
+| Build | Vite |
+| Estado | Zustand |
+| Comunicação em tempo real | Socket.IO |
+| Voz, câmera e tela | WebRTC |
+| Processamento de áudio | Web Audio API + Media Capture APIs |
+| Servidor | Node.js + Express |
+| Desktop | Electron |
+| Deploy | Docker / VPS / Oracle Cloud / Fly.io / Render |
+| HTTPS | Caddy ou plataforma de hospedagem |
+| Relay | coturn / serviço TURN externo |
 
 ---
 
-## Roda onde
+## Estrutura do projeto
 
-| | Como |
-|---|---|
-| **Navegador, no PC** | abre o link e entra. Nada pra instalar |
-| **Navegador, no celular** | mesmo link; *Adicionar à tela inicial* deixa com cara de app |
-| **App de Windows** | instalador `.exe`, dois cliques. Traz seletor de tela com miniaturas e o áudio do sistema junto |
-| **Servidor** | qualquer Linux com Node 20+. O meu é uma VM Always Free em São Paulo, com HTTPS e TURN próprios |
-
-O app de desktop é uma janela dedicada em volta do **mesmo site** — não uma segunda versão do
-projeto. Corrigi algo no servidor? Quem usa o `.exe` recebe abrindo de novo, sem reinstalar nada.
-
----
-
-## Por dentro
-
-As decisões que deram mais trabalho, e que são o motivo de a call não engasgar:
-
-- **Nada de renegociar no meio da call.** Cada conexão nasce com quatro canais fixos — microfone,
-  câmera, tela e áudio da tela. Ligar a webcam só troca o conteúdo do canal com `replaceTrack`.
-  Sem oferta nova, sem SDP novo, sem meio segundo de silêncio.
-- **Negociação perfeita.** Duas pessoas entrando no mesmo instante ofertavam ao mesmo tempo e a
-  conexão morria. O `perfect negotiation` do WebRTC resolve com papéis de polido e não-polido.
-- **Teto de banda por canal.** Malha significa que o seu vídeo sobe uma vez **por pessoa**. Cada
-  combinação de resolução e fps tem limite próprio, e o painel mostra a multiplicação antes de
-  você começar a transmitir.
-- **Tela alheia só decodifica se você pedir.** Chegou tela de 1440p de três pessoas? Você paga
-  decodificação de zero — cada uma abre no clique. Foi o que tirou o ventilador do notebook do ar.
-- **Volume acima de 100% sem estourar.** Até 100% quem manda é o `<audio>`. Acima disso o som passa
-  por um ganho da Web Audio com limitador e volta pro mesmo elemento, que segue escolhendo a saída
-  de som e o mudo.
-- **Chave de TURN nunca chega ao navegador.** O servidor busca ou assina a credencial e entrega só
-  o que expira. Três modos: credencial fixa, credencial em runtime e coturn com HMAC.
-- **Detecção de fala em `setInterval`.** Com `requestAnimationFrame` você continuava "falando"
-  pros outros ao trocar de janela, porque o navegador congela o rAF em aba de fundo.
-- **Avisos sonoros gerados na hora**, com dois osciladores e um envelope. Nenhum mp3 no projeto.
-- **Modo leve** e respeito a `prefers-reduced-motion`: as animações do tema desligam sem quebrar
-  o layout.
-
-### Provar que funciona sem chamar ninguém
-
-Duas conexões WebRTC de verdade na mesma aba, com oscilador no lugar do microfone e canvas
-colorido no lugar da câmera — dá pra **ler o pixel** do vídeo recebido e confirmar que cada trilha
-caiu no canal certo, que mutar derruba o nível do outro lado e que ligar a tela não renegocia.
-
-```bash
-npm run dev
+```text
+Draco/
+├── client/                 # aplicação React
+│   ├── public/
+│   │   ├── brand/          # logos
+│   │   └── icons/          # ícones/PWA
+│   └── src/
+│       ├── components/     # interface
+│       ├── rtc/            # engine WebRTC e mídia
+│       ├── state/          # estado global
+│       └── dev/            # autotestes
+│
+├── desktop/                # aplicativo Electron para Windows
+│   ├── main.js
+│   ├── preload.js
+│   ├── status.html
+│   └── package.json
+│
+├── server/                 # Express + Socket.IO
+│   ├── index.js
+│   ├── signaling.js
+│   ├── ice.js
+│   ├── security.js
+│   └── state.js
+│
+├── tools/                  # deploy, testes e geração de assets
+├── docs/GUIA.md            # guia completo de operação
+├── Dockerfile
+├── fly.toml
+├── render.yaml
+└── package.json
 ```
 
-E abrir `http://localhost:5173/?selftest=1`. O protocolo do servidor tem teste próprio, incluindo
-as regras de segurança: `npm run test:server`.
-
 ---
 
-## Rodar em dois minutos
+## Rodando localmente
 
-Precisa de [Node.js](https://nodejs.org) 20 ou mais novo.
+### Requisitos
+
+- **Node.js 20.17+**
+- npm
+
+### Instalação
 
 ```bash
 npm install
 ```
 
+### Desenvolvimento
+
 ```bash
 npm run dev
 ```
 
-Abra `http://localhost:5173`, escolha um apelido e entre. Para experimentar a call sozinho, abra o
-mesmo endereço numa segunda janela anônima com outro apelido e ponha as duas no canal **Geral** —
-com fone nos dois lados, ou um microfone capta o som do outro.
+Depois abra:
 
-O resto — gerar o `.exe`, chamar amigos por um link temporário, publicar com endereço fixo,
-configurar TURN, testar no celular pela rede local — está no
-**[guia de operação](docs/GUIA.md)**.
+```text
+http://localhost:5173
+```
+
+O Vite cuida do front-end e o servidor de desenvolvimento executa a sinalização em paralelo.
 
 ---
 
-## Feito com
+## Aplicativo para Windows
 
-`React 19` · `TypeScript` · `Vite` · `zustand` · `WebRTC` · `Web Audio` · `Node` · `Express` ·
-`Socket.IO` · `Electron` · `Caddy` · `coturn`
+O desktop usa Electron e continua carregando a mesma aplicação publicada na web.
 
-Sem banco de dados: canais e mensagens vivem na memória do processo. Identidade é um apelido
-guardado no navegador — não há conta nem senha por pessoa, só a senha da sala.
+### Instalar dependências do desktop
 
-## Limites que eu conheço
+```bash
+npm run app:install
+```
 
-Malha P2P é ótima até **6–8 pessoas**; acima disso o upload de cada um cresce demais e o caminho
-seria um SFU, que é outro projeto. Reiniciar o servidor apaga o chat. E compartilhar tela **não
-existe** em navegador de celular — não é falta minha: nem Chrome no Android nem Safari no iPhone
-permitem que uma página capture a tela. No `.exe` e no PC, funciona.
+### Abrir o app em desenvolvimento
+
+```bash
+npm run app
+```
+
+### Abrir apontando para outro servidor
+
+```bash
+npm --prefix desktop start -- --url=http://localhost:5173
+```
+
+### Gerar o instalador
+
+```bash
+npm run app:build
+```
+
+O instalador é gerado em:
+
+```text
+desktop/out/draco-setup-1.0.0.exe
+```
+
+A versão vem de `desktop/package.json`.
+
+---
+
+## Scripts úteis
+
+| Comando | Função |
+|---|---|
+| `npm run dev` | inicia cliente e servidor em desenvolvimento |
+| `npm run build` | gera o front-end de produção |
+| `npm start` | inicia o servidor de produção |
+| `npm run lan` | build + servidor HTTPS para testes na rede local |
+| `npm run share` | servidor + túnel temporário Cloudflare |
+| `npm run app` | abre o Electron |
+| `npm run app:install` | instala dependências do desktop |
+| `npm run app:build` | gera o instalador Windows |
+| `npm run test:server` | testa o protocolo de sinalização |
+| `npm run typecheck` | valida os tipos TypeScript |
+| `npm run icons` | recria assets de ícone |
+
+---
+
+## Configuração
+
+Copie o arquivo de exemplo:
+
+```text
+.env.example → .env
+```
+
+As principais opções são:
+
+```env
+PORT=3100
+ORIGIN=
+ROOM_PASSWORD=
+
+TURN_URL=
+TURN_USERNAME=
+TURN_PASSWORD=
+
+TURN_CREDENTIALS_URL=
+TURN_HOST=
+TURN_SECRET=
+TURN_ONLY=0
+```
+
+Nunca publique credenciais reais no repositório.
+
+---
+
+## Segurança
+
+O desktop aplica algumas proteções importantes:
+
+- `contextIsolation: true`;
+- `nodeIntegration: false`;
+- sandbox do renderer habilitado;
+- permissões liberadas apenas para a origem oficial do Draco;
+- links externos são enviados ao navegador do sistema;
+- o preload expõe somente as funções necessárias para seleção de tela;
+- credenciais TURN podem ser geradas/obtidas pelo servidor sem expor chaves permanentes no cliente.
+
+O servidor também limita tamanho e frequência de eventos para reduzir abuso básico na sinalização e no chat.
+
+---
+
+## Testes
+
+### Sinalização
+
+```bash
+npm run test:server
+```
+
+### TypeScript
+
+```bash
+npm run typecheck
+```
+
+### Autoteste WebRTC
+
+Com o ambiente de desenvolvimento rodando:
+
+```text
+http://localhost:5173/?selftest=1
+```
+
+O autoteste cria conexões WebRTC locais para verificar fluxo de áudio/vídeo e comportamento das trilhas sem depender de outra pessoa na call.
+
+---
+
+## Deploy
+
+O repositório já possui arquivos para diferentes cenários:
+
+- `Dockerfile`
+- `render.yaml`
+- `fly.toml`
+- `tools/deploy-oracle.sh`
+
+Para produção, o ideal é usar:
+
+- domínio fixo;
+- HTTPS válido;
+- servidor sempre disponível;
+- TURN configurado;
+- `ROOM_PASSWORD` quando a instância não for pública;
+- `ORIGIN` restringindo a origem aceita pelo Socket.IO.
+
+O guia detalhado está em [`docs/GUIA.md`](docs/GUIA.md).
+
+---
+
+## Limitações atuais
+
+- A arquitetura de mídia é uma **malha P2P**. Em grupos maiores, o upload de cada participante cresce conforme novas pessoas entram.
+- O histórico do chat fica em memória e é apagado quando o servidor reinicia.
+- Compartilhamento de tela pelo navegador móvel depende das APIs disponibilizadas pelo sistema/navegador e não possui a mesma capacidade do desktop.
+- O instalador Windows ainda não possui atualização automática nativa.
+- Um instalador sem assinatura de código pode acionar avisos do Windows SmartScreen.
+
+Para grupos maiores no futuro, a evolução natural da arquitetura de mídia é migrar de malha P2P para um **SFU**.
+
+---
+
+## Roadmap
+
+O Draco está em desenvolvimento ativo. Alguns caminhos naturais para as próximas versões:
+
+- [ ] auto-update do aplicativo Windows;
+- [ ] sistema de versões e releases;
+- [ ] persistência opcional do chat;
+- [ ] melhorias de reconexão e recuperação de rede;
+- [ ] otimizações para chamadas com mais participantes;
+- [ ] evolução da experiência mobile;
+- [ ] mais controles de áudio e vídeo;
+- [ ] futura arquitetura SFU para salas maiores.
+
+---
+
+## Autor
+
+Desenvolvido por **Cesar**.
+
+O Draco nasceu como um projeto pessoal para transformar uma necessidade real de call em um aplicativo próprio — e continua evoluindo a cada versão.
+
+<div align="center">
+
+### 🐉 Draco
+
+**Fale. Compartilhe. Continue a call.**
+
+</div>
