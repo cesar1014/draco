@@ -6,6 +6,8 @@
 
 **Voz, webcam e tela compartilhada em grupo — no navegador, no celular e num `.exe` de Windows.**
 
+*Nasceu quando a câmera e o compartilhamento de tela do Discord pararam no Brasil.*
+
 A mídia vai direto de uma pessoa pra outra. O servidor só apresenta quem é quem.
 
 ![WebRTC](https://img.shields.io/badge/WebRTC-malha%20P2P-5b6cff?style=flat-square)
@@ -20,13 +22,18 @@ A mídia vai direto de uma pessoa pra outra. O servidor só apresenta quem é qu
 
 ## De onde veio
 
-Passo o dia no Discord com os amigos, e sempre ficou aquela pergunta: o que exatamente é difícil
-ali? Não a lista de emoji nem o cargo de moderador — a call. Entrar num canal e ouvir seis pessoas
-ao mesmo tempo, com webcam e tela no meio, sem eco e sem travar.
+Passo o dia no Discord com os amigos. Aí, aqui no Brasil, a câmera e o compartilhamento de tela
+simplesmente saíram do ar — de um dia pro outro, o que a gente mais usava virou botão desligado.
+Ficar esperando voltar era uma opção. A outra era descobrir o quanto daquilo eu conseguia escrever.
+
+Sobrou a pergunta boa: o que exatamente é difícil ali? Não a lista de emoji nem o cargo de
+moderador — a call. Entrar num canal e ouvir seis pessoas ao mesmo tempo, com webcam e tela no
+meio, sem eco e sem travar.
 
 Draco é a resposta que eu escrevi. Canais de voz e de texto, chat, grade de vídeo, controles de
 call — e por baixo o WebRTC na mão, sem SDK de terceiro. É o que eu e meus amigos usamos de
-verdade, num servidor de 1 GB em São Paulo que custa zero por mês.
+verdade, num servidor de 1 GB em São Paulo que custa zero por mês. A tela voltou, a câmera voltou,
+e agora elas são minhas.
 
 O nome e o dragão vêm daí: era pra ter cara de coisa própria, não de cópia.
 
