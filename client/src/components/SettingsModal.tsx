@@ -9,7 +9,7 @@ import {
   type FrameRate,
 } from "@/rtc/MediaManager";
 import { runIceDiagnostics } from "@/rtc/iceConfig";
-import { membersInVoice, micLevel, prefsFor, useStore } from "@/state/store";
+import { MAX_PERSON_VOLUME, membersInVoice, micLevel, prefsFor, useStore } from "@/state/store";
 
 /** Rótulo de dispositivo vem vazio até a primeira permissão; daí o reserva. */
 function deviceLabel(device: MediaDeviceInfo, index: number, fallback: string): string {
@@ -353,17 +353,25 @@ export function SettingsModal() {
               ) : (
                 peers.map((member) => {
                   const prefs = prefsFor(people, member.username);
+                  const percent = Math.round(prefs.volume * 100);
                   return (
-                    <div key={member.id} className="volume-row" data-muted={prefs.muted}>
+                    <div
+                      key={member.id}
+                      className="volume-row"
+                      data-muted={prefs.muted}
+                      data-boost={percent > 100}
+                    >
                       <span>
                         {member.username}
-                        <b>{prefs.muted ? "mudo" : `${Math.round(prefs.volume * 100)}%`}</b>
+                        <b>{prefs.muted ? "mudo" : `${percent}%`}</b>
                       </span>
                       <input
                         type="range"
+                        className="range-boost"
                         min={0}
-                        max={100}
-                        value={Math.round(prefs.volume * 100)}
+                        max={MAX_PERSON_VOLUME * 100}
+                        step={5}
+                        value={percent}
                         disabled={prefs.muted}
                         onChange={(event) =>
                           setPersonVolume(member.username, Number(event.target.value) / 100)
@@ -392,7 +400,8 @@ export function SettingsModal() {
                 })
               )}
               <p className="hint">
-                Vale só para você, e continua valendo quando a pessoa entrar de novo.
+                Vale só para você, e continua valendo quando a pessoa entrar de novo. Acima de 100%
+                o som é reforçado — resolve microfone fraco, e o limitador evita estouro.
               </p>
             </section>
           )}

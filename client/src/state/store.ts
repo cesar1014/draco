@@ -10,7 +10,9 @@ import {
   normalizeCameraOptions,
   normalizeScreenOptions,
   screenBitrate,
+  screenShareSupported,
   type AudioSettings,
+  type CameraFacing,
   type CameraOptions,
   type DeviceList,
   type ScreenShareOptions,
@@ -63,6 +65,8 @@ export interface PeerMedia {
 
 export interface Settings extends AudioSettings {
   cameraDeviceId: string | null;
+  /** Lente pedida quando não há dispositivo fixo: vale no celular. */
+  cameraFacing: CameraFacing;
   outputDeviceId: string | null;
   camera: CameraOptions;
   /** Espelhar a própria câmera, como um espelho de verdade. */
@@ -78,6 +82,7 @@ export interface Settings extends AudioSettings {
 export const DEFAULT_SETTINGS: Settings = {
   ...DEFAULT_AUDIO_SETTINGS,
   cameraDeviceId: null,
+  cameraFacing: "user",
   outputDeviceId: null,
   camera: DEFAULT_CAMERA_OPTIONS,
   mirrorSelf: true,
@@ -93,6 +98,9 @@ export interface PersonPrefs {
   volume: number;
   muted: boolean;
 }
+
+/** Dobro do normal. Serve pra quem tem microfone fraco; acima disso só sobra chiado. */
+export const MAX_PERSON_VOLUME = 2;
 
 const SETTINGS_KEY = "draco:settings";
 const SCREEN_KEY = "draco:screen";
@@ -123,6 +131,7 @@ function loadSettings(): Settings {
   return {
     micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : null,
     cameraDeviceId: typeof raw.cameraDeviceId === "string" ? raw.cameraDeviceId : null,
+    cameraFacing: raw.cameraFacing === "environment" ? "environment" : "user",
     outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : null,
     echoCancellation: pick("echoCancellation"),
     noiseSuppression: pick("noiseSuppression"),
@@ -147,7 +156,10 @@ function loadPeople(): Record<string, PersonPrefs> {
   const out: Record<string, PersonPrefs> = {};
   for (const [key, value] of Object.entries(raw as Record<string, Partial<PersonPrefs>>)) {
     out[key] = {
-      volume: typeof value?.volume === "number" ? Math.min(1, Math.max(0, value.volume)) : 1,
+      volume:
+        typeof value?.volume === "number"
+          ? Math.min(MAX_PERSON_VOLUME, Math.max(0, value.volume))
+          : 1,
       muted: Boolean(value?.muted),
     };
   }
@@ -183,15 +195,17 @@ interface Store {
   deafened: boolean;
   camOn: boolean;
   screenOn: boolean;
+  /** Lente que a câmera própria está usando de fato, ou `null` fora do celular. */
+  liveFacing: CameraFacing | null;
   /** Tecla de push-to-talk pressionada agora. */
   talking: boolean;
   remote: Record<string, PeerMedia>;
   peerStates: Record<string, RTCPeerConnectionState>;
   stats: Record<string, PeerStats>;
   /**
-   * Volume e mute por pessoa, indexado pelo apelido. O teto de volume é 1 porque
-   * quem aplica é o `volume` do `<audio>`; passar disso exigiria rotear por Web
-   * Audio e aí se perderia o `setSinkId`.
+   * Volume e mute por pessoa, indexado pelo apelido. Até 100% quem aplica é o
+   * `volume` do `<audio>`; acima disso o som passa por um ganho da Web Audio e
+   * volta pro mesmo elemento, que segue mandando na saída e no mudo.
    */
   people: Record<string, PersonPrefs>;
   /**
@@ -230,6 +244,7 @@ interface Store {
   toggleDeafen: () => void;
   setTalking: (talking: boolean) => void;
   toggleCamera: () => Promise<void>;
+  switchCamera: () => Promise<void>;
   toggleScreen: () => Promise<void>;
   startScreen: (options: ScreenShareOptions, source?: DesktopSource | null) => Promise<void>;
   setScreenOptions: (options: ScreenShareOptions) => Promise<void>;
@@ -454,6 +469,7 @@ export const useStore = create<Store>()((set, get) => {
     camOn: false,
     screenOn: false,
     talking: false,
+    liveFacing: null,
     remote: {},
     peerStates: {},
     stats: {},
@@ -671,24 +687,52 @@ export const useStore = create<Store>()((set, get) => {
       if (get().camOn) {
         media.closeCamera();
         await engine?.setLocalTrack("camera", null);
-        set({ camOn: false });
+        set({ camOn: false, liveFacing: null });
         publishVoiceState({ camOn: false });
         return;
       }
       try {
-        const options = get().settings.camera;
-        const track = await media.openCamera(get().settings.cameraDeviceId, options);
+        const { camera: options, cameraDeviceId, cameraFacing } = get().settings;
+        const track = await media.openCamera(cameraDeviceId, options, cameraFacing);
         // Webcam desconectada no meio da call: some o tile em vez de congelar.
         track.onended = () => {
           if (get().camOn) void get().toggleCamera();
         };
         await engine?.setLocalTrack("camera", track);
         await engine?.setMaxBitrate("camera", cameraBitrate(options));
-        set({ camOn: true });
+        set({ camOn: true, liveFacing: media.cameraFacing });
         publishVoiceState({ camOn: true });
+        // Os rótulos e ids das câmeras só existem depois da permissão concedida.
+        void get().refreshDevices();
       } catch (error) {
         set({ mediaError: describeMediaError(error) });
       }
+    },
+
+    /**
+     * Frontal ↔ traseira. O celular diz qual lente está na trilha, e aí basta
+     * pedir a outra; no PC ninguém informa isso, então a troca é entre os
+     * dispositivos que apareceram na lista.
+     */
+    async switchCamera() {
+      if (!get().camOn) return;
+      const facing = media.cameraFacing;
+      if (facing) {
+        await get().applySettings({
+          cameraFacing: facing === "user" ? "environment" : "user",
+          cameraDeviceId: null,
+        });
+        return;
+      }
+      const devices = await media.listDevices();
+      set({ devices });
+      const ids = devices.cameras.map((camera) => camera.deviceId).filter(Boolean);
+      if (ids.length < 2) return;
+      // O id que a trilha informa nem sempre está na lista; aí vale o escolhido antes.
+      const current = [media.cameraDeviceId, get().settings.cameraDeviceId].find(
+        (id) => id && ids.includes(id),
+      );
+      await get().applySettings({ cameraDeviceId: ids[(ids.indexOf(current ?? "") + 1) % ids.length] });
     },
 
     async toggleScreen() {
@@ -699,6 +743,13 @@ export const useStore = create<Store>()((set, get) => {
         await engine?.setLocalTrack("screenAudio", null);
         set({ screenOn: false });
         publishVoiceState({ screenOn: false });
+        return;
+      }
+      if (!screenShareSupported()) {
+        set({
+          mediaError:
+            "Compartilhar tela só funciona no computador. Nenhum navegador de celular deixa uma página capturar a tela — nem o Chrome no Android, nem o Safari no iPhone.",
+        });
         return;
       }
       // Abre o painel de qualidade; quem captura é o botão dele. Assim a
@@ -752,7 +803,7 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     setPersonVolume(username, volume) {
-      updatePerson(username, { volume: Math.min(1, Math.max(0, volume)) });
+      updatePerson(username, { volume: Math.min(MAX_PERSON_VOLUME, Math.max(0, volume)) });
     },
 
     togglePersonMuted(username) {
@@ -795,7 +846,11 @@ export const useStore = create<Store>()((set, get) => {
         }
       }
 
-      if (patch.camera !== undefined && patch.cameraDeviceId === undefined && get().camOn) {
+      // Trocar de lente ou de dispositivo obriga a reabrir; só resolução e fps
+      // cabem na trilha que já está no ar.
+      const lensChanged = patch.cameraDeviceId !== undefined || patch.cameraFacing !== undefined;
+
+      if (patch.camera !== undefined && !lensChanged && get().camOn) {
         // Só resolução/fps: ajusta a trilha viva, sem piscar a imagem.
         try {
           await media.applyCameraOptions(settings.camera);
@@ -806,14 +861,19 @@ export const useStore = create<Store>()((set, get) => {
         return;
       }
 
-      if (patch.cameraDeviceId !== undefined && get().camOn) {
+      if (lensChanged && get().camOn) {
         try {
-          const track = await media.openCamera(settings.cameraDeviceId, settings.camera);
+          const track = await media.openCamera(
+            settings.cameraDeviceId,
+            settings.camera,
+            settings.cameraFacing,
+          );
           track.onended = () => {
             if (get().camOn) void get().toggleCamera();
           };
           await engine?.setLocalTrack("camera", track);
           await engine?.setMaxBitrate("camera", cameraBitrate(settings.camera));
+          set({ liveFacing: media.cameraFacing });
         } catch (error) {
           set({ mediaError: describeMediaError(error) });
         }

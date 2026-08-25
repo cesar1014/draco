@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStreamRef } from "@/hooks/useStreamRef";
+import { audioContext, resumeAudio } from "@/rtc/SpeakingDetector";
 import { prefsFor, useStore } from "@/state/store";
 
 /**
@@ -15,16 +16,23 @@ interface AudioOutProps {
 }
 
 function AudioOut({ stream, volume, muted, sinkId }: AudioOutProps) {
-  const ref = useStreamRef<HTMLAudioElement>(stream);
+  const source = useBoost(stream, volume);
+  const boosted = source !== stream;
+  const ref = useStreamRef<HTMLAudioElement>(source);
+  // Safari só entrega áudio remoto pra Web Audio se o stream também estiver preso
+  // num elemento. Este fica no mudo — quem toca é o de cima.
+  const anchor = useStreamRef<HTMLAudioElement>(boosted ? stream : null);
 
   // `volume` e `muted` são propriedades do elemento, não atributos: nenhuma se
-  // escreve em JSX.
+  // escreve em JSX. Com o ganho no caminho o elemento fica em 1, senão os dois
+  // abaixariam o som duas vezes.
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    element.volume = Math.max(0, Math.min(1, volume));
+    element.volume = boosted ? 1 : Math.max(0, Math.min(1, volume));
     element.muted = muted;
-  }, [ref, volume, muted]);
+    if (anchor.current) anchor.current.muted = true;
+  }, [ref, anchor, boosted, volume, muted]);
 
   useEffect(() => {
     const element = ref.current;
@@ -36,7 +44,68 @@ function AudioOut({ stream, volume, muted, sinkId }: AudioOutProps) {
     });
   }, [ref, sinkId]);
 
-  return <audio ref={ref} autoPlay />;
+  return (
+    <>
+      <audio ref={ref} autoPlay />
+      {boosted && <audio ref={anchor} autoPlay muted />}
+    </>
+  );
+}
+
+/**
+ * Acima de 100% o `<audio>` não ajuda: `volume` satura em 1. A saída então passa
+ * a ser um desvio pela Web Audio — ganho, limitador e de volta pra um stream que
+ * o mesmo elemento toca, de modo que escolher fone e silenciar continuam iguais.
+ *
+ * O desvio, uma vez ligado, fica: religá-lo a cada ajuste trocaria o `srcObject`
+ * no meio da fala e o som falharia por um instante.
+ */
+function useBoost(stream: MediaStream, volume: number): MediaStream {
+  const [boosting, setBoosting] = useState(false);
+  const [out, setOut] = useState<MediaStream | null>(null);
+  const gain = useRef<GainNode | null>(null);
+
+  useEffect(() => {
+    if (volume > 1) setBoosting(true);
+  }, [volume]);
+
+  useEffect(() => {
+    if (!boosting) return;
+    const ctx = audioContext();
+    // Contexto suspenso não deixa nada passar, e aí o desvio devolveria silêncio.
+    resumeAudio();
+
+    const input = ctx.createMediaStreamSource(stream);
+    const node = ctx.createGain();
+    const limiter = ctx.createDynamicsCompressor();
+    // Ganho puro estala quando a voz já era alta; o limitador segura só o pico.
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.12;
+
+    const destination = ctx.createMediaStreamDestination();
+    input.connect(node).connect(limiter).connect(destination);
+    gain.current = node;
+    setOut(destination.stream);
+
+    return () => {
+      input.disconnect();
+      node.disconnect();
+      limiter.disconnect();
+      gain.current = null;
+      setOut(null);
+    };
+  }, [boosting, stream]);
+
+  useEffect(() => {
+    const node = gain.current;
+    // Rampa curta em vez de salto: arrastar o controle sem estalo a cada pixel.
+    node?.gain.setTargetAtTime(Math.max(0, volume), audioContext().currentTime, 0.02);
+  }, [volume, out]);
+
+  return out ?? stream;
 }
 
 export function RemoteAudioSink() {

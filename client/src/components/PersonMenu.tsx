@@ -3,7 +3,7 @@ import { Avatar } from "@/components/Avatar";
 import { SpeakerIcon, SpeakerOffIcon } from "@/components/Icons";
 import { useDismiss } from "@/hooks/useDismiss";
 import { statsGrade } from "@/rtc/stats";
-import { prefsFor, useStore } from "@/state/store";
+import { MAX_PERSON_VOLUME, prefsFor, useStore } from "@/state/store";
 import type { Member } from "@/types";
 
 /**
@@ -23,6 +23,7 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
 
   const prefs = prefsFor(people, member.username);
   const percent = Math.round(prefs.volume * 100);
+  const boosted = percent > 100;
 
   return (
     <div className="person-menu" ref={box} role="dialog" aria-label={`Áudio de ${member.username}`}>
@@ -30,16 +31,20 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
         <Avatar member={member} size={36} />
         <div>
           <strong>{member.username}</strong>
-          <em>{prefs.muted ? "Silenciado para você" : `Volume ${percent}%`}</em>
+          <em data-boost={boosted}>
+            {prefs.muted ? "Silenciado para você" : `Volume ${percent}%`}
+          </em>
         </div>
       </header>
 
       <label className="person-volume">
-        <span>Volume</span>
+        <span>Volume{boosted ? " · reforçado" : ""}</span>
         <input
           type="range"
+          className="range-boost"
           min={0}
-          max={100}
+          max={MAX_PERSON_VOLUME * 100}
+          step={5}
           value={percent}
           disabled={prefs.muted}
           onChange={(event) => setPersonVolume(member.username, Number(event.target.value) / 100)}

@@ -144,6 +144,14 @@ export const FlipIcon = (props: IconProps) => (
   </Icon>
 );
 
+/** Duas setas trocando de lado: frontal ↔ traseira. */
+export const SwitchCameraIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 7h12V4.5L21 8l-5 3.5V9H4V7Z" />
+    <path d="M20 15H8v-2.5L3 16l5 3.5V17h12v-2Z" />
+  </Icon>
+);
+
 /** Barrinhas de sinal, pro indicador de qualidade da conexão. */
 export const SignalIcon = (props: IconProps) => (
   <Icon {...props}>

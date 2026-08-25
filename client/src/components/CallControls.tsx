@@ -49,8 +49,7 @@ export function CallControls() {
         className="call-button"
         data-on={screenOn}
         onClick={() => void toggleScreen()}
-        disabled={!canShare}
-        title={canShare ? "Compartilhar a tela (Ctrl+Shift+S)" : "Este navegador não compartilha tela"}
+        title={canShare ? "Compartilhar a tela (Ctrl+Shift+S)" : "Compartilhar tela só pelo computador"}
       >
         {screenOn ? <ScreenIcon /> : <ScreenOffIcon />}
       </button>

@@ -30,6 +30,9 @@ export const FRAME_RATES: readonly FrameRate[] = [15, 24, 30, 60] as const;
 
 export type CameraResolution = "360" | "480" | "720" | "1080";
 
+/** Lente do celular: `user` é a de selfie, `environment` a de trás. */
+export type CameraFacing = "user" | "environment";
+
 export interface CameraOptions {
   resolution: CameraResolution;
   frameRate: FrameRate;
@@ -220,6 +223,7 @@ export class MediaManager {
   async openCamera(
     deviceId: string | null,
     options: CameraOptions = DEFAULT_CAMERA_OPTIONS,
+    facing: CameraFacing | null = null,
   ): Promise<MediaStreamTrack> {
     const height = CAMERA_HEIGHT[options.resolution];
     const video: MediaTrackConstraints = {
@@ -227,9 +231,14 @@ export class MediaManager {
       height: { ideal: height },
       frameRate: { ideal: options.frameRate, max: options.frameRate },
     };
+    // `deviceId` exato vence `facingMode`, então os dois nunca vão juntos.
     if (deviceId) video.deviceId = { exact: deviceId };
+    else if (facing) video.facingMode = { ideal: facing };
 
-    const stream = await this.#getUserMedia({ video, audio: false }, () => delete video.deviceId);
+    const stream = await this.#getUserMedia({ video, audio: false }, () => {
+      delete video.deviceId;
+      if (facing) video.facingMode = { ideal: facing };
+    });
 
     this.#stop(this.#camera);
     this.#camera = stream;
@@ -242,6 +251,17 @@ export class MediaManager {
 
   get cameraOptions(): CameraOptions {
     return this.#cameraOptions;
+  }
+
+  /** Lente em uso agora. Só celular preenche isso; webcam de PC devolve `null`. */
+  get cameraFacing(): CameraFacing | null {
+    const facing = this.cameraTrack?.getSettings().facingMode;
+    return facing === "user" || facing === "environment" ? facing : null;
+  }
+
+  /** Dispositivo que o navegador realmente abriu. Vazio quando ele não conta qual. */
+  get cameraDeviceId(): string | null {
+    return this.cameraTrack?.getSettings().deviceId || null;
   }
 
   /**

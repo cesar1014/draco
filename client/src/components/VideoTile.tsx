@@ -12,6 +12,7 @@ import {
   SignalIcon,
   SpeakerOffIcon,
   StopIcon,
+  SwitchCameraIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "@/components/Icons";
@@ -44,6 +45,9 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
 
   const mirrorSelf = useStore((state) => state.settings.mirrorSelf);
   const showStats = useStore((state) => state.settings.showStats);
+  const liveFacing = useStore((state) => state.liveFacing);
+  const cameraCount = useStore((state) => state.devices.cameras.length);
+  const switchCamera = useStore((state) => state.switchCamera);
   const flipped = useStore((state) => state.flipped[key]);
   const toggleFlip = useStore((state) => state.toggleFlip);
   const stats = useStore((state) => state.stats[member.id]);
@@ -66,8 +70,11 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
   const view = useZoomPan(hasVideo);
 
   const prefs = prefsFor(people, member.username);
-  // Espelhar só faz sentido na própria câmera; o botão do tile inverte a partir daí.
-  const mirror = (self && slot === "camera" ? mirrorSelf : false) !== Boolean(flipped);
+  const selfCamera = self && slot === "camera";
+  // Espelhar é coisa de câmera frontal: na traseira deixaria todo texto ao contrário.
+  const mirror = (selfCamera && mirrorSelf && liveFacing !== "environment") !== Boolean(flipped);
+  // No celular a lente vem na trilha; no PC vale a quantidade de webcams.
+  const canSwitchCamera = selfCamera && (liveFacing !== null || cameraCount > 1);
   const kind = slot ?? "avatar";
   const zoomed = view.zoom > 1;
   // Tela compartilhada não "fala": marcar isso acendia a borda verde sem parar.
@@ -160,6 +167,16 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
             title="Parar de ver esta tela"
           >
             <StopIcon size={16} />
+          </button>
+        )}
+        {canSwitchCamera && (
+          <button
+            type="button"
+            className="tile-action"
+            onClick={() => void switchCamera()}
+            title={liveFacing === "environment" ? "Voltar pra câmera de selfie" : "Trocar de câmera"}
+          >
+            <SwitchCameraIcon size={16} />
           </button>
         )}
         {slot === "camera" && (

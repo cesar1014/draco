@@ -348,6 +348,15 @@ input[type="range"]:disabled {
   cursor: default;
 }
 
+/* Volume por pessoa vai até 200%: a metade de cima da trilha é reforço, e aparece. */
+.range-boost::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, var(--surface-4) 0 50%, rgba(255, 180, 87, 0.3) 50%);
+}
+
+.range-boost::-moz-range-track {
+  background: linear-gradient(90deg, var(--surface-4) 0 50%, rgba(255, 180, 87, 0.3) 50%);
+}
+
 /* ---------------------------------------------------------------------------
    Casca
    --------------------------------------------------------------------------- */
@@ -1627,6 +1636,19 @@ button.guild:hover {
   background: var(--brand);
 }
 
+/* Dedo não faz hover: no celular a fileira fica à mostra, e maior pra acertar. */
+@media (hover: none) {
+  .tile-actions {
+    opacity: 1;
+    transform: none;
+  }
+
+  .tile-action {
+    width: 38px;
+    height: 38px;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Portão da tela compartilhada
    Transmissão alheia não abre sozinha: quem clica é que paga a decodificação.
@@ -2359,6 +2381,11 @@ button.guild:hover {
 
 .volume-row[data-muted="true"] > span {
   color: var(--text-faint);
+}
+
+.volume-row[data-boost="true"] b,
+.person-menu header em[data-boost="true"] {
+  color: var(--warn);
 }
 
 .volume-actions {
