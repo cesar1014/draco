@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { Avatar } from "@/components/Avatar";
-import { SpeakerIcon, SpeakerOffIcon } from "@/components/Icons";
+import { ScreenIcon, SpeakerIcon, SpeakerOffIcon } from "@/components/Icons";
 import { useDismiss } from "@/hooks/useDismiss";
 import { statsGrade } from "@/rtc/stats";
 import { MAX_PERSON_VOLUME, prefsFor, useStore } from "@/state/store";
@@ -9,21 +9,28 @@ import type { Member } from "@/types";
 /**
  * Volume e mute de uma pessoa só, pra quem está ouvindo. Nada disso viaja pela
  * rede: é o `<audio>` local que muda, então a outra pessoa não fica sabendo.
+ * Microfone e transmissão de tela têm controles separados — o jogo alto de
+ * alguém não é motivo pra deixar de ouvir a pessoa.
  */
 export function PersonMenu({ member, onClose }: { member: Member; onClose: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const people = useStore((state) => state.people);
   const stats = useStore((state) => state.stats[member.id]);
   const showStats = useStore((state) => state.settings.showStats);
+  const watching = useStore((state) => state.watching[`${member.id}:screen`]);
   const setPersonVolume = useStore((state) => state.setPersonVolume);
   const togglePersonMuted = useStore((state) => state.togglePersonMuted);
+  const setScreenVolume = useStore((state) => state.setScreenVolume);
+  const toggleScreenMuted = useStore((state) => state.toggleScreenMuted);
   const resetPerson = useStore((state) => state.resetPerson);
 
   useDismiss(box, onClose);
 
   const prefs = prefsFor(people, member.username);
   const percent = Math.round(prefs.volume * 100);
+  const screenPercent = Math.round(prefs.screenVolume * 100);
   const boosted = percent > 100;
+  const untouched = !prefs.muted && !prefs.screenMuted && percent === 100 && screenPercent === 100;
 
   return (
     <div className="person-menu" ref={box} role="dialog" aria-label={`Áudio de ${member.username}`}>
@@ -37,8 +44,11 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
         </div>
       </header>
 
-      <label className="person-volume">
-        <span>Volume{boosted ? " · reforçado" : ""}</span>
+      <label className="person-volume" data-boost={boosted} data-muted={prefs.muted}>
+        <span>
+          Microfone
+          <b>{prefs.muted ? "mudo" : `${percent}%`}</b>
+        </span>
         <input
           type="range"
           className="range-boost"
@@ -51,6 +61,30 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
         />
       </label>
 
+      {member.screenOn && (
+        <label
+          className="person-volume"
+          data-boost={screenPercent > 100}
+          data-muted={prefs.screenMuted}
+        >
+          <span>
+            <ScreenIcon size={12} /> Transmissão
+            <b>{prefs.screenMuted ? "mudo" : `${screenPercent}%`}</b>
+          </span>
+          <input
+            type="range"
+            className="range-boost"
+            min={0}
+            max={MAX_PERSON_VOLUME * 100}
+            step={5}
+            value={screenPercent}
+            disabled={prefs.screenMuted}
+            onChange={(event) => setScreenVolume(member.username, Number(event.target.value) / 100)}
+          />
+          {!watching && <em className="person-note">O som começa quando você abre a tela.</em>}
+        </label>
+      )}
+
       <div className="person-actions">
         <button
           type="button"
@@ -61,11 +95,22 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
           {prefs.muted ? <SpeakerOffIcon size={16} /> : <SpeakerIcon size={16} />}
           {prefs.muted ? "Ouvir de novo" : "Silenciar para mim"}
         </button>
+        {member.screenOn && (
+          <button
+            type="button"
+            className="person-button"
+            data-on={prefs.screenMuted}
+            onClick={() => toggleScreenMuted(member.username)}
+          >
+            <ScreenIcon size={16} />
+            {prefs.screenMuted ? "Ouvir a transmissão" : "Silenciar a transmissão"}
+          </button>
+        )}
         <button
           type="button"
           className="person-button"
           onClick={() => resetPerson(member.username)}
-          disabled={!prefs.muted && percent === 100}
+          disabled={untouched}
         >
           Padrão
         </button>

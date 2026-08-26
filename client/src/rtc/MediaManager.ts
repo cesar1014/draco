@@ -1,11 +1,14 @@
 import { selectDesktopSource, type DesktopSource } from "@/desktop";
+import { MicChain, loadDenoise, type DenoiseMode, type DenoiseStrength } from "@/rtc/denoise";
 
 /** Ponto único de acesso a microfone, câmera e tela. */
 
 export interface AudioSettings {
   micDeviceId: string | null;
   echoCancellation: boolean;
-  noiseSuppression: boolean;
+  /** `browser` é a do navegador; `draco` é a nossa, espectral. */
+  denoise: DenoiseMode;
+  denoiseStrength: DenoiseStrength;
   autoGainControl: boolean;
 }
 
@@ -18,7 +21,8 @@ export interface DeviceList {
 export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   micDeviceId: null,
   echoCancellation: true,
-  noiseSuppression: true,
+  denoise: "draco",
+  denoiseStrength: "medium",
   autoGainControl: true,
 };
 
@@ -164,17 +168,19 @@ export function screenShareSupported(): boolean {
 
 export class MediaManager {
   #mic: MediaStream | null = null;
+  #chain: MicChain | null = null;
   #camera: MediaStream | null = null;
   #screen: MediaStream | null = null;
   #micSettings: AudioSettings = DEFAULT_AUDIO_SETTINGS;
   #cameraOptions: CameraOptions = DEFAULT_CAMERA_OPTIONS;
 
+  /** O que a call envia: a saída do filtro quando ele existe, senão o dispositivo. */
   get micTrack(): MediaStreamTrack | null {
-    return this.#mic?.getAudioTracks()[0] ?? null;
+    return this.#chain?.track ?? this.#mic?.getAudioTracks()[0] ?? null;
   }
 
   get micStream(): MediaStream | null {
-    return this.#mic;
+    return this.#chain?.stream ?? this.#mic;
   }
 
   get cameraTrack(): MediaStreamTrack | null {
@@ -201,24 +207,47 @@ export class MediaManager {
   /** Mutar é `enabled = false`, não fechar: religar fica instantâneo. */
   async openMic(settings: AudioSettings): Promise<MediaStreamTrack> {
     const unchanged =
-      this.micTrack?.readyState === "live" &&
+      this.#mic?.getAudioTracks()[0]?.readyState === "live" &&
       JSON.stringify(settings) === JSON.stringify(this.#micSettings);
     if (unchanged) return this.micTrack!;
 
+    const ours = settings.denoise === "draco" && (await loadDenoise());
     const audio: MediaTrackConstraints = {
       echoCancellation: settings.echoCancellation,
-      noiseSuppression: settings.noiseSuppression,
+      // As duas supressões juntas soam metálicas: a nossa entra no lugar da dele.
+      noiseSuppression: !ours && settings.denoise !== "off",
       autoGainControl: settings.autoGainControl,
+      channelCount: { ideal: 1 },
     };
     if (settings.micDeviceId) audio.deviceId = { exact: settings.micDeviceId };
 
     const stream = await this.#getUserMedia({ audio, video: false }, () => delete audio.deviceId);
 
+    this.#closeChain();
     this.#stop(this.#mic);
     this.#mic = stream;
     this.#micSettings = settings;
-    return stream.getAudioTracks()[0];
+    if (ours) this.#chain = new MicChain(stream, settings.denoiseStrength);
+
+    const track = this.micTrack!;
+    // Voz: o codec pode sacrificar música pra manter a fala inteligível.
+    track.contentHint = "speech";
+    return track;
   }
+
+  /** Força da supressão muda na hora; reabrir o microfone cortaria a fala. */
+  tuneDenoise(strength: DenoiseStrength): boolean {
+    if (!this.#chain) return false;
+    this.#chain.tune(strength);
+    this.#micSettings = { ...this.#micSettings, denoiseStrength: strength };
+    return true;
+  }
+
+  /** Está com a nossa supressão no ar agora. */
+  get denoising(): boolean {
+    return this.#chain !== null;
+  }
+
 
   async openCamera(
     deviceId: string | null,
@@ -285,7 +314,10 @@ export class MediaManager {
     const track = stream.getVideoTracks()[0];
     // Tela é texto e linha fina: nitidez importa mais que fluidez.
     track.contentHint = "detail";
-    return { video: track, audio: stream.getAudioTracks()[0] ?? null };
+    const audio = stream.getAudioTracks()[0] ?? null;
+    // Som de jogo e de vídeo não é fala: sem isso o codec corta os graves.
+    if (audio) audio.contentHint = "music";
+    return { video: track, audio };
   }
 
   /**
@@ -311,6 +343,7 @@ export class MediaManager {
   }
 
   closeMic(): void {
+    this.#closeChain();
     this.#stop(this.#mic);
     this.#mic = null;
   }
@@ -357,6 +390,11 @@ export class MediaManager {
       }
       throw error;
     }
+  }
+
+  #closeChain(): void {
+    this.#chain?.close();
+    this.#chain = null;
   }
 
   #stop(stream: MediaStream | null): void {
