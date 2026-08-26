@@ -765,14 +765,67 @@ button.guild:hover {
 }
 
 /* ---------------------------------------------------------------------------
+   Quem está online (fim da lista de canais)
+   --------------------------------------------------------------------------- */
+.online-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.online-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-xs);
+  animation: slide-left var(--t) var(--ease-out) both;
+}
+
+.online-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.online-name[data-self="true"] {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.online-where {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 96px;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--brand-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.online-where svg {
+  flex: none;
+}
+
+/* ---------------------------------------------------------------------------
    Menu de uma pessoa (volume e mute só pra mim)
    --------------------------------------------------------------------------- */
+/* Quem posiciona é o `.popover`, no `body`: dentro da lista a linha da pessoa
+   tem animação, e isso prende qualquer `z-index` de descendente. */
+.popover {
+  position: fixed;
+  /* Acima da lista e da gaveta do celular (50), abaixo de modal (80) e aviso (90). */
+  z-index: 60;
+}
+
 .person-menu {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 6px);
-  left: 4px;
-  right: 4px;
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -815,10 +868,36 @@ button.guild:hover {
 }
 
 .person-volume > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.person-volume > span b {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+}
+
+.person-volume[data-boost="true"] > span b {
+  color: var(--warn);
+}
+
+.person-volume[data-muted="true"] > span b {
+  color: var(--bad);
+}
+
+.person-note {
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.4;
   color: var(--text-faint);
 }
 
@@ -1721,11 +1800,10 @@ button.guild:hover {
   top: 46px;
   right: 8px;
   width: 236px;
-}
-
-.tile-menu .person-menu {
-  position: static;
-  inset: auto;
+  /* Aqui o menu fica dentro do tile de propósito: o tile é o elemento da tela
+     cheia, e um cartão no `body` desapareceria nela. Se não couber, rola. */
+  max-height: calc(100% - 56px);
+  overflow-y: auto;
 }
 
 .tile-footer {
@@ -2356,6 +2434,11 @@ button.guild:hover {
   color: var(--warn);
 }
 
+.volume-group {
+  display: grid;
+  gap: 6px;
+}
+
 .volume-row {
   display: grid;
   gap: 8px;
@@ -2367,10 +2450,15 @@ button.guild:hover {
 
 .volume-row > span {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   font-size: 13.5px;
   font-weight: 600;
+}
+
+.volume-row > span b {
+  margin-left: auto;
 }
 
 .volume-row b {

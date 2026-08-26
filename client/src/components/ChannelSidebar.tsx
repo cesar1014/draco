@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { CloseIcon, HashIcon, SpeakerIcon } from "@/components/Icons";
+import { OnlineList } from "@/components/OnlineList";
 import { UserPanel } from "@/components/UserPanel";
 import { VoiceChannelMembers } from "@/components/VoiceChannelMembers";
 import { VoiceStrip } from "@/components/VoiceStrip";
@@ -72,6 +73,7 @@ export function ChannelSidebar() {
             })}
           </section>
         ))}
+        <OnlineList />
       </div>
 
       <VoiceStrip />

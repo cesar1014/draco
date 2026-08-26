@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { keyLabel } from "@/components/CallControls";
-import { CloseIcon, SpeakerOffIcon } from "@/components/Icons";
+import { CloseIcon, ScreenIcon, SpeakerOffIcon } from "@/components/Icons";
 import {
   CAMERA_RESOLUTIONS,
   FRAME_RATES,
@@ -8,7 +8,14 @@ import {
   type CameraResolution,
   type FrameRate,
 } from "@/rtc/MediaManager";
+import {
+  DENOISE_MODES,
+  DENOISE_STRENGTHS,
+  type DenoiseMode,
+  type DenoiseStrength,
+} from "@/rtc/denoise";
 import { runIceDiagnostics } from "@/rtc/iceConfig";
+import { playCue } from "@/rtc/sounds";
 import { MAX_PERSON_VOLUME, membersInVoice, micLevel, prefsFor, useStore } from "@/state/store";
 
 /** Rótulo de dispositivo vem vazio até a primeira permissão; daí o reserva. */
@@ -21,6 +28,24 @@ const RESOLUTION_LABEL: Record<CameraResolution, string> = {
   "480": "480p",
   "720": "720p",
   "1080": "1080p",
+};
+
+const DENOISE_LABEL: Record<DenoiseMode, string> = {
+  off: "Desligada",
+  browser: "Do navegador",
+  draco: "Draco",
+};
+
+const DENOISE_HINT: Record<DenoiseMode, string> = {
+  off: "Nada é filtrado: o microfone vai cru, com tudo o que houver no quarto.",
+  browser: "A do próprio navegador. Corta o básico e às vezes engole o começo das frases.",
+  draco: "Nossa: aprende o chiado do seu ambiente e o apaga sem afinar a voz. Ventilador, chuva e teclado somem.",
+};
+
+const STRENGTH_LABEL: Record<DenoiseStrength, string> = {
+  light: "Leve",
+  medium: "Média",
+  strong: "Forte",
 };
 
 const TABS = [
@@ -49,6 +74,8 @@ export function SettingsModal() {
   const refreshDevices = useStore((state) => state.refreshDevices);
   const setPersonVolume = useStore((state) => state.setPersonVolume);
   const togglePersonMuted = useStore((state) => state.togglePersonMuted);
+  const setScreenVolume = useStore((state) => state.setScreenVolume);
+  const toggleScreenMuted = useStore((state) => state.toggleScreenMuted);
   const resetPerson = useStore((state) => state.resetPerson);
 
   const [tab, setTab] = useState<Tab>("audio");
@@ -192,37 +219,73 @@ export function SettingsModal() {
 
               <section className="settings-section">
                 <h3>Processamento</h3>
-                {(
-                  [
-                    [
-                      "echoCancellation",
-                      "Cancelamento de eco",
-                      "Evita que o som da caixa volte pelo microfone.",
-                    ],
-                    [
-                      "noiseSuppression",
-                      "Redução de ruído",
-                      "Corta ventilador, teclado e chiado de fundo.",
-                    ],
-                    [
-                      "autoGainControl",
-                      "Volume automático",
-                      "Nivela a voz de quem fala longe do microfone.",
-                    ],
-                  ] as const
-                ).map(([key, label, hint]) => (
-                  <label key={key} className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings[key]}
-                      onChange={(event) => void applySettings({ [key]: event.target.checked })}
-                    />
-                    <span>
-                      <strong>{label}</strong>
-                      <em>{hint}</em>
-                    </span>
-                  </label>
-                ))}
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.echoCancellation}
+                    onChange={(event) =>
+                      void applySettings({ echoCancellation: event.target.checked })
+                    }
+                  />
+                  <span>
+                    <strong>Cancelamento de eco</strong>
+                    <em>Evita que o som da caixa volte pelo microfone.</em>
+                  </span>
+                </label>
+
+                <label className="field">
+                  <span>Redução de ruído</span>
+                  <select
+                    value={settings.denoise}
+                    onChange={(event) =>
+                      void applySettings({ denoise: event.target.value as DenoiseMode })
+                    }
+                  >
+                    {DENOISE_MODES.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {DENOISE_LABEL[mode]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="hint">{DENOISE_HINT[settings.denoise]}</p>
+
+                {settings.denoise === "draco" && (
+                  <div className="field">
+                    <span>Força do filtro</span>
+                    <div className="chips">
+                      {DENOISE_STRENGTHS.map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className="chip"
+                          data-on={settings.denoiseStrength === value}
+                          onClick={() => void applySettings({ denoiseStrength: value })}
+                        >
+                          {STRENGTH_LABEL[value]}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="hint">
+                      Muda na hora, sem cortar o áudio. Se a voz começar a soar metálica ou sumir
+                      entre as palavras, desça um degrau.
+                    </p>
+                  </div>
+                )}
+
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoGainControl}
+                    onChange={(event) =>
+                      void applySettings({ autoGainControl: event.target.checked })
+                    }
+                  />
+                  <span>
+                    <strong>Volume automático</strong>
+                    <em>Nivela a voz de quem fala longe do microfone.</em>
+                  </span>
+                </label>
               </section>
 
               <section className="settings-section">
@@ -253,7 +316,10 @@ export function SettingsModal() {
                     <p className="hint">Não vale enquanto você digita no chat.</p>
                   </div>
                 )}
+              </section>
 
+              <section className="settings-section">
+                <h3>Sons do sistema</h3>
                 <label className="toggle">
                   <input
                     type="checkbox"
@@ -262,9 +328,37 @@ export function SettingsModal() {
                   />
                   <span>
                     <strong>Avisos sonoros</strong>
-                    <em>Toque curto quando alguém entra, sai ou você muta.</em>
+                    <em>Toque curto ao entrar, sair, mutar e desmutar.</em>
                   </span>
                 </label>
+
+                {settings.sounds && (
+                  <div className="volume-row">
+                    <span>
+                      Volume dos avisos
+                      <b>{Math.round(settings.soundVolume * 100)}%</b>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(settings.soundVolume * 100)}
+                      onChange={(event) =>
+                        void applySettings({ soundVolume: Number(event.target.value) / 100 })
+                      }
+                    />
+                    <div className="volume-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => playCue("join")}
+                      >
+                        Ouvir
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
             </>
           )}
@@ -354,54 +448,97 @@ export function SettingsModal() {
                 peers.map((member) => {
                   const prefs = prefsFor(people, member.username);
                   const percent = Math.round(prefs.volume * 100);
+                  const screenPercent = Math.round(prefs.screenVolume * 100);
                   return (
-                    <div
-                      key={member.id}
-                      className="volume-row"
-                      data-muted={prefs.muted}
-                      data-boost={percent > 100}
-                    >
-                      <span>
-                        {member.username}
-                        <b>{prefs.muted ? "mudo" : `${percent}%`}</b>
-                      </span>
-                      <input
-                        type="range"
-                        className="range-boost"
-                        min={0}
-                        max={MAX_PERSON_VOLUME * 100}
-                        step={5}
-                        value={percent}
-                        disabled={prefs.muted}
-                        onChange={(event) =>
-                          setPersonVolume(member.username, Number(event.target.value) / 100)
-                        }
-                      />
-                      <div className="volume-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          data-on={prefs.muted}
-                          onClick={() => togglePersonMuted(member.username)}
-                          title={prefs.muted ? "Ouvir de novo" : "Silenciar para mim"}
-                        >
-                          <SpeakerOffIcon size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => resetPerson(member.username)}
-                        >
-                          Padrão
-                        </button>
+                    <div key={member.id} className="volume-group">
+                      <div
+                        className="volume-row"
+                        data-muted={prefs.muted}
+                        data-boost={percent > 100}
+                      >
+                        <span>
+                          {member.username}
+                          <b>{prefs.muted ? "mudo" : `${percent}%`}</b>
+                        </span>
+                        <input
+                          type="range"
+                          className="range-boost"
+                          min={0}
+                          max={MAX_PERSON_VOLUME * 100}
+                          step={5}
+                          value={percent}
+                          disabled={prefs.muted}
+                          onChange={(event) =>
+                            setPersonVolume(member.username, Number(event.target.value) / 100)
+                          }
+                        />
+                        <div className="volume-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            data-on={prefs.muted}
+                            onClick={() => togglePersonMuted(member.username)}
+                            title={prefs.muted ? "Ouvir de novo" : "Silenciar para mim"}
+                          >
+                            <SpeakerOffIcon size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => resetPerson(member.username)}
+                          >
+                            Padrão
+                          </button>
+                        </div>
                       </div>
+
+                      {member.screenOn && (
+                        <div
+                          className="volume-row"
+                          data-muted={prefs.screenMuted}
+                          data-boost={screenPercent > 100}
+                        >
+                          <span>
+                            <ScreenIcon size={13} /> Transmissão de tela
+                            <b>{prefs.screenMuted ? "mudo" : `${screenPercent}%`}</b>
+                          </span>
+                          <input
+                            type="range"
+                            className="range-boost"
+                            min={0}
+                            max={MAX_PERSON_VOLUME * 100}
+                            step={5}
+                            value={screenPercent}
+                            disabled={prefs.screenMuted}
+                            onChange={(event) =>
+                              setScreenVolume(member.username, Number(event.target.value) / 100)
+                            }
+                          />
+                          <div className="volume-actions">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              data-on={prefs.screenMuted}
+                              onClick={() => toggleScreenMuted(member.username)}
+                              title={
+                                prefs.screenMuted
+                                  ? "Ouvir a transmissão"
+                                  : "Silenciar a transmissão"
+                              }
+                            >
+                              <SpeakerOffIcon size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })
               )}
               <p className="hint">
                 Vale só para você, e continua valendo quando a pessoa entrar de novo. Acima de 100%
-                o som é reforçado — resolve microfone fraco, e o limitador evita estouro.
+                o som é reforçado — resolve microfone fraco, e o limitador evita estouro. O som da
+                tela é separado: dá pra baixar o jogo de alguém e continuar ouvindo a pessoa.
               </p>
             </section>
           )}

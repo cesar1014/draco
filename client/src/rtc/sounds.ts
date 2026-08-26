@@ -1,48 +1,92 @@
 import { audioContext } from "@/rtc/SpeakingDetector";
 
 /**
- * Avisos sonoros gerados na hora, sem arquivo de áudio: dois osciladores e um
- * envelope. Evita carregar mp3 e mantém o volume igual em qualquer navegador.
+ * Avisos sonoros gerados na hora, sem arquivo de áudio. Cada nota é uma
+ * fundamental com a oitava e uma terceira harmônica fracas por cima, passando
+ * num passa-baixa: dá um sino curto em vez do bipe de micro-ondas.
  */
 
-export type Cue = "join" | "leave" | "mute" | "unmute" | "deafen";
+export type Cue = "login" | "join" | "leave" | "mute" | "unmute" | "deafen";
 
-const CUES: Record<Cue, { notes: number[]; length: number; gain: number; type: OscillatorType }> = {
-  join: { notes: [523.25, 783.99], length: 0.11, gain: 0.16, type: "sine" },
-  leave: { notes: [523.25, 349.23], length: 0.13, gain: 0.16, type: "sine" },
-  mute: { notes: [392], length: 0.07, gain: 0.12, type: "triangle" },
-  unmute: { notes: [587.33], length: 0.07, gain: 0.12, type: "triangle" },
-  deafen: { notes: [329.63, 246.94], length: 0.09, gain: 0.12, type: "triangle" },
+interface Note {
+  hz: number;
+  /** Atraso em relação ao começo do aviso. */
+  at: number;
+  len: number;
+  level: number;
+}
+
+const note = (hz: number, at: number, len: number, level = 1): Note => ({ hz, at, len, level });
+
+/** Terças e quintas: intervalo consonante não incomoda repetido cem vezes por dia. */
+const CUES: Record<Cue, Note[]> = {
+  login: [note(440, 0, 0.55), note(554.37, 0.085, 0.5), note(659.25, 0.17, 0.7)],
+  join: [note(587.33, 0, 0.24), note(880, 0.07, 0.34)],
+  leave: [note(783.99, 0, 0.24), note(523.25, 0.075, 0.36)],
+  mute: [note(415.3, 0, 0.22, 0.85)],
+  unmute: [note(622.25, 0, 0.22, 0.85)],
+  deafen: [note(392, 0, 0.22), note(261.63, 0.07, 0.34)],
 };
 
+const PARTIALS: readonly [number, number][] = [
+  [1, 1],
+  [2, 0.22],
+  [3, 0.07],
+];
+
 let enabled = true;
+let volume = 0.7;
 
 export function setSoundsEnabled(value: boolean): void {
   enabled = value;
 }
 
+export function setSoundVolume(value: number): void {
+  volume = Math.max(0, Math.min(1, value));
+}
+
 export function playCue(cue: Cue): void {
-  if (!enabled) return;
+  if (!enabled || volume === 0) return;
 
   const ctx = audioContext();
-  // Contexto suspenso ignora `start()` em silêncio; nada a fazer até haver gesto.
-  if (ctx.state !== "running") return;
+  // Contexto suspenso não toca nada. Destravar e tocar em seguida é o que faz o
+  // som de login existir: ele nasce no mesmo clique que criou o contexto.
+  if (ctx.state !== "running") {
+    void ctx.resume().then(() => {
+      if (ctx.state === "running") render(ctx, cue);
+    });
+    return;
+  }
+  render(ctx, cue);
+}
 
-  const { notes, length, gain, type } = CUES[cue];
-  notes.forEach((frequency, index) => {
-    const at = ctx.currentTime + index * length;
-    const osc = ctx.createOscillator();
+function render(ctx: AudioContext, cue: Cue): void {
+  const soft = ctx.createBiquadFilter();
+  soft.type = "lowpass";
+  soft.frequency.value = 5200;
+
+  const master = ctx.createGain();
+  master.gain.value = 0.16 * volume;
+  soft.connect(master).connect(ctx.destination);
+
+  const start = ctx.currentTime + 0.02;
+  for (const item of CUES[cue]) {
+    const at = start + item.at;
     const envelope = ctx.createGain();
-
-    osc.type = type;
-    osc.frequency.setValueAtTime(frequency, at);
-
     envelope.gain.setValueAtTime(0, at);
-    envelope.gain.linearRampToValueAtTime(gain, at + 0.012);
-    envelope.gain.exponentialRampToValueAtTime(0.0001, at + length);
+    envelope.gain.linearRampToValueAtTime(item.level, at + 0.014);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, at + item.len);
+    envelope.connect(soft);
 
-    osc.connect(envelope).connect(ctx.destination);
-    osc.start(at);
-    osc.stop(at + length + 0.02);
-  });
+    for (const [multiple, amplitude] of PARTIALS) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(item.hz * multiple, at);
+      const partial = ctx.createGain();
+      partial.gain.value = amplitude;
+      osc.connect(partial).connect(envelope);
+      osc.start(at);
+      osc.stop(at + item.len + 0.05);
+    }
+  }
 }

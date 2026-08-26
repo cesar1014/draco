@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import { CameraIcon, MicOffIcon, ScreenIcon, SpeakerOffIcon } from "@/components/Icons";
 import { PersonMenu } from "@/components/PersonMenu";
+import { Popover } from "@/components/Popover";
 import { membersInVoice, prefsFor, useStore } from "@/state/store";
 
 /** Quem está num canal de voz, com o menu de volume por pessoa. */
@@ -10,6 +11,7 @@ export function VoiceChannelMembers({ channelId }: { channelId: string }) {
   const selfId = useStore((state) => state.selfId);
   const people = useStore((state) => state.people);
   const [openFor, setOpenFor] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
 
   const present = useMemo(() => membersInVoice(members, channelId), [members, channelId]);
   if (present.length === 0) return null;
@@ -28,7 +30,10 @@ export function VoiceChannelMembers({ channelId }: { channelId: string }) {
               className="voice-member-row"
               disabled={self}
               aria-expanded={open}
-              onClick={() => setOpenFor(open ? null : member.id)}
+              onClick={(event) => {
+                setAnchor(event.currentTarget);
+                setOpenFor(open ? null : member.id);
+              }}
               title={self ? "Você" : `Ajustar o áudio de ${member.username}`}
             >
               <Avatar member={member} size={24} />
@@ -43,7 +48,11 @@ export function VoiceChannelMembers({ channelId }: { channelId: string }) {
               </span>
             </button>
 
-            {open && <PersonMenu member={member} onClose={() => setOpenFor(null)} />}
+            {open && (
+              <Popover anchor={anchor}>
+                <PersonMenu member={member} onClose={() => setOpenFor(null)} />
+              </Popover>
+            )}
           </li>
         );
       })}

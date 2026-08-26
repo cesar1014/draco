@@ -113,6 +113,7 @@ export function RemoteAudioSink() {
   const members = useStore((state) => state.members);
   const people = useStore((state) => state.people);
   const deafened = useStore((state) => state.deafened);
+  const watching = useStore((state) => state.watching);
   const outputDeviceId = useStore((state) => state.settings.outputDeviceId);
 
   return (
@@ -120,22 +121,30 @@ export function RemoteAudioSink() {
       {Object.entries(remote).flatMap(([peerId, peer]) => {
         const username = members[peerId]?.username ?? "";
         const prefs = prefsFor(people, username);
+        // Som da transmissão só existe pra quem abriu a tela. Ouvir o jogo de
+        // alguém sem estar vendo a tela é o pior tipo de barulho: sem contexto.
+        const open = Boolean(watching[`${peerId}:screen`]);
 
-        // Microfone e áudio da tela são trilhas separadas, mas volume e mute por
-        // pessoa valem pras duas: é uma pessoa só do ponto de vista de quem ouve.
-        return (["mic", "screenAudio"] as const).map((slot) => {
-          const stream = peer.streams[slot];
-          if (!stream) return null;
-          return (
+        return [
+          peer.streams.mic && (
             <AudioOut
-              key={`${peerId}:${slot}`}
-              stream={stream}
+              key={`${peerId}:mic`}
+              stream={peer.streams.mic}
               volume={prefs.volume}
               muted={deafened || prefs.muted}
               sinkId={outputDeviceId}
             />
-          );
-        });
+          ),
+          peer.streams.screenAudio && open && (
+            <AudioOut
+              key={`${peerId}:screenAudio`}
+              stream={peer.streams.screenAudio}
+              volume={prefs.screenVolume}
+              muted={deafened || prefs.screenMuted}
+              sinkId={outputDeviceId}
+            />
+          ),
+        ];
       })}
     </div>
   );

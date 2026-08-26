@@ -10,6 +10,7 @@ import {
   PlayIcon,
   ScreenIcon,
   SignalIcon,
+  SpeakerIcon,
   SpeakerOffIcon,
   StopIcon,
   SwitchCameraIcon,
@@ -54,6 +55,8 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
   const people = useStore((state) => state.people);
   const watching = useStore((state) => state.watching[key]);
   const watch = useStore((state) => state.watch);
+  const toggleScreenMuted = useStore((state) => state.toggleScreenMuted);
+  const hasScreenAudio = useStore((state) => Boolean(state.remote[member.id]?.streams.screenAudio));
   const [menuOpen, setMenuOpen] = useState(false);
   const [shell, setShell] = useState<HTMLDivElement | null>(null);
   const full = useFullscreen(shell);
@@ -70,6 +73,8 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
   const view = useZoomPan(hasVideo);
 
   const prefs = prefsFor(people, member.username);
+  // No tile de tela o que vale é o mute da transmissão, não o da pessoa.
+  const quiet = slot === "screen" ? prefs.screenMuted : prefs.muted;
   const selfCamera = self && slot === "camera";
   // Espelhar é coisa de câmera frontal: na traseira deixaria todo texto ao contrário.
   const mirror = (selfCamera && mirrorSelf && liveFacing !== "environment") !== Boolean(flipped);
@@ -169,6 +174,17 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
             <StopIcon size={16} />
           </button>
         )}
+        {gated && playing && hasScreenAudio && (
+          <button
+            type="button"
+            className="tile-action"
+            data-on={prefs.screenMuted}
+            onClick={() => toggleScreenMuted(member.username)}
+            title={prefs.screenMuted ? "Ouvir o som da tela" : "Silenciar o som da tela"}
+          >
+            {prefs.screenMuted ? <SpeakerOffIcon size={16} /> : <SpeakerIcon size={16} />}
+          </button>
+        )}
         {canSwitchCamera && (
           <button
             type="button"
@@ -193,8 +209,8 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
           <button
             type="button"
             className="tile-action"
-            data-on={prefs.muted}
-            onClick={() => setMenuOpen((open) => !open)}
+            data-on={quiet}
+            onClick={() => setMenuOpen(!menuOpen)}
             title={`Áudio de ${member.username}`}
           >
             <SignalIcon size={16} />
@@ -241,7 +257,7 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
       <div className="tile-footer">
         <span className="tile-name">
           {member.muted && <MicOffIcon size={14} />}
-          {prefs.muted && !self && <SpeakerOffIcon size={14} />}
+          {quiet && !self && <SpeakerOffIcon size={14} />}
           {slot === "screen" && <ScreenIcon size={14} />}
           {speaking && !member.muted && (
             <span className="bars" aria-hidden="true">

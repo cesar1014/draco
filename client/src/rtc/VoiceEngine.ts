@@ -1,3 +1,4 @@
+import { tuneAudioSdp } from "@/rtc/sdp";
 import { SLOT_KIND, SLOT_ORDER, type MediaSlot, type SignalPayload } from "@/types";
 
 /**
@@ -15,8 +16,10 @@ export interface VoiceEngineOptions {
 
 /** Em malha cada pessoa envia pra todas as outras: sem teto, 6 pessoas entopem o upload. */
 const MAX_BITRATE: Partial<Record<MediaSlot, number>> = {
+  mic: 64_000,
   camera: 1_400_000,
   screen: 3_000_000,
+  screenAudio: 160_000,
 };
 
 const DEGRADATION: Partial<Record<MediaSlot, RTCDegradationPreference>> = {
@@ -93,8 +96,7 @@ export class VoiceEngine {
       try {
         peer.makingOffer = true;
         peer.negotiations += 1;
-        await pc.setLocalDescription();
-        if (pc.localDescription) this.options.sendSignal(peerId, { description: pc.localDescription });
+        await this.#describe(peer);
       } catch (error) {
         console.error(`[rtc] falha ao ofertar para ${peerId}:`, error);
       } finally {
@@ -254,8 +256,7 @@ export class VoiceEngine {
         // resposta e não custa uma segunda negociação.
         this.#mapTransceivers(peer);
         await this.#openForSending(peer);
-        await pc.setLocalDescription();
-        if (pc.localDescription) this.options.sendSignal(peer.id, { description: pc.localDescription });
+        await this.#describe(peer);
       }
       return;
     }
@@ -268,6 +269,23 @@ export class VoiceEngine {
         if (!peer.ignoreOffer) throw error;
       }
     }
+  }
+
+  /**
+   * Oferta ou resposta com o Opus ajustado. `setLocalDescription()` sem argumento
+   * criaria e aplicaria a descrição no mesmo passo, sem deixar tocar no SDP.
+   */
+  async #describe(peer: Peer): Promise<void> {
+    const { pc } = peer;
+    const local =
+      pc.signalingState === "have-remote-offer" ? await pc.createAnswer() : await pc.createOffer();
+    try {
+      await pc.setLocalDescription({ type: local.type, sdp: tuneAudioSdp(local.sdp) });
+    } catch (error) {
+      console.warn("[rtc] SDP ajustado recusado; seguindo com o original:", error);
+      await pc.setLocalDescription(local);
+    }
+    if (pc.localDescription) this.options.sendSignal(peer.id, { description: pc.localDescription });
   }
 
   /** Só um lado reinicia o ICE: a queda é vista pelas duas pontas ao mesmo tempo. */

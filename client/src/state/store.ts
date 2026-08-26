@@ -19,9 +19,15 @@ import {
 } from "@/rtc/MediaManager";
 import { SpeakingDetector, resumeAudio } from "@/rtc/SpeakingDetector";
 import { VoiceEngine } from "@/rtc/VoiceEngine";
+import {
+  DENOISE_MODES,
+  DENOISE_STRENGTHS,
+  type DenoiseMode,
+  type DenoiseStrength,
+} from "@/rtc/denoise";
 import { loadIceConfig } from "@/rtc/iceConfig";
 import { forgetStats, samplePeer, type PeerStats } from "@/rtc/stats";
-import { playCue, setSoundsEnabled } from "@/rtc/sounds";
+import { playCue, setSoundVolume, setSoundsEnabled } from "@/rtc/sounds";
 import {
   createSocket,
   describeSocketError,
@@ -74,6 +80,7 @@ export interface Settings extends AudioSettings {
   pushToTalk: boolean;
   pushToTalkKey: string;
   sounds: boolean;
+  soundVolume: number;
   /** Desliga desfoque e animações em máquina fraca. */
   liteMode: boolean;
   showStats: boolean;
@@ -89,15 +96,20 @@ export const DEFAULT_SETTINGS: Settings = {
   pushToTalk: false,
   pushToTalkKey: "Space",
   sounds: true,
+  soundVolume: 0.7,
   liteMode: false,
   showStats: false,
 };
 
-/** Preferência de volume/mute por pessoa. */
+/** Preferência de volume/mute por pessoa — microfone e transmissão em separado. */
 export interface PersonPrefs {
   volume: number;
   muted: boolean;
+  screenVolume: number;
+  screenMuted: boolean;
 }
+
+const DEFAULT_PREFS: PersonPrefs = { volume: 1, muted: false, screenVolume: 1, screenMuted: false };
 
 /** Dobro do normal. Serve pra quem tem microfone fraco; acima disso só sobra chiado. */
 export const MAX_PERSON_VOLUME = 2;
@@ -124,7 +136,7 @@ function writeJson(key: string, value: unknown): void {
 }
 
 function loadSettings(): Settings {
-  const raw = (readJson(SETTINGS_KEY) ?? {}) as Partial<Settings>;
+  const raw = (readJson(SETTINGS_KEY) ?? {}) as Partial<Settings> & { noiseSuppression?: boolean };
   const pick = <K extends keyof Settings>(key: K): Settings[K] =>
     typeof raw[key] === typeof DEFAULT_SETTINGS[key] ? (raw[key] as Settings[K]) : DEFAULT_SETTINGS[key];
 
@@ -134,13 +146,25 @@ function loadSettings(): Settings {
     cameraFacing: raw.cameraFacing === "environment" ? "environment" : "user",
     outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : null,
     echoCancellation: pick("echoCancellation"),
-    noiseSuppression: pick("noiseSuppression"),
+    // Antes daqui era um booleano de liga/desliga; quem tinha desligado continua sem.
+    denoise: DENOISE_MODES.includes(raw.denoise as DenoiseMode)
+      ? (raw.denoise as DenoiseMode)
+      : raw.noiseSuppression === false
+        ? "off"
+        : DEFAULT_SETTINGS.denoise,
+    denoiseStrength: DENOISE_STRENGTHS.includes(raw.denoiseStrength as DenoiseStrength)
+      ? (raw.denoiseStrength as DenoiseStrength)
+      : DEFAULT_SETTINGS.denoiseStrength,
     autoGainControl: pick("autoGainControl"),
     camera: normalizeCameraOptions(raw.camera),
     mirrorSelf: pick("mirrorSelf"),
     pushToTalk: pick("pushToTalk"),
     pushToTalkKey: pick("pushToTalkKey"),
     sounds: pick("sounds"),
+    soundVolume:
+      typeof raw.soundVolume === "number"
+        ? Math.min(1, Math.max(0, raw.soundVolume))
+        : DEFAULT_SETTINGS.soundVolume,
     liteMode: pick("liteMode"),
     showStats: pick("showStats"),
   };
@@ -153,14 +177,16 @@ function loadSettings(): Settings {
 function loadPeople(): Record<string, PersonPrefs> {
   const raw = readJson(PEOPLE_KEY);
   if (!raw || typeof raw !== "object") return {};
+  const level = (value: unknown) =>
+    typeof value === "number" ? Math.min(MAX_PERSON_VOLUME, Math.max(0, value)) : 1;
+
   const out: Record<string, PersonPrefs> = {};
   for (const [key, value] of Object.entries(raw as Record<string, Partial<PersonPrefs>>)) {
     out[key] = {
-      volume:
-        typeof value?.volume === "number"
-          ? Math.min(MAX_PERSON_VOLUME, Math.max(0, value.volume))
-          : 1,
+      volume: level(value?.volume),
       muted: Boolean(value?.muted),
+      screenVolume: level(value?.screenVolume),
+      screenMuted: Boolean(value?.screenMuted),
     };
   }
   return out;
@@ -252,6 +278,8 @@ interface Store {
   closeScreenPicker: () => void;
   setPersonVolume: (username: string, volume: number) => void;
   togglePersonMuted: (username: string) => void;
+  setScreenVolume: (username: string, volume: number) => void;
+  toggleScreenMuted: (username: string) => void;
   resetPerson: (username: string) => void;
   applySettings: (patch: Partial<Settings>) => Promise<void>;
   refreshDevices: () => Promise<void>;
@@ -364,6 +392,7 @@ export const useStore = create<Store>()((set, get) => {
   const wire = (s: AppSocket) => {
     s.on("connect", () => {
       void (async () => {
+        const fresh = get().status !== "ready";
         const reply = await identify(s, credentials.username, credentials.password);
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
@@ -379,6 +408,8 @@ export const useStore = create<Store>()((set, get) => {
           ...fromSnapshot(reply.state),
         });
         ensureSelection();
+        // Só na entrada de verdade: reconexão de socket não é um login novo.
+        if (fresh) playCue("login");
 
         // O socket novo tem outro id, então os pares são refeitos do zero.
         const channelId = get().voiceChannelId;
@@ -446,6 +477,7 @@ export const useStore = create<Store>()((set, get) => {
 
   const initialSettings = loadSettings();
   setSoundsEnabled(initialSettings.sounds);
+  setSoundVolume(initialSettings.soundVolume);
 
   return {
     status: "join",
@@ -811,8 +843,17 @@ export const useStore = create<Store>()((set, get) => {
       updatePerson(username, { muted: !current?.muted });
     },
 
+    setScreenVolume(username, volume) {
+      updatePerson(username, { screenVolume: Math.min(MAX_PERSON_VOLUME, Math.max(0, volume)) });
+    },
+
+    toggleScreenMuted(username) {
+      const current = get().people[personKey(username)];
+      updatePerson(username, { screenMuted: !current?.screenMuted });
+    },
+
     resetPerson(username) {
-      updatePerson(username, { volume: 1, muted: false });
+      updatePerson(username, DEFAULT_PREFS);
     },
 
     async applySettings(patch) {
@@ -821,19 +862,23 @@ export const useStore = create<Store>()((set, get) => {
       writeJson(SETTINGS_KEY, settings);
 
       if (patch.sounds !== undefined) setSoundsEnabled(settings.sounds);
+      if (patch.soundVolume !== undefined) setSoundVolume(settings.soundVolume);
       if (patch.pushToTalk !== undefined) {
         set({ talking: false });
         applyMicEnabled();
         publishVoiceState({ muted: micSilent() });
       }
 
-      // Trocar microfone ou processamento exige reabrir o dispositivo; a trilha
-      // nova entra por `replaceTrack`, sem renegociar nem cortar o áudio.
+      // A força da supressão é uma mensagem pro filtro que já está no ar; só o
+      // resto do processamento obriga a reabrir o dispositivo. A trilha nova entra
+      // por `replaceTrack`, sem renegociar nem cortar o áudio.
+      const tuned = patch.denoiseStrength !== undefined && media.tuneDenoise(settings.denoiseStrength);
       const audioChanged =
         patch.micDeviceId !== undefined ||
         patch.echoCancellation !== undefined ||
-        patch.noiseSuppression !== undefined ||
-        patch.autoGainControl !== undefined;
+        patch.denoise !== undefined ||
+        patch.autoGainControl !== undefined ||
+        (patch.denoiseStrength !== undefined && !tuned);
 
       if (audioChanged && get().voiceChannelId) {
         try {
@@ -952,5 +997,5 @@ export function membersInVoice(members: Record<string, Member>, channelId: strin
 
 /** Preferências de uma pessoa, com o padrão preenchido. */
 export function prefsFor(people: Record<string, PersonPrefs>, username: string): PersonPrefs {
-  return people[personKey(username)] ?? { volume: 1, muted: false };
+  return people[personKey(username)] ?? DEFAULT_PREFS;
 }
