@@ -1,16 +1,19 @@
 import { create } from "zustand";
-import { type DesktopSource } from "@/desktop";
 import {
   DEFAULT_AUDIO_SETTINGS,
   DEFAULT_CAMERA_OPTIONS,
   DEFAULT_SCREEN_OPTIONS,
   MediaManager,
   cameraBitrate,
-  describeMediaError,
+  describeCameraError,
+  describeMicrophoneError,
+  describeScreenShareError,
   normalizeCameraOptions,
   normalizeScreenOptions,
   screenBitrate,
+  screenDegradation,
   screenShareSupported,
+  userCancelled,
   type AudioSettings,
   type CameraFacing,
   type CameraOptions,
@@ -18,32 +21,40 @@ import {
   type ScreenShareOptions,
 } from "@/rtc/MediaManager";
 import { SpeakingDetector, resumeAudio } from "@/rtc/SpeakingDetector";
+import { SfuEngine, type SfuTransport } from "@/rtc/SfuEngine";
 import { VoiceEngine } from "@/rtc/VoiceEngine";
+import { AdaptiveController, scaleProfile } from "@/rtc/adaptive";
 import {
   DENOISE_MODES,
   DENOISE_STRENGTHS,
   type DenoiseMode,
   type DenoiseStrength,
 } from "@/rtc/denoise";
+import type { CallEngine, RemoteTrackRef, TrackProfile } from "@/rtc/engine";
 import { loadIceConfig } from "@/rtc/iceConfig";
-import { forgetStats, samplePeer, type PeerStats } from "@/rtc/stats";
+import { forgetStats, type PeerStats } from "@/rtc/stats";
 import { playCue, setSoundVolume, setSoundsEnabled } from "@/rtc/sounds";
 import {
   createSocket,
   describeSocketError,
   identify,
   joinVoiceChannel,
+  sfuJoin,
+  sfuPublish,
+  sfuRenegotiate,
+  sfuSubscribe,
   type AppSocket,
   type VoiceFlags,
 } from "@/socket";
-import type {
-  Channel,
-  Guild,
-  IceConfigResponse,
-  MediaSlot,
-  Member,
-  Message,
-  ServerSnapshot,
+import {
+  SLOT_ORDER,
+  type Channel,
+  type Guild,
+  type IceConfigResponse,
+  type MediaSlot,
+  type Member,
+  type Message,
+  type ServerSnapshot,
 } from "@/types";
 
 /**
@@ -57,11 +68,25 @@ import type {
 export const media = new MediaManager();
 
 let socket: AppSocket | null = null;
-let engine: VoiceEngine | null = null;
+let engine: CallEngine | null = null;
 let detector: SpeakingDetector | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 let credentials = { username: "", password: "" };
 let lastConnectError: string | null = null;
+/** O servidor respondeu que tem SFU: a mídia sobe uma vez, não uma por pessoa. */
+let sfuAvailable = false;
+/** Teto que a pessoa escolheu, antes de a adaptação mexer. */
+const chosenProfiles = new Map<MediaSlot, TrackProfile>();
+const adaptive = new AdaptiveController();
+/**
+ * Uma entrada de cada vez. Um clique repetido ou uma reconexão em cima de outra
+ * fariam duas negociações concorrentes na mesma call, e a segunda derrubaria as
+ * trilhas da primeira.
+ */
+let joining = false;
+let lastRestart = 0;
+/** Reentradas gastas nesta permanência no canal. Zera ao entrar por clique. */
+let restartAttempts = 0;
 
 export interface PeerMedia {
   streams: Partial<Record<MediaSlot, MediaStream>>;
@@ -117,7 +142,12 @@ export const MAX_PERSON_VOLUME = 2;
 const SETTINGS_KEY = "draco:settings";
 const SCREEN_KEY = "draco:screen";
 const PEOPLE_KEY = "draco:people";
+const USER_KEY = "draco:user";
 const STATS_INTERVAL_MS = 2000;
+/** Espaço entre duas tentativas de refazer a call por queda de mídia. */
+const RESTART_COOLDOWN_MS = 5000;
+/** Depois disto a call não volta sozinha: insistir só esconde o problema real. */
+const MAX_RESTARTS = 3;
 
 function readJson(key: string): unknown {
   try {
@@ -133,6 +163,16 @@ function writeJson(key: string, value: unknown): void {
   } catch {
     // Modo privado com armazenamento bloqueado: vale só nesta sessão.
   }
+}
+
+/**
+ * Id da pessoa, guardado no navegador. É o que permite reconectar como a mesma
+ * pessoa: sem ele, cada oscilação de Wi-Fi criaria um membro novo na lista de
+ * todos e apagaria o volume que os outros ajustaram pra você.
+ */
+function readUserId(): string | null {
+  const raw = readJson(USER_KEY);
+  return typeof raw === "string" && /^[0-9a-f-]{36}$/i.test(raw) ? raw : null;
 }
 
 function loadSettings(): Settings {
@@ -252,7 +292,16 @@ interface Store {
   settings: Settings;
   devices: DeviceList;
   mediaError: string | null;
+  /** Aviso discreto que não interrompe nada — some sozinho na interface. */
+  notice: string | null;
   ice: IceConfigResponse | null;
+  /** A mídia está passando por servidor (SFU) em vez de malha direta. */
+  viaServer: boolean;
+  /**
+   * Degrau da qualidade adaptativa: 0 é o teto escolhido, e cada degrau acima
+   * significa que a rede não estava dando conta. O painel de estatísticas mostra.
+   */
+  qualityStep: number;
   settingsOpen: boolean;
   screenPickerOpen: boolean;
   screenOptions: ScreenShareOptions;
@@ -272,7 +321,7 @@ interface Store {
   toggleCamera: () => Promise<void>;
   switchCamera: () => Promise<void>;
   toggleScreen: () => Promise<void>;
-  startScreen: (options: ScreenShareOptions, source?: DesktopSource | null) => Promise<void>;
+  startScreen: (options: ScreenShareOptions, sourceId?: string | null) => Promise<void>;
   setScreenOptions: (options: ScreenShareOptions) => Promise<void>;
   openScreenPicker: () => void;
   closeScreenPicker: () => void;
@@ -291,6 +340,7 @@ interface Store {
   openSettings: () => void;
   closeSettings: () => void;
   dismissMediaError: () => void;
+  dismissNotice: () => void;
 }
 
 /** Nível atual do próprio microfone (0 a 1), pro medidor das configurações. */
@@ -335,21 +385,32 @@ export const useStore = create<Store>()((set, get) => {
     });
   };
 
+  /**
+   * Amostra as conexões e, na mesma passada, decide se o teto de banda precisa
+   * mudar. Junto porque é a mesma informação: as estatísticas que aparecem no
+   * tile são as que dizem se a rede está dando conta.
+   */
   const startStats = () => {
     if (statsTimer) clearInterval(statsTimer);
     statsTimer = setInterval(() => {
-      if (!engine) return;
-      void Promise.all(
-        engine.peerIds.map(async (peerId) => {
-          const pc = engine?.peerConnection(peerId);
-          if (!pc) return null;
-          const sample = await samplePeer(peerId, pc);
-          return sample ? ([peerId, sample] as const) : null;
-        }),
-      ).then((entries) => {
-        const fresh = entries.filter(Boolean) as (readonly [string, PeerStats])[];
-        if (!fresh.length) return;
-        set((state) => ({ stats: { ...state.stats, ...Object.fromEntries(fresh) } }));
+      const current = engine;
+      if (!current) return;
+      void current.sample().then(({ peers, uplink }) => {
+        if (engine !== current) return;
+        if (peers.length) {
+          set((state) => ({ stats: { ...state.stats, ...Object.fromEntries(peers) } }));
+        }
+
+        // Só faz sentido adaptar enquanto há vídeo subindo: com só microfone no ar
+        // o teto não é o gargalo e mexer nele não muda nada.
+        if (!get().camOn && !get().screenOn) return;
+        const decision = adaptive.observe(uplink);
+        if (!decision.changed) return;
+        set({ qualityStep: decision.step });
+        for (const slot of ["camera", "screen"] as const) {
+          const chosen = chosenProfiles.get(slot);
+          if (chosen) void current.setTrackProfile(slot, scaleProfile(chosen, decision));
+        }
       });
     }, STATS_INTERVAL_MS);
   };
@@ -358,6 +419,265 @@ export const useStore = create<Store>()((set, get) => {
     if (statsTimer) clearInterval(statsTimer);
     statsTimer = null;
     forgetStats();
+    // A escada volta ao topo porque o degrau em que ela estava dizia respeito a
+    // conexões que não existem mais. O teto escolhido pela pessoa não: numa
+    // reconexão ele é reaplicado nas conexões novas.
+    adaptive.reset();
+    set({ qualityStep: 0 });
+  };
+
+  /**
+   * Teto escolhido pela pessoa. Guardar em separado é o que permite à adaptação
+   * descer e voltar: o degrau é sempre calculado sobre este valor, não sobre o
+   * último que foi aplicado.
+   */
+  const setProfile = async (slot: MediaSlot, profile: TrackProfile) => {
+    chosenProfiles.set(slot, profile);
+    await engine?.setTrackProfile(slot, scaleProfile(profile, adaptive.current()));
+  };
+
+  /**
+   * Parou de enviar este slot. Sem vídeo nenhum no ar a escada volta ao topo: o
+   * degrau em que ela estava dizia respeito a uma transmissão que já não existe.
+   */
+  const dropProfile = (slot: MediaSlot) => {
+    chosenProfiles.delete(slot);
+    if (chosenProfiles.size === 0) {
+      adaptive.reset();
+      set({ qualityStep: 0 });
+    }
+  };
+
+  /** Trilhas que devem estar chegando: quem está na call, com o que ligou. */
+  const desiredRemote = (): RemoteTrackRef[] => {
+    const { members, voiceChannelId, selfId } = get();
+    const refs: RemoteTrackRef[] = [];
+    for (const member of membersInVoice(members, voiceChannelId)) {
+      if (member.id === selfId) continue;
+      for (const slot of SLOT_ORDER) {
+        // Em malha as quatro trilhas existem desde a primeira oferta; com SFU só
+        // se assina o que o dono publicou de fato.
+        if (!sfuAvailable) {
+          refs.push({ memberId: member.id, slot, sessionId: null });
+          continue;
+        }
+        if (!member.sfuSessionId || !member.sfuTracks?.[slot]) continue;
+        refs.push({ memberId: member.id, slot, sessionId: member.sfuSessionId });
+      }
+    }
+    return refs;
+  };
+
+  const syncRemote = () => engine?.syncRemote(desiredRemote());
+
+  /** Um tile some quando a pessoa sai; as trilhas dela também. */
+  const dropPeer = (memberId: string) => {
+    engine?.removePeer(memberId);
+    forgetStats(memberId);
+    set((state) => {
+      if (!state.remote[memberId] && !state.peerStates[memberId] && !state.stats[memberId]) {
+        return state;
+      }
+      const remote = { ...state.remote };
+      const peerStates = { ...state.peerStates };
+      const stats = { ...state.stats };
+      delete remote[memberId];
+      // O estado da conexão de quem saiu ficaria pendurado em `disconnected`, e a
+      // barra de voz leria isso como a call inteira com problema.
+      delete peerStates[memberId];
+      delete stats[memberId];
+      return { remote, peerStates, stats };
+    });
+  };
+
+  const onRemoteTrack = (
+    peerId: string,
+    slot: MediaSlot,
+    stream: MediaStream,
+    live: boolean,
+  ) => {
+    set((state) => {
+      const current = state.remote[peerId] ?? { streams: {}, live: {} };
+      if (current.streams[slot] === stream && current.live[slot] === live) return state;
+      return {
+        remote: {
+          ...state.remote,
+          [peerId]: {
+            streams: { ...current.streams, [slot]: stream },
+            live: { ...current.live, [slot]: live },
+          },
+        },
+      };
+    });
+  };
+
+  /**
+   * Ponte entre o `SfuEngine` e o socket. O engine não conhece Socket.IO e o
+   * servidor é o único que fala com a Cloudflare: tudo passa por aqui.
+   */
+  const sfuTransport = (s: AppSocket): SfuTransport => ({
+    join: async () => (await sfuJoin(s)).ok,
+    publish: async (description, tracks) => {
+      const reply = await sfuPublish(s, description, tracks);
+      return reply.ok ? (reply.description ?? null) : null;
+    },
+    subscribe: async (refs) => {
+      // A sessão vai no pedido pra o servidor conferir que a trilha ainda é
+      // daquela sessão: a pessoa pode ter reconectado nesse intervalo.
+      const tracks = refs
+        .filter((ref) => ref.sessionId !== null)
+        .map((ref) => ({ memberId: ref.memberId, slot: ref.slot, sessionId: ref.sessionId! }));
+      if (tracks.length === 0) return null;
+      const reply = await sfuSubscribe(s, tracks);
+      if (!reply.ok) return null;
+      return { description: reply.description ?? null, tracks: reply.tracks ?? [] };
+    },
+    renegotiate: async (description) => (await sfuRenegotiate(s, description)).ok,
+  });
+
+  /**
+   * Reentrar é a recuperação de última instância: quando a conexão com o SFU
+   * morre, refazer a call devolve imagem e som sem a pessoa ter que sair e voltar
+   * à mão. As duas conexões podem falhar juntas, e uma tentativa por vez com um
+   * limite é o que impede que isso vire um laço de reentradas.
+   */
+  const restartCall = (channelId: string, reason: string) => {
+    if (get().voiceChannelId !== channelId || joining) return;
+    const now = Date.now();
+    if (now - lastRestart < RESTART_COOLDOWN_MS) return;
+    lastRestart = now;
+
+    if (restartAttempts >= MAX_RESTARTS) {
+      set({
+        notice: null,
+        mediaError: `A conexão de mídia não se restabeleceu (${reason}). Saia e entre no canal de voz de novo.`,
+      });
+      return;
+    }
+    restartAttempts += 1;
+    set({ notice: `A conexão de mídia caiu (${reason}). Reconectando…` });
+    void get().joinVoice(channelId);
+  };
+
+  /**
+   * Entra na call. Quem escolhe o caminho da mídia é o servidor, e a escolha vale
+   * pra todos: com credenciais do SFU a mídia sobe uma vez e ele replica; sem
+   * elas, cada pessoa liga em cada pessoa. Não há meio caminho — um cliente que
+   * decidisse sozinho ir de malha tentaria falar com quem está esperando pelo SFU,
+   * e o resultado seria uma call muda sem erro que explique o porquê.
+   *
+   * Reconexão passa por aqui também — as conexões de mídia não sobrevivem à queda
+   * do socket, e refazê-las é o que devolve som e imagem.
+   */
+  const enterVoice = async (s: AppSocket, channelId: string) => {
+    let micTrack: MediaStreamTrack;
+    try {
+      micTrack = await media.openMic(get().settings);
+    } catch (error) {
+      set({ mediaError: describeMicrophoneError(error) });
+      return;
+    }
+    micTrack.enabled = !micSilent();
+
+    const ice = get().ice ?? (await loadIceConfig());
+    const selfId = get().selfId;
+    if (!selfId) return;
+
+    engine?.close();
+    engine = null;
+    stopStats();
+    set({ remote: {}, peerStates: {}, stats: {} });
+
+    const configuration: RTCConfiguration = {
+      iceServers: ice.iceServers,
+      iceTransportPolicy: ice.iceTransportPolicy,
+    };
+
+    const reply = await joinVoiceChannel(s, channelId);
+    if (!reply.ok || !reply.peers) {
+      set({ mediaError: describeSocketError(reply.error) });
+      return;
+    }
+
+    // A resposta do `voice:join` é a informação mais recente sobre o caminho:
+    // credenciais podem ter mudado desde o `identify`.
+    sfuAvailable = reply.sfu === true;
+
+    remember(reply.peers);
+    set({
+      voiceChannelId: channelId,
+      activeChannelId: channelId,
+      sidebarOpen: false,
+      viaServer: sfuAvailable,
+    });
+
+    const call: CallEngine = sfuAvailable
+      ? new SfuEngine({
+          configuration,
+          transport: sfuTransport(s),
+          onRemoteTrack,
+          onConnectionState: (role, connectionState) => {
+            // Conectou: o que veio antes está resolvido, e a próxima queda merece
+            // as tentativas de novo em vez de esbarrar num limite antigo.
+            if (role === "send" && connectionState === "connected") restartAttempts = 0;
+            set((state) => ({
+              peerStates: { ...state.peerStates, [`sfu:${role}`]: connectionState },
+            }));
+          },
+          onFailure: (reason) => restartCall(channelId, reason),
+        })
+      : new VoiceEngine({
+          selfId,
+          configuration,
+          sendSignal: (to, payload) => s.emit("rtc:signal", { to, ...payload }),
+          onRemoteTrack,
+          onPeerConnectionState: (peerId, connectionState) => {
+            if (connectionState === "connected") restartAttempts = 0;
+            set((state) => ({ peerStates: { ...state.peerStates, [peerId]: connectionState } }));
+          },
+        });
+    engine = call;
+
+    // A pessoa pode ter saído, ou trocado de canal, enquanto o `voice:join` ia e
+    // voltava. Sem esta conferência ficaria uma conexão órfã enviando microfone.
+    if (get().voiceChannelId !== channelId) {
+      call.close();
+      if (engine === call) engine = null;
+      return;
+    }
+
+    await call.setLocalTrack("mic", micTrack);
+
+    // Reconexão em cima de uma câmera ou tela que já estava no ar: as trilhas
+    // continuam vivas, só a conexão que as levava é nova. Reanexar aqui é o que
+    // evita fazer a pessoa desligar e religar a transmissão.
+    const localTracks: Array<[MediaSlot, MediaStreamTrack | null]> = [
+      ["camera", media.cameraTrack],
+      ["screen", media.screenTrack],
+      ["screenAudio", media.screenAudioTrack],
+    ];
+    for (const [slot, track] of localTracks) {
+      if (track) await call.setLocalTrack(slot, track);
+    }
+    for (const [slot, profile] of chosenProfiles) {
+      await call.setTrackProfile(slot, scaleProfile(profile, adaptive.current()));
+    }
+
+    if (engine !== call) return;
+
+    // Só agora: com as trilhas anexadas, a primeira oferta já sai completa.
+    syncRemote();
+
+    startDetector();
+    startStats();
+    playCue("join");
+
+    publishVoiceState({
+      muted: micSilent(),
+      deafened: get().deafened,
+      camOn: get().camOn,
+      screenOn: get().screenOn,
+    });
   };
 
   const persistPeople = () => writeJson(PEOPLE_KEY, get().people);
@@ -393,12 +713,16 @@ export const useStore = create<Store>()((set, get) => {
     s.on("connect", () => {
       void (async () => {
         const fresh = get().status !== "ready";
-        const reply = await identify(s, credentials.username, credentials.password);
+        const reply = await identify(s, credentials.username, credentials.password, readUserId());
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
           s.disconnect();
           return;
         }
+
+        // Guardar o id é o que faz a próxima reconexão voltar como a mesma pessoa.
+        if (reply.userId) writeJson(USER_KEY, reply.userId);
+        sfuAvailable = reply.sfu === true;
 
         set({
           status: "ready",
@@ -411,7 +735,9 @@ export const useStore = create<Store>()((set, get) => {
         // Só na entrada de verdade: reconexão de socket não é um login novo.
         if (fresh) playCue("login");
 
-        // O socket novo tem outro id, então os pares são refeitos do zero.
+        // A identidade sobrevive à reconexão, mas as conexões de mídia não: elas
+        // são refeitas do zero, e é isso que devolve imagem e som depois de uma
+        // queda de rede sem a pessoa ter que sair e entrar de novo.
         const channelId = get().voiceChannelId;
         if (channelId) void get().joinVoice(channelId);
       })();
@@ -430,17 +756,20 @@ export const useStore = create<Store>()((set, get) => {
     });
 
     s.on("member:joined", (member) => remember([member]));
-    s.on("member:state", (member) => remember([member]));
+
+    s.on("member:state", (member) => {
+      remember([member]);
+      // Uma trilha nova publicada no SFU aparece como mudança de estado: é o
+      // gatilho pra assinar a câmera que a pessoa acabou de ligar.
+      if (sfuAvailable && member.voiceChannelId === get().voiceChannelId) syncRemote();
+    });
 
     s.on("member:left", ({ id }) => {
-      engine?.removePeer(id);
-      forgetStats(id);
+      dropPeer(id);
       set((state) => {
         const members = { ...state.members };
-        const remote = { ...state.remote };
         delete members[id];
-        delete remote[id];
-        return { members, remote };
+        return { members };
       });
     });
 
@@ -456,20 +785,14 @@ export const useStore = create<Store>()((set, get) => {
     s.on("voice:peer-joined", ({ channelId, member }) => {
       remember([member]);
       if (get().voiceChannelId !== channelId) return;
-      engine?.addPeer(member.id);
+      syncRemote();
       playCue("join");
     });
 
     s.on("voice:peer-left", ({ channelId, memberId }) => {
       if (get().voiceChannelId !== channelId) return;
-      engine?.removePeer(memberId);
-      forgetStats(memberId);
+      dropPeer(memberId);
       playCue("leave");
-      set((state) => {
-        const remote = { ...state.remote };
-        delete remote[memberId];
-        return { remote };
-      });
     });
 
     s.on("rtc:signal", ({ from, ...payload }) => engine?.handleSignal(from, payload));
@@ -513,7 +836,10 @@ export const useStore = create<Store>()((set, get) => {
     settings: initialSettings,
     devices: { mics: [], cameras: [], speakers: [] },
     mediaError: null,
+    notice: null,
     ice: null,
+    viaServer: false,
+    qualityStep: 0,
     settingsOpen: false,
     screenPickerOpen: false,
     screenOptions: normalizeScreenOptions(readJson(SCREEN_KEY) ?? DEFAULT_SCREEN_OPTIONS),
@@ -592,76 +918,16 @@ export const useStore = create<Store>()((set, get) => {
       // Entrar parte de um clique, e é o momento certo de destravar o áudio.
       resumeAudio();
       const s = socket;
-      if (!s) return;
-
-      let micTrack: MediaStreamTrack;
+      if (!s || joining) return;
+      // Canal diferente do que está no ar é entrada nova, não recuperação: as
+      // tentativas gastas antes não têm nada a ver com esta call.
+      if (get().voiceChannelId !== channelId) restartAttempts = 0;
+      joining = true;
       try {
-        micTrack = await media.openMic(get().settings);
-      } catch (error) {
-        set({ mediaError: describeMediaError(error) });
-        return;
+        await enterVoice(s, channelId);
+      } finally {
+        joining = false;
       }
-      micTrack.enabled = !micSilent();
-
-      const ice = get().ice ?? (await loadIceConfig());
-      const selfId = get().selfId;
-      if (!selfId) return;
-
-      // Uma call por vez: sair antes de entrar deixa o estado limpo mesmo quando
-      // isso é uma reconexão em cima de uma call que já existia.
-      engine?.close();
-      set({ remote: {}, peerStates: {}, stats: {} });
-      forgetStats();
-
-      engine = new VoiceEngine({
-        selfId,
-        configuration: { iceServers: ice.iceServers, iceTransportPolicy: ice.iceTransportPolicy },
-        sendSignal: (to, payload) => s.emit("rtc:signal", { to, ...payload }),
-        onRemoteTrack: (peerId, slot, stream, live) => {
-          set((state) => {
-            const current = state.remote[peerId] ?? { streams: {}, live: {} };
-            if (current.streams[slot] === stream && current.live[slot] === live) return state;
-            return {
-              remote: {
-                ...state.remote,
-                [peerId]: {
-                  streams: { ...current.streams, [slot]: stream },
-                  live: { ...current.live, [slot]: live },
-                },
-              },
-            };
-          });
-        },
-        onPeerConnectionState: (peerId, connectionState) => {
-          set((state) => ({ peerStates: { ...state.peerStates, [peerId]: connectionState } }));
-        },
-      });
-
-      const reply = await joinVoiceChannel(s, channelId);
-      if (!reply.ok || !reply.peers) {
-        engine.close();
-        engine = null;
-        set({ mediaError: describeSocketError(reply.error) });
-        return;
-      }
-
-      remember(reply.peers);
-      set({ voiceChannelId: channelId, activeChannelId: channelId, sidebarOpen: false });
-
-      await engine.setLocalTrack("mic", micTrack);
-      // Só agora: com o microfone anexado, a primeira oferta já sai com áudio.
-      engine.syncPeers(reply.peers.map((peer) => peer.id));
-
-      startDetector();
-      startStats();
-      playCue("join");
-
-      publishVoiceState({
-        muted: micSilent(),
-        deafened: get().deafened,
-        camOn: false,
-        screenOn: false,
-      });
     },
 
     leaveVoice() {
@@ -670,20 +936,25 @@ export const useStore = create<Store>()((set, get) => {
       engine?.close();
       engine = null;
       stopStats();
+      chosenProfiles.clear();
       media.closeAll();
       socket?.emit("voice:leave");
       playCue("leave");
+      restartAttempts = 0;
       set({
         voiceChannelId: null,
         camOn: false,
         screenOn: false,
         talking: false,
+        liveFacing: null,
         remote: {},
         peerStates: {},
         stats: {},
         focusedTiles: [],
         watching: {},
+        flipped: {},
         screenPickerOpen: false,
+        viaServer: false,
       });
     },
 
@@ -719,6 +990,7 @@ export const useStore = create<Store>()((set, get) => {
       if (get().camOn) {
         media.closeCamera();
         await engine?.setLocalTrack("camera", null);
+        dropProfile("camera");
         set({ camOn: false, liveFacing: null });
         publishVoiceState({ camOn: false });
         return;
@@ -731,13 +1003,16 @@ export const useStore = create<Store>()((set, get) => {
           if (get().camOn) void get().toggleCamera();
         };
         await engine?.setLocalTrack("camera", track);
-        await engine?.setMaxBitrate("camera", cameraBitrate(options));
+        await setProfile("camera", {
+          maxBitrate: cameraBitrate(options),
+          degradationPreference: "maintain-framerate",
+        });
         set({ camOn: true, liveFacing: media.cameraFacing });
         publishVoiceState({ camOn: true });
         // Os rótulos e ids das câmeras só existem depois da permissão concedida.
         void get().refreshDevices();
       } catch (error) {
-        set({ mediaError: describeMediaError(error) });
+        set({ mediaError: describeCameraError(error) });
       }
     },
 
@@ -773,6 +1048,7 @@ export const useStore = create<Store>()((set, get) => {
         media.closeScreen();
         await engine?.setLocalTrack("screen", null);
         await engine?.setLocalTrack("screenAudio", null);
+        dropProfile("screen");
         set({ screenOn: false });
         publishVoiceState({ screenOn: false });
         return;
@@ -789,13 +1065,13 @@ export const useStore = create<Store>()((set, get) => {
       set({ screenPickerOpen: true });
     },
 
-    async startScreen(options, source = null) {
+    async startScreen(options, sourceId = null) {
       if (!get().voiceChannelId) return;
       set({ screenPickerOpen: false, screenOptions: options });
       writeJson(SCREEN_KEY, options);
 
       try {
-        const { video, audio } = await media.openScreen(options, source);
+        const { video, audio, systemAudioFailed } = await media.openScreen(options, sourceId);
         // O "Parar de compartilhar" do navegador termina a trilha: sem escutar
         // isso, os outros ficariam vendo o último quadro pra sempre.
         video.onended = () => {
@@ -803,13 +1079,19 @@ export const useStore = create<Store>()((set, get) => {
         };
         await engine?.setLocalTrack("screen", video);
         await engine?.setLocalTrack("screenAudio", audio);
-        await engine?.setMaxBitrate("screen", screenBitrate(options));
-        set({ screenOn: true });
+        await setProfile("screen", {
+          maxBitrate: screenBitrate(options),
+          degradationPreference: screenDegradation(options.content),
+        });
+        set({
+          screenOn: true,
+          notice: systemAudioFailed
+            ? "Não foi possível capturar o áudio do sistema. A transmissão foi iniciada sem áudio."
+            : null,
+        });
         publishVoiceState({ screenOn: true });
       } catch (error) {
-        // Cancelar o seletor de janelas chega como `NotAllowedError` e não é erro.
-        const aborted = error instanceof Error && /NotAllowed|Abort/.test(error.name);
-        if (!aborted) set({ mediaError: describeMediaError(error) });
+        if (!userCancelled(error)) set({ mediaError: describeScreenShareError(error) });
       }
     },
 
@@ -828,9 +1110,12 @@ export const useStore = create<Store>()((set, get) => {
       if (!get().screenOn) return;
       try {
         await media.applyScreenOptions(options);
-        await engine?.setMaxBitrate("screen", screenBitrate(options));
+        await setProfile("screen", {
+          maxBitrate: screenBitrate(options),
+          degradationPreference: screenDegradation(options.content),
+        });
       } catch (error) {
-        set({ mediaError: describeMediaError(error) });
+        set({ mediaError: describeScreenShareError(error) });
       }
     },
 
@@ -887,7 +1172,7 @@ export const useStore = create<Store>()((set, get) => {
           await engine?.setLocalTrack("mic", track);
           startDetector();
         } catch (error) {
-          set({ mediaError: describeMediaError(error) });
+          set({ mediaError: describeMicrophoneError(error) });
         }
       }
 
@@ -899,9 +1184,12 @@ export const useStore = create<Store>()((set, get) => {
         // Só resolução/fps: ajusta a trilha viva, sem piscar a imagem.
         try {
           await media.applyCameraOptions(settings.camera);
-          await engine?.setMaxBitrate("camera", cameraBitrate(settings.camera));
+          await setProfile("camera", {
+            maxBitrate: cameraBitrate(settings.camera),
+            degradationPreference: "maintain-framerate",
+          });
         } catch (error) {
-          set({ mediaError: describeMediaError(error) });
+          set({ mediaError: describeCameraError(error) });
         }
         return;
       }
@@ -917,10 +1205,13 @@ export const useStore = create<Store>()((set, get) => {
             if (get().camOn) void get().toggleCamera();
           };
           await engine?.setLocalTrack("camera", track);
-          await engine?.setMaxBitrate("camera", cameraBitrate(settings.camera));
+          await setProfile("camera", {
+            maxBitrate: cameraBitrate(settings.camera),
+            degradationPreference: "maintain-framerate",
+          });
           set({ liveFacing: media.cameraFacing });
         } catch (error) {
-          set({ mediaError: describeMediaError(error) });
+          set({ mediaError: describeCameraError(error) });
         }
       }
     },
@@ -983,6 +1274,10 @@ export const useStore = create<Store>()((set, get) => {
 
     dismissMediaError() {
       set({ mediaError: null });
+    },
+
+    dismissNotice() {
+      set({ notice: null });
     },
   };
 });

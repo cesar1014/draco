@@ -1017,6 +1017,10 @@ button.guild:hover {
   text-overflow: ellipsis;
 }
 
+.voice-strip-quality::before {
+  content: " · ";
+}
+
 .voice-strip-actions,
 .user-actions {
   display: flex;
@@ -2623,6 +2627,21 @@ button.guild:hover {
 
 .toast button:hover {
   background: var(--brand-deep);
+}
+
+/* Aviso, não erro: pesa menos na tela e o botão é discreto. */
+.toast.notice {
+  color: var(--text-dim);
+  background: var(--surface);
+}
+
+.toast.notice button {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.toast.notice button:hover {
+  background: var(--surface-4);
 }
 
 /* Os `<audio>` precisam existir no DOM pra tocar; `display:none` é arriscado. */

@@ -9,8 +9,16 @@ export function OnlineList() {
   const channels = useStore((state) => state.channels);
   const selfId = useStore((state) => state.selfId);
 
+  /**
+   * Ordem de chegada. É estável de um jeito que ordem alfabética não é: a
+   * identidade sobrevive à reconexão, então a lista não se reorganiza embaixo do
+   * cursor de quem estava clicando em alguém quando o Wi-Fi de um terceiro caiu.
+   */
   const online = useMemo(
-    () => Object.values(members).sort((a, b) => a.username.localeCompare(b.username, "pt-BR")),
+    () =>
+      Object.values(members).sort(
+        (a, b) => a.since - b.since || a.username.localeCompare(b.username, "pt-BR"),
+      ),
     [members],
   );
 

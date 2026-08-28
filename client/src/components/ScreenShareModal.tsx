@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { CloseIcon, ScreenIcon } from "@/components/Icons";
-import { isDesktopApp, listDesktopSources, type DesktopSource } from "@/desktop";
+import {
+  desktopPlatform,
+  isDesktopApp,
+  listDesktopSources,
+  type DesktopSource,
+} from "@/desktop";
 import {
   CAMERA_RESOLUTIONS,
   FRAME_RATES,
+  SCREEN_CONTENTS,
   SCREEN_RESOLUTIONS,
   cameraBitrate,
   screenBitrate,
   type CameraResolution,
   type FrameRate,
+  type ScreenContent,
   type ScreenResolution,
 } from "@/rtc/MediaManager";
 import { membersInVoice, useStore } from "@/state/store";
@@ -24,6 +31,18 @@ const CAMERA_LABEL: Record<CameraResolution, string> = {
   "480": "480p",
   "720": "720p",
   "1080": "1080p",
+};
+
+const CONTENT_LABEL: Record<ScreenContent, string> = {
+  auto: "Automático",
+  game: "Jogo e vídeo",
+  text: "Texto e código",
+};
+
+const CONTENT_HINT: Record<ScreenContent, string> = {
+  auto: "Deixa o codec decidir pelo que está aparecendo na tela.",
+  game: "Quando a banda aperta, perde nitidez pra continuar fluindo.",
+  text: "Quando a banda aperta, perde quadros pra continuar legível.",
 };
 
 const mbps = (bits: number) => (bits / 1_000_000).toFixed(1).replace(".", ",");
@@ -44,6 +63,10 @@ export function ScreenShareModal() {
   const voiceChannelId = useStore((state) => state.voiceChannelId);
 
   const desktop = isDesktopApp();
+  // O loopback do Electron é `audio: "loopback"`, que só o Windows tem. Prometer o
+  // som do sistema no Mac ou no Linux renderia uma transmissão muda e um aviso de
+  // falha — dizer antes o que dá pra fazer é melhor que explicar depois.
+  const systemAudioCapable = !desktop || desktopPlatform() === "win32";
   const [options, setOptions] = useState(screenOptions);
   const [sources, setSources] = useState<DesktopSource[]>([]);
   const [loading, setLoading] = useState(desktop && !screenOn);
@@ -91,6 +114,9 @@ export function ScreenShareModal() {
 
   const visible = sources.filter((source) => source.isScreen === (tab === "screen"));
   const selected = sources.find((source) => source.id === selectedId) ?? null;
+  // A preferência é guardada entre sessões, e pode ter sido marcada onde o som do
+  // sistema funciona. Quem captura recebe o que dá pra capturar aqui.
+  const effective = systemAudioCapable ? options : { ...options, systemAudio: false };
   const perPerson = screenBitrate(options) + (camOn ? cameraBitrate(camera) : 0);
   const total = perPerson * Math.max(listeners, 1);
   const ready = screenOn || !desktop || Boolean(selected);
@@ -238,21 +264,42 @@ export function ScreenShareModal() {
               e código mais nítidos.
             </p>
 
+            <div className="field">
+              <span>Conteúdo</span>
+              <div className="chips">
+                {SCREEN_CONTENTS.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className="chip"
+                    data-on={options.content === value}
+                    onClick={() => change({ ...options, content: value })}
+                  >
+                    {CONTENT_LABEL[value]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <p className="hint">{CONTENT_HINT[options.content]}</p>
+
             <label className="toggle">
               <input
                 type="checkbox"
-                checked={options.systemAudio}
-                disabled={screenOn}
+                checked={options.systemAudio && systemAudioCapable}
+                disabled={screenOn || !systemAudioCapable}
                 onChange={(event) => change({ ...options, systemAudio: event.target.checked })}
               />
               <span>
                 <strong>Levar o som do sistema</strong>
                 <em>
-                  {screenOn
-                    ? "O som só pode ser ligado ou desligado ao começar a transmissão."
-                    : desktop
-                      ? "Manda o áudio do Windows junto — o som do jogo ou do vídeo."
-                      : "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio."}
+                  {!systemAudioCapable
+                    ? "O app só captura o som do sistema no Windows. Aqui a transmissão vai sem áudio."
+                    : screenOn
+                      ? "O som só pode ser ligado ou desligado ao começar a transmissão."
+                      : desktop
+                        ? "Manda o áudio do Windows junto — o som do jogo ou do vídeo."
+                        : "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio."}
                 </em>
               </span>
             </label>
@@ -345,7 +392,7 @@ export function ScreenShareModal() {
                 className="join-submit share-submit"
                 disabled={!ready}
                 autoFocus
-                onClick={() => void startScreen(options, selected)}
+                onClick={() => void startScreen(effective, selected?.id ?? null)}
               >
                 Compartilhar
               </button>

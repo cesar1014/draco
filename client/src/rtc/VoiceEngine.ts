@@ -1,9 +1,20 @@
+import {
+  applyProfile,
+  type CallEngine,
+  type EngineSample,
+  type RemoteTrackRef,
+  type TrackProfile,
+} from "@/rtc/engine";
 import { tuneAudioSdp } from "@/rtc/sdp";
+import { sampleScopes, type PeerStats } from "@/rtc/stats";
 import { SLOT_KIND, SLOT_ORDER, type MediaSlot, type SignalPayload } from "@/types";
 
 /**
  * Uma conexão direta por par de pessoas na call. Cada conexão carrega quatro
  * trilhas em ordem fixa — microfone, câmera, tela, áudio da tela.
+ *
+ * É o caminho usado quando não há SFU configurado. Com SFU, quem manda é o
+ * `SfuEngine`: sobe uma vez pro servidor em vez de uma vez por pessoa.
  */
 
 export interface VoiceEngineOptions {
@@ -15,16 +26,11 @@ export interface VoiceEngineOptions {
 }
 
 /** Em malha cada pessoa envia pra todas as outras: sem teto, 6 pessoas entopem o upload. */
-const MAX_BITRATE: Partial<Record<MediaSlot, number>> = {
-  mic: 64_000,
-  camera: 1_400_000,
-  screen: 3_000_000,
-  screenAudio: 160_000,
-};
-
-const DEGRADATION: Partial<Record<MediaSlot, RTCDegradationPreference>> = {
-  camera: "maintain-framerate",
-  screen: "maintain-resolution",
+const DEFAULT_PROFILES: Partial<Record<MediaSlot, TrackProfile>> = {
+  mic: { maxBitrate: 64_000 },
+  camera: { maxBitrate: 1_400_000, degradationPreference: "maintain-framerate" },
+  screen: { maxBitrate: 3_000_000, degradationPreference: "maintain-resolution" },
+  screenAudio: { maxBitrate: 160_000 },
 };
 
 const DISCONNECT_GRACE_MS = 6000;
@@ -45,11 +51,11 @@ interface Peer {
   negotiations: number;
 }
 
-export class VoiceEngine {
+export class VoiceEngine implements CallEngine {
   readonly #peers = new Map<string, Peer>();
   readonly #localTracks = new Map<MediaSlot, MediaStreamTrack | null>();
-  readonly #bitrates = new Map<MediaSlot, number>(
-    Object.entries(MAX_BITRATE) as [MediaSlot, number][],
+  readonly #profiles = new Map<MediaSlot, TrackProfile>(
+    Object.entries(DEFAULT_PROFILES) as [MediaSlot, TrackProfile][],
   );
   #closed = false;
 
@@ -69,6 +75,31 @@ export class VoiceEngine {
 
   peerConnection(peerId: string): RTCPeerConnection | null {
     return this.#peers.get(peerId)?.pc ?? null;
+  }
+
+  /**
+   * Uma leitura por par. Em malha o que sobe é o mesmo pra todos, então cada
+   * conexão é também uma medida do próprio upload — e a adaptação decide pela
+   * pior delas.
+   */
+  async sample(): Promise<EngineSample> {
+    const peers = (
+      await Promise.all(
+        [...this.#peers.values()].map(async (peer) => {
+          const [entry] = await sampleScopes(peer.pc, [{ key: peer.id }]);
+          return entry ?? null;
+        }),
+      )
+    ).filter(Boolean) as Array<readonly [string, PeerStats]>;
+    return { peers, uplink: peers.map(([, sample]) => sample) };
+  }
+
+  /**
+   * Em malha o conjunto de trilhas não se escolhe: a conexão já carrega as quatro
+   * desde a primeira oferta. Só os pares importam, e é o que se sincroniza.
+   */
+  syncRemote(tracks: RemoteTrackRef[]): void {
+    this.syncPeers([...new Set(tracks.map((ref) => ref.memberId))]);
   }
 
   addPeer(peerId: string): void {
@@ -206,8 +237,8 @@ export class VoiceEngine {
   }
 
   /** Sem trocar o teto, pedir 1080p60 só devolve a mesma banda mais borrada. */
-  async setMaxBitrate(slot: MediaSlot, maxBitrate: number): Promise<void> {
-    this.#bitrates.set(slot, maxBitrate);
+  async setTrackProfile(slot: MediaSlot, profile: TrackProfile): Promise<void> {
+    this.#profiles.set(slot, profile);
     await Promise.all([...this.#peers.values()].map((peer) => this.#applyEncodings(peer)));
   }
 
@@ -349,18 +380,7 @@ export class VoiceEngine {
 
   async #applyEncodings(peer: Peer): Promise<void> {
     for (const [slot, sender] of peer.senders) {
-      const maxBitrate = this.#bitrates.get(slot);
-      if (!maxBitrate || !sender.track) continue;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings?.length) params.encodings = [{}];
-        params.encodings[0].maxBitrate = maxBitrate;
-        const degradation = DEGRADATION[slot];
-        if (degradation) params.degradationPreference = degradation;
-        await sender.setParameters(params);
-      } catch {
-        // Tentado antes da hora; a próxima transição de estado repete.
-      }
+      await applyProfile(sender, this.#profiles.get(slot));
     }
   }
 

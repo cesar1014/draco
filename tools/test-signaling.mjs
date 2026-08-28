@@ -84,11 +84,17 @@ try {
   const joinA = await emit(a, "identify", { username: "Ana", password: PASSWORD });
   check("entrada com senha certa", joinA.ok, true);
   check("snapshot traz os canais", joinA.state.channels.length > 0, true);
-  check("selfId volta pro cliente", joinA.selfId === a.id, true);
+  // O id da pessoa não é o do socket: é ele que sobrevive a uma reconexão.
+  check("selfId é uma identidade própria", /^[0-9a-f-]{36}$/.test(joinA.selfId ?? ""), true);
+  check("selfId e userId são o mesmo id", joinA.userId, joinA.selfId);
+  check("identidade não é o id do socket", joinA.selfId !== a.id, true);
+  const idA = joinA.selfId;
 
   const memberJoined = waitFor(b, "member:joined");
-  await emit(b, "identify", { username: "Bruno", password: PASSWORD });
-  await emit(c, "identify", { username: "Carla", password: PASSWORD });
+  const joinB = await emit(b, "identify", { username: "Bruno", password: PASSWORD });
+  const joinC = await emit(c, "identify", { username: "Carla", password: PASSWORD });
+  const idB = joinB.selfId;
+  const idC = joinC.selfId;
   check("identificar duas vezes é recusado", (await emit(b, "identify", { username: "Bruno2", password: PASSWORD })).error, "already-identified");
   void memberJoined;
 
@@ -108,29 +114,44 @@ try {
 
   // --- entrar em voz -------------------------------------------------------
   const joinVoiceA = await emit(a, "voice:join", { channelId: "v-geral" });
-  check("primeiro a entrar não vê ninguém", joinVoiceA, { ok: true, channelId: "v-geral", peers: [] });
+  check("primeiro a entrar não vê ninguém", [joinVoiceA.ok, joinVoiceA.channelId, joinVoiceA.peers], [
+    true,
+    "v-geral",
+    [],
+  ]);
+  // Sem credenciais da Cloudflare no ambiente, o servidor manda seguir em malha.
+  check("sem SFU configurado o servidor avisa", joinVoiceA.sfu, false);
 
   const peerJoinedOnA = waitFor(a, "voice:peer-joined");
   const joinVoiceB = await emit(b, "voice:join", { channelId: "v-geral" });
   check("segundo a entrar já recebe a lista", joinVoiceB.peers.map((p) => p.username), ["Ana"]);
+  check("a lista traz a identidade estável", joinVoiceB.peers.map((p) => p.id), [idA]);
   check("quem estava é avisado do novo", (await peerJoinedOnA)?.member?.username, "Bruno");
   check("canal de texto não serve pra voz", (await emit(a, "voice:join", { channelId: "t-geral" })).error, "no-channel");
 
   // --- relay de sinalização ------------------------------------------------
   const signalOnB = waitFor(b, "rtc:signal");
-  a.emit("rtc:signal", { to: b.id, description: { type: "offer", sdp: "v=0 fake" } });
+  a.emit("rtc:signal", { to: idB, description: { type: "offer", sdp: "v=0 fake" } });
   const signal = await signalOnB;
   check("sinal é repassado ao destino", signal?.description?.sdp, "v=0 fake");
-  check("sinal identifica quem mandou", signal?.from, a.id);
+  check("sinal identifica quem mandou", signal?.from, idA);
 
   const signalOnC = collect(c, "rtc:signal");
   const junkOnB = collect(b, "rtc:signal");
-  a.emit("rtc:signal", { to: c.id, description: { type: "offer", sdp: "v=0 intruso" } });
-  a.emit("rtc:signal", { to: b.id, description: { type: "offer" } });
-  a.emit("rtc:signal", { to: b.id });
+  a.emit("rtc:signal", { to: idC, description: { type: "offer", sdp: "v=0 intruso" } });
+  a.emit("rtc:signal", { to: idB, description: { type: "offer" } });
+  a.emit("rtc:signal", { to: idB });
   await sleep(250);
   check("não repassa pra quem está fora do canal de voz", signalOnC.length, 0);
   check("descarta sinal malformado", junkOnB.length, 0);
+
+  // --- eventos do SFU sem credenciais --------------------------------------
+  check("sfu:join recusa sem credenciais", (await emit(a, "sfu:join", {})).error, "no-sfu");
+  check(
+    "sfu:subscribe recusa sem credenciais",
+    (await emit(a, "sfu:subscribe", { tracks: [{ memberId: idB, slot: "mic" }] })).error,
+    "no-sfu",
+  );
 
   // --- estado de voz -------------------------------------------------------
   const stateOnC = waitFor(c, "member:state");
@@ -138,14 +159,22 @@ try {
   const state = await stateOnC;
   check("estado de voz replica pra quem não está na call", [state?.muted, state?.camOn], [true, true]);
 
+  // --- reconexão com a mesma identidade ------------------------------------
+  const d = connect(URL, { transports: ["websocket"] });
+  await waitFor(d, "connect");
+  const rejoin = await emit(d, "identify", { username: "Carla", password: PASSWORD, userId: idC });
+  check("reassumir o userId devolve o mesmo membro", rejoin.selfId, idC);
+  const onlineIds = rejoin.state.members.map((m) => m.id).sort();
+  check("reconectar não duplica ninguém na lista", onlineIds, [idA, idB, idC].sort());
+  d.close();
+  await sleep(250);
+
   // --- saída ---------------------------------------------------------------
   const peerLeftOnA = waitFor(a, "voice:peer-left");
   const memberLeftOnA = waitFor(a, "member:left");
-  // O id tem que ser lido antes do close: o socket.io-client zera `.id` ao cair.
-  const bId = b.id;
   b.close();
-  check("saída avisa os peers da call", (await peerLeftOnA)?.memberId, bId);
-  check("saída avisa a lista de membros", (await memberLeftOnA)?.id, bId);
+  check("saída avisa os peers da call", (await peerLeftOnA)?.memberId, idB);
+  check("saída avisa a lista de membros", (await memberLeftOnA)?.id, idB);
 
   // --- rate limit ----------------------------------------------------------
   const flood = collect(c, "chat:message");

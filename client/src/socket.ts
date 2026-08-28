@@ -1,5 +1,5 @@
 import { io, type Socket } from "socket.io-client";
-import type { Member, Message, ServerSnapshot, SignalPayload } from "@/types";
+import type { MediaSlot, Member, Message, ServerSnapshot, SignalPayload } from "@/types";
 
 /**
  * Contrato de eventos com `server/signaling.js`, escrito como tipo pra o
@@ -29,6 +29,10 @@ export interface IdentifyReply {
   ok: boolean;
   error?: string;
   selfId?: string;
+  /** Mesma coisa que `selfId`; guardado no navegador pra reassumir depois. */
+  userId?: string;
+  /** O servidor tem credenciais do SFU: a mídia passa por servidor. */
+  sfu?: boolean;
   state?: ServerSnapshot;
 }
 
@@ -37,15 +41,51 @@ export interface VoiceJoinReply {
   error?: string;
   channelId?: string;
   peers?: Member[];
+  sfu?: boolean;
+}
+
+/** Resposta comum dos eventos `sfu:*`. Erro nunca é fatal: o cliente cai pra malha. */
+interface SfuReply {
+  ok: boolean;
+  error?: string;
+}
+
+interface SfuPublishReply extends SfuReply {
+  description?: RTCSessionDescriptionInit | null;
+}
+
+interface SfuSubscribeReply extends SfuReply {
+  description?: RTCSessionDescriptionInit | null;
+  requiresImmediateRenegotiation?: boolean;
+  tracks?: Array<{ mid: string | null; trackName: string | null }>;
 }
 
 interface ClientEvents {
-  identify: (payload: { username: string; password: string }, ack: (reply: IdentifyReply) => void) => void;
+  identify: (
+    payload: { username: string; password: string; userId: string | null },
+    ack: (reply: IdentifyReply) => void,
+  ) => void;
   "chat:send": (payload: { channelId: string; content: string }) => void;
   "voice:join": (payload: { channelId: string }, ack: (reply: VoiceJoinReply) => void) => void;
   "voice:leave": () => void;
   "voice:state": (payload: Partial<VoiceFlags>) => void;
   "rtc:signal": (payload: SignalPayload & { to: string }) => void;
+  "sfu:join": (payload: Record<string, never>, ack: (reply: SfuReply) => void) => void;
+  "sfu:publish": (
+    payload: {
+      description: RTCSessionDescriptionInit;
+      tracks: Array<{ mid: string; slot: MediaSlot }>;
+    },
+    ack: (reply: SfuPublishReply) => void,
+  ) => void;
+  "sfu:subscribe": (
+    payload: { tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string }> },
+    ack: (reply: SfuSubscribeReply) => void,
+  ) => void;
+  "sfu:renegotiate": (
+    payload: { description: RTCSessionDescriptionInit },
+    ack: (reply: SfuReply) => void,
+  ) => void;
 }
 
 export type AppSocket = Socket<ServerEvents, ClientEvents>;
@@ -70,11 +110,53 @@ export function createSocket(): AppSocket {
   });
 }
 
-export const identify = (socket: AppSocket, username: string, password: string) =>
-  new Promise<IdentifyReply>((resolve) => socket.emit("identify", { username, password }, resolve));
+/** Ack com prazo: sem isso um servidor mudo travaria a entrada pra sempre. */
+function ask<T extends SfuReply>(
+  send: (resolve: (reply: T) => void) => void,
+  timeoutMs = 12_000,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let done = false;
+    const finish = (reply: T) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(reply);
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: "timeout" } as T), timeoutMs);
+    send(finish);
+  });
+}
+
+export const identify = (
+  socket: AppSocket,
+  username: string,
+  password: string,
+  userId: string | null,
+) =>
+  new Promise<IdentifyReply>((resolve) =>
+    socket.emit("identify", { username, password, userId }, resolve),
+  );
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
   new Promise<VoiceJoinReply>((resolve) => socket.emit("voice:join", { channelId }, resolve));
+
+export const sfuJoin = (socket: AppSocket) =>
+  ask<SfuReply>((resolve) => socket.emit("sfu:join", {}, resolve));
+
+export const sfuPublish = (
+  socket: AppSocket,
+  description: RTCSessionDescriptionInit,
+  tracks: Array<{ mid: string; slot: MediaSlot }>,
+) => ask<SfuPublishReply>((resolve) => socket.emit("sfu:publish", { description, tracks }, resolve));
+
+export const sfuSubscribe = (
+  socket: AppSocket,
+  tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string }>,
+) => ask<SfuSubscribeReply>((resolve) => socket.emit("sfu:subscribe", { tracks }, resolve));
+
+export const sfuRenegotiate = (socket: AppSocket, description: RTCSessionDescriptionInit) =>
+  ask<SfuReply>((resolve) => socket.emit("sfu:renegotiate", { description }, resolve));
 
 /** Códigos do servidor traduzidos pra algo que a pessoa na tela entenda. */
 export function describeSocketError(code: string | undefined): string {

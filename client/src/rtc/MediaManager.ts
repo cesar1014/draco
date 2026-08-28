@@ -1,4 +1,10 @@
-import { selectDesktopSource, type DesktopSource } from "@/desktop";
+import {
+  claimDesktopSource,
+  isDesktopApp,
+  reportCaptureFailure,
+  type CaptureFailure,
+  type ClaimFailure,
+} from "@/desktop";
 import { MicChain, loadDenoise, type DenoiseMode, type DenoiseStrength } from "@/rtc/denoise";
 
 /** Ponto único de acesso a microfone, câmera e tela. */
@@ -74,11 +80,21 @@ export function normalizeCameraOptions(value: unknown): CameraOptions {
 
 export type ScreenResolution = "720" | "1080" | "source";
 
+/**
+ * O que está na tela decide o que sacrificar quando a banda aperta. Jogo e vídeo
+ * preferem perder resolução a engasgar; texto e código preferem o contrário.
+ * `auto` deixa o codec decidir pelo conteúdo que está chegando.
+ */
+export type ScreenContent = "auto" | "game" | "text";
+
+export const SCREEN_CONTENTS: readonly ScreenContent[] = ["auto", "game", "text"] as const;
+
 export interface ScreenShareOptions {
   resolution: ScreenResolution;
   frameRate: FrameRate;
   /** Levar o som do sistema junto com a imagem. */
   systemAudio: boolean;
+  content: ScreenContent;
 }
 
 export const SCREEN_RESOLUTIONS: readonly ScreenResolution[] = ["720", "1080", "source"] as const;
@@ -87,7 +103,18 @@ export const DEFAULT_SCREEN_OPTIONS: ScreenShareOptions = {
   resolution: "1080",
   frameRate: 30,
   systemAudio: true,
+  content: "auto",
 };
+
+const SCREEN_CONTENT_HINT: Record<ScreenContent, string> = {
+  auto: "",
+  game: "motion",
+  text: "detail",
+};
+
+/** Jogo tem que continuar fluindo; texto tem que continuar legível. */
+export const screenDegradation = (content: ScreenContent): RTCDegradationPreference =>
+  content === "game" ? "maintain-framerate" : "maintain-resolution";
 
 /** `source` não limita: entrega o tamanho nativo da tela. */
 const SCREEN_HEIGHT: Record<ScreenResolution, number | null> = { "720": 720, "1080": 1080, source: null };
@@ -107,14 +134,13 @@ function screenConstraints(options: ScreenShareOptions): MediaTrackConstraints {
 }
 
 /**
- * Em malha P2P o mesmo vídeo sobe uma vez **por pessoa** na call, então os tetos
- * são baixos pro que a resolução sugere. O painel mostra a multiplicação antes
- * de começar.
+ * Teto de envio pro SFU, que repassa a mesma camada pra todos: sobe uma vez, não
+ * uma vez por pessoa. O painel mostra o número antes de começar.
  */
 const SCREEN_BITRATE: Record<ScreenResolution, Record<FrameRate, number>> = {
-  "720": { 15: 1_000_000, 24: 1_300_000, 30: 1_500_000, 60: 2_500_000 },
-  "1080": { 15: 1_800_000, 24: 2_400_000, 30: 3_000_000, 60: 4_500_000 },
-  source: { 15: 2_500_000, 24: 3_200_000, 30: 4_000_000, 60: 6_000_000 },
+  "720": { 15: 1_200_000, 24: 1_600_000, 30: 2_000_000, 60: 3_000_000 },
+  "1080": { 15: 2_200_000, 24: 2_800_000, 30: 3_500_000, 60: 5_000_000 },
+  source: { 15: 3_000_000, 24: 3_800_000, 30: 4_500_000, 60: 6_500_000 },
 };
 
 export const screenBitrate = (options: ScreenShareOptions): number =>
@@ -131,31 +157,101 @@ export function normalizeScreenOptions(value: unknown): ScreenShareOptions {
       : DEFAULT_SCREEN_OPTIONS.frameRate,
     systemAudio:
       typeof raw.systemAudio === "boolean" ? raw.systemAudio : DEFAULT_SCREEN_OPTIONS.systemAudio,
+    content: SCREEN_CONTENTS.includes(raw.content as ScreenContent)
+      ? (raw.content as ScreenContent)
+      : DEFAULT_SCREEN_OPTIONS.content,
   };
 }
 
 // --- erros e suporte ---------------------------------------------------------
 
-/** É aqui que a maioria das calls falha na primeira tentativa; vale ser claro. */
-export function describeMediaError(error: unknown): string {
-  const name = error instanceof Error ? error.name : "";
-  switch (name) {
-    case "NotAllowedError":
-    case "SecurityError":
-      return "Permissão negada. Clique no ícone de câmera/microfone na barra de endereço e permita o acesso.";
-    case "NotFoundError":
-    case "OverconstrainedError":
-      return "Nenhum dispositivo encontrado. Verifique se o microfone ou a câmera estão conectados.";
-    case "NotReadableError":
-      return "O dispositivo está em uso por outro programa. Feche o que estiver usando a câmera e tente de novo.";
-    case "AbortError":
-      return "O navegador interrompeu o acesso ao dispositivo. Tente novamente.";
-    default:
-      return error instanceof Error && error.message
-        ? error.message
-        : "Falha ao acessar o dispositivo.";
+const CLAIM_MESSAGE: Record<ClaimFailure, string> = {
+  gone: "Essa janela não está mais aberta. Clique em Atualizar e escolha outra.",
+  denied: "O app não autorizou a captura desta página.",
+  invalid: "Escolha uma tela ou janela antes de compartilhar.",
+  failed: "Não foi possível preparar a captura da tela. Tente novamente.",
+  unavailable: "Este modo de captura só existe no app para Windows.",
+};
+
+/** Captura de tela que não vale mostrar como erro genérico de dispositivo. */
+export class ScreenCaptureError extends Error {
+  constructor(
+    readonly reason: ClaimFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ScreenCaptureError";
   }
 }
+
+/** Cancelar o diálogo de captura ou de permissão: intenção, não falha. */
+export const userCancelled = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.name !== "ScreenCaptureError" &&
+  /NotAllowed|Abort/.test(error.name);
+
+export function describeCameraError(error: unknown): string {
+  switch (errorName(error)) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "Permissão negada. Clique no ícone de câmera na barra de endereço e permita o acesso.";
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return "Nenhuma câmera encontrada. Verifique se ela está conectada.";
+    case "NotReadableError":
+      return "A câmera está em uso por outro programa. Feche o que estiver usando a câmera e tente de novo.";
+    case "AbortError":
+      return "O navegador interrompeu o acesso à câmera. Tente novamente.";
+    default:
+      return fallbackMessage(error, "Falha ao abrir a câmera.");
+  }
+}
+
+export function describeMicrophoneError(error: unknown): string {
+  switch (errorName(error)) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "Permissão negada. Clique no ícone de microfone na barra de endereço e permita o acesso.";
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return "Nenhum microfone encontrado. Verifique se ele está conectado.";
+    case "NotReadableError":
+      return "O microfone está em uso por outro programa. Feche o que estiver usando o microfone e tente de novo.";
+    case "AbortError":
+      return "O navegador interrompeu o acesso ao microfone. Tente novamente.";
+    default:
+      return fallbackMessage(error, "Falha ao abrir o microfone.");
+  }
+}
+
+/**
+ * Captura de tela não disputa dispositivo com ninguém, então `NotReadableError`
+ * aqui não significa "outro programa está usando" — significa que o sistema não
+ * entregou os quadros. Dizer a frase de dispositivo ocupado manda a pessoa fechar
+ * programas que não têm nada a ver com o problema.
+ */
+export function describeScreenShareError(error: unknown): string {
+  if (error instanceof ScreenCaptureError) return error.message;
+  switch (errorName(error)) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "Permissão de captura de tela negada.";
+    case "NotFoundError":
+      return "A tela ou janela escolhida não está mais disponível. Escolha outra e tente de novo.";
+    case "OverconstrainedError":
+      return "A resolução escolhida não é possível nessa tela. Tente 720p.";
+    case "NotReadableError":
+    case "AbortError":
+      return "Não foi possível iniciar a captura da tela. Tente compartilhar de novo, ou escolha uma janela específica em vez da tela inteira.";
+    default:
+      return fallbackMessage(error, "Não foi possível iniciar a captura da tela.");
+  }
+}
+
+const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
+
+const fallbackMessage = (error: unknown, fallback: string): string =>
+  error instanceof Error && error.message ? error.message : fallback;
 
 /** `getUserMedia` só existe em contexto seguro: HTTPS ou localhost. */
 export function mediaSupported(): boolean {
@@ -164,6 +260,13 @@ export function mediaSupported(): boolean {
 
 export function screenShareSupported(): boolean {
   return Boolean(navigator.mediaDevices?.getDisplayMedia);
+}
+
+export interface ScreenCapture {
+  video: MediaStreamTrack;
+  audio: MediaStreamTrack | null;
+  /** A imagem veio, o som do sistema não. A transmissão segue; a interface avisa. */
+  systemAudioFailed: boolean;
 }
 
 export class MediaManager {
@@ -294,30 +397,86 @@ export class MediaManager {
   }
 
   /**
-   * `source` só chega no app de desktop, onde a janela foi escolhida numa
+   * `sourceId` só chega no app de desktop, onde a janela foi escolhida numa
    * miniatura. No navegador quem pergunta é o próprio navegador, e nenhuma
    * página pode substituir aquele diálogo.
+   *
+   * A tela é o essencial e o som do sistema é o extra: se o loopback falhar, a
+   * transmissão começa muda em vez de não começar. `systemAudioFailed` volta
+   * verdadeiro nesse caso, pro aviso discreto na interface.
    */
   async openScreen(
     options: ScreenShareOptions = DEFAULT_SCREEN_OPTIONS,
-    source: DesktopSource | null = null,
-  ): Promise<{ video: MediaStreamTrack; audio: MediaStreamTrack | null }> {
-    if (source) await selectDesktopSource(source);
+    sourceId: string | null = null,
+  ): Promise<ScreenCapture> {
+    const wantsAudio = options.systemAudio;
+    const kind = sourceId?.startsWith("window:") ? "window" : sourceId ? "screen" : "browser";
+    const fail = (stage: CaptureFailure["stage"], error: unknown) => {
+      reportCaptureFailure({
+        stage,
+        name: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        sourceId: sourceId ?? "",
+        sourceKind: kind,
+        systemAudio: wantsAudio,
+      });
+    };
 
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: screenConstraints(options),
-      audio: options.systemAudio,
-    });
+    if (sourceId && isDesktopApp()) {
+      const claim = await claimDesktopSource(sourceId, wantsAudio);
+      if (!claim.ok) {
+        const error = new ScreenCaptureError(claim.reason, CLAIM_MESSAGE[claim.reason]);
+        fail("claim", error);
+        throw error;
+      }
+    }
+
+    const video = screenConstraints(options);
+    let stream: MediaStream;
+    let systemAudioFailed = false;
+
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: wantsAudio });
+    } catch (error) {
+      if (!wantsAudio || userCancelled(error)) {
+        fail("getDisplayMedia", error);
+        throw error;
+      }
+      // Loopback indisponível derruba o pedido inteiro, mesmo com a tela pronta
+      // pra capturar. Segunda tentativa sem áudio: perder o som do jogo é
+      // aceitável, perder a transmissão não.
+      fail("systemAudio", error);
+      if (sourceId && isDesktopApp()) {
+        const claim = await claimDesktopSource(sourceId, false);
+        if (!claim.ok) {
+          const gone = new ScreenCaptureError(claim.reason, CLAIM_MESSAGE[claim.reason]);
+          fail("claim", gone);
+          throw gone;
+        }
+      }
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+      } catch (retryError) {
+        fail("getDisplayMedia", retryError);
+        throw retryError;
+      }
+      systemAudioFailed = true;
+    }
 
     this.#stop(this.#screen);
     this.#screen = stream;
+
     const track = stream.getVideoTracks()[0];
-    // Tela é texto e linha fina: nitidez importa mais que fluidez.
-    track.contentHint = "detail";
+    track.contentHint = SCREEN_CONTENT_HINT[options.content];
+
     const audio = stream.getAudioTracks()[0] ?? null;
     // Som de jogo e de vídeo não é fala: sem isso o codec corta os graves.
     if (audio) audio.contentHint = "music";
-    return { video: track, audio };
+    // Pedimos áudio, a captura veio, e ainda assim não há trilha de som: no
+    // Windows isso é o loopback silenciosamente indisponível.
+    if (wantsAudio && !audio) systemAudioFailed = true;
+
+    return { video: track, audio, systemAudioFailed };
   }
 
   /**
@@ -326,7 +485,10 @@ export class MediaManager {
    * outro lado por um instante; `applyConstraints` não.
    */
   async applyScreenOptions(options: ScreenShareOptions): Promise<void> {
-    await this.screenTrack?.applyConstraints(screenConstraints(options));
+    const track = this.screenTrack;
+    if (!track) return;
+    track.contentHint = SCREEN_CONTENT_HINT[options.content];
+    await track.applyConstraints(screenConstraints(options));
   }
 
   /** Mesma ideia da tela: a câmera muda de tamanho sem piscar. */

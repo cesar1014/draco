@@ -16,6 +16,10 @@ export interface Channel {
 }
 
 export interface Member {
+  /**
+   * Identidade da pessoa, estável entre reconexões — não é o id do socket. É por
+   * isso que o volume ajustado e o tile fixado sobrevivem a uma queda de Wi-Fi.
+   */
   id: string;
   username: string;
   color: string;
@@ -25,6 +29,12 @@ export interface Member {
   camOn: boolean;
   screenOn: boolean;
   speaking: boolean;
+  /** Quando entrou no servidor, pra ordenar a lista de Online por chegada. */
+  since: number;
+  /** Sessão da pessoa no SFU. `null` em malha direta. */
+  sfuSessionId: string | null;
+  /** Nome de cada trilha publicada no SFU, por slot. É o que se assina. */
+  sfuTracks: Partial<Record<MediaSlot, string | null>>;
 }
 
 export interface Message {
@@ -53,9 +63,10 @@ export interface IceConfigResponse {
 }
 
 /**
- * As quatro trilhas que cada conexão carrega, sempre nesta ordem. A ordem é
- * contrato: quem oferta cria os transceivers assim e quem responde os recebe na
- * mesma sequência, então a posição diz qual trilha que chega é o quê.
+ * As quatro trilhas que cada conexão carrega, sempre nesta ordem. Em malha a
+ * ordem é contrato: quem oferta cria os transceivers assim e quem responde os
+ * recebe na mesma sequência, então a posição diz qual trilha que chega é o quê.
+ * Com SFU cada trilha tem nome próprio e a ordem deixa de importar.
  */
 export type MediaSlot = "mic" | "camera" | "screen" | "screenAudio";
 

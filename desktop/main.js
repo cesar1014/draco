@@ -35,11 +35,25 @@ function sameOrigin(value) {
 }
 
 /**
- * Fonte escolhida no seletor de miniaturas, esperando o `getDisplayMedia` que vem
- * logo atrás. É um passo em dois tempos porque `getDisplayMedia` não aceita
+ * Captura escolhida no seletor de miniaturas, esperando o `getDisplayMedia` que
+ * vem logo atrás. É um passo em dois tempos porque `getDisplayMedia` não aceita
  * "quero esta janela" como argumento: quem decide é sempre o lado privilegiado.
+ *
+ * Guarda o id, não o objeto que o `desktopCapturer` devolveu. Entre escolher e
+ * capturar a janela pode ter sido fechada ou reaberta, e conceder um handle velho
+ * resulta em captura de nada — sem erro que ajude a entender o porquê.
  */
-let pendingSource = null;
+let pendingCapture = null;
+
+/** Handle atual daquele id, ou `null` quando a tela/janela não existe mais. */
+async function findSource(sourceId) {
+  const types = sourceId.startsWith("screen:") ? ["screen"] : ["window"];
+  const sources = await desktopCapturer.getSources({
+    types,
+    thumbnailSize: { width: 0, height: 0 },
+  });
+  return sources.find((source) => source.id === sourceId) ?? null;
+}
 
 /** Permissões que o app concede à própria página. O resto é recusado. */
 const ALLOWED_PERMISSIONS = new Set([
@@ -64,30 +78,43 @@ function configureSession(ses) {
     return ALLOWED_PERMISSIONS.has(permission) && sameOrigin(requestingOrigin);
   });
 
-  ses.setDisplayMediaRequestHandler((request, callback) => {
-    const source = pendingSource;
-    pendingSource = null;
+  ses.setDisplayMediaRequestHandler(
+    async (request, callback) => {
+      const capture = pendingCapture;
+      pendingCapture = null;
 
-    if (!source) {
-      // Ninguém escolheu nada: não há o que conceder. Acontece só se a página
-      // pedir captura sem passar pelo painel — e aí não compartilhar é o certo,
-      // porque mostrar a tela errada é pior que não mostrar nenhuma.
-      try {
+      if (!capture) {
+        // Ninguém escolheu nada: não há o que conceder. Acontece só se a página
+        // pedir captura sem passar pelo painel — e aí não compartilhar é o certo,
+        // porque mostrar a tela errada é pior que não mostrar nenhuma.
         callback({});
-      } catch (error) {
-        console.error("[desktop] pedido de captura sem fonte escolhida:", error);
+        return;
       }
-      return;
-    }
 
-    callback({
-      video: source,
+      let source = null;
+      try {
+        source = await findSource(capture.sourceId);
+      } catch (error) {
+        console.error("[desktop] falha ao reler as fontes de captura:", error);
+      }
+
+      if (!source) {
+        console.warn(`[desktop] fonte ${capture.sourceId} sumiu antes da captura`);
+        callback({});
+        return;
+      }
+
       // `loopback` é o som do sistema, e só existe no Windows. Em outro sistema,
       // pedir isso não daria erro visível — viria uma trilha muda, que é pior:
       // a pessoa acha que mandou o áudio do jogo e ninguém ouviu nada.
-      ...(request.audioRequested && process.platform === "win32" ? { audio: "loopback" } : {}),
-    });
-  });
+      const loopback =
+        request.audioRequested && capture.systemAudio && process.platform === "win32";
+
+      callback({ video: source, ...(loopback ? { audio: "loopback" } : {}) });
+    },
+    // O seletor de miniaturas é o nosso; o do sistema abriria em cima dele.
+    { useSystemPicker: false },
+  );
 }
 
 /** Telas e janelas abertas, com miniatura em PNG pronta pro `<img>` da página. */
@@ -118,12 +145,49 @@ ipcMain.handle("desktop:list-sources", async (event) => {
   });
 });
 
-ipcMain.handle("desktop:select-source", (event, source) => {
-  if (!sameOrigin(event.senderFrame?.url ?? "")) return;
-  // Só id e nome, e só se forem texto: o que chega aqui vem do renderer, e
+/**
+ * Marca a fonte do próximo `getDisplayMedia` e confirma, ali mesmo, que ela ainda
+ * existe. Validar aqui — e não só na hora de conceder — é o que permite à página
+ * dizer "essa janela foi fechada" em vez de mostrar uma falha de permissão que
+ * não tem nada a ver com permissão.
+ */
+ipcMain.handle("desktop:select-source", async (event, request) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "")) return { ok: false, reason: "denied" };
+  // Só o que precisamos, e só do tipo certo: o que chega aqui vem do renderer, e
   // repassar objeto inteiro de outro processo pra dentro do Electron é convite.
-  if (!source || typeof source.id !== "string" || typeof source.name !== "string") return;
-  pendingSource = { id: source.id, name: source.name };
+  if (!request || typeof request.sourceId !== "string") return { ok: false, reason: "invalid" };
+
+  try {
+    if (!(await findSource(request.sourceId))) {
+      pendingCapture = null;
+      return { ok: false, reason: "gone" };
+    }
+  } catch (error) {
+    console.error("[desktop] falha ao validar a fonte escolhida:", error);
+    return { ok: false, reason: "failed" };
+  }
+
+  pendingCapture = { sourceId: request.sourceId, systemAudio: request.systemAudio === true };
+  return { ok: true };
+});
+
+/**
+ * Diagnóstico de captura no console do app. Fica aqui, e não na interface: quem
+ * está na call quer uma frase útil, não `name`, `sourceId` e etapa da falha.
+ */
+ipcMain.handle("desktop:log-capture-failure", (event, report) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "")) return;
+  if (!report || typeof report !== "object") return;
+  console.error("[desktop] captura de tela falhou:", {
+    stage: String(report.stage ?? ""),
+    error: `${report.name ?? "?"}: ${report.message ?? ""}`,
+    sourceId: String(report.sourceId ?? ""),
+    sourceKind: String(report.sourceKind ?? ""),
+    systemAudio: report.systemAudio === true,
+    platform: process.platform,
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+  });
 });
 
 function showError(window, message) {
