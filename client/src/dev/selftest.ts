@@ -5,7 +5,7 @@ import { SLOT_ORDER, type MediaSlot } from "@/types";
 /**
  * Teste ponta a ponta do WebRTC dentro de uma única aba.
  *
- * Duas instâncias de `VoiceEngine` conversam entre si com mídia sintética —
+ * Duas instâncias de `VoiceEngine` conversam entre si com mídia sintética:
  * oscilador no lugar do microfone e canvas no lugar da câmera. Então não precisa
  * de webcam, nem de permissão, nem de uma segunda pessoa pra provar que o núcleo
  * funciona: conexão fechando, mídia trafegando nos dois sentidos, mute cortando
@@ -16,7 +16,7 @@ import { SLOT_ORDER, type MediaSlot } from "@/types";
  * - As cores dos canvas (vermelho na câmera, azul na tela) permitem *ler o pixel*
  *   do vídeo recebido. É o que prova que cada trilha caiu no slot certo.
  * - O áudio é medido nos dois sentidos. `A` responde à oferta e `B` oferta, então
- *   testar só um lado deixaria metade do caminho sem cobertura — e foi exatamente
+ *   testar só um lado deixaria metade do caminho sem cobertura, e foi exatamente
  *   ali que se esconderam os transceivers duplicados de quem responde.
  */
 
@@ -98,15 +98,15 @@ function syntheticVideo(color: string): { track: MediaStreamTrack; stop: () => v
 /**
  * Medidor de volume de um áudio recebido.
  *
- * As estatísticas de `getStats()` que existiriam pra isso — `audioLevel` e
- * `totalAudioEnergy` — vêm zeradas aqui, e `bytesReceived` continua subindo com
+ * As estatísticas de `getStats()` que existiriam pra isso (`audioLevel` e
+ * `totalAudioEnergy`) vêm zeradas aqui, e `bytesReceived` continua subindo com
  * o microfone mudo (a conexão segue mandando silêncio, que é justamente o que se
  * quer). Então quem mede de fato é um `AnalyserNode` sobre a trilha recebida.
  */
 function remoteMeter(stream: MediaStream) {
   const ctx = audioContext();
   // Chrome só decodifica áudio remoto que tenha algum destino. O elemento em
-  // volume 0 é esse destino — não sai som nenhum pelo alto-falante.
+  // volume 0 é esse destino, e não sai som nenhum pelo alto-falante.
   const sink = document.createElement("audio");
   sink.srcObject = stream;
   sink.volume = 0;
@@ -120,7 +120,7 @@ function remoteMeter(stream: MediaStream) {
   const buffer = new Float32Array(new ArrayBuffer(analyser.fftSize * 4));
 
   return {
-    /** Maior RMS observado na janela — pico, não média, pra não diluir a sílaba. */
+    /** Maior RMS observado na janela: pico, não média, pra não diluir a sílaba. */
     async peak(windowMs: number): Promise<number> {
       let peak = 0;
       const deadline = Date.now() + windowMs;
@@ -151,7 +151,7 @@ async function samplePixel(stream: MediaStream): Promise<[number, number, number
     await video.play();
   } catch {
     // Autoplay pode recusar; o vídeo mudo normalmente passa, e se não passar a
-    // asserção de cor falha com detalhe — o que já é a informação que interessa.
+    // asserção de cor falha com detalhe, o que já é a informação que interessa.
   }
   await waitUntil(() => video.videoWidth > 0, 5000);
   await sleep(400);
@@ -175,7 +175,7 @@ async function inboundRows(pc: RTCPeerConnection, kind: "audio" | "video") {
 }
 
 /**
- * Quadros já decodificados de um slot, achado pela posição do transceiver — o
+ * Quadros já decodificados de um slot, achado pela posição do transceiver. O
  * mesmo contrato de ordem que o motor usa, olhado por fora.
  */
 async function framesDecoded(pc: RTCPeerConnection, slot: MediaSlot): Promise<number> {
@@ -195,7 +195,7 @@ const sumOf = (rows: Record<string, number>[], field: string) =>
 /**
  * Despeja o resultado parcial em `selftest-report.json`, via a rota que só o
  * servidor de desenvolvimento monta. A cada asserção, não só no fim: o teste é
- * pesado e, se a aba travar no meio, o console some — o arquivo sobra com o
+ * pesado e, se a aba travar no meio, o console some, e o arquivo sobra com o
  * que já tinha sido verificado até ali.
  */
 function publish(results: TestResult[]): void {
@@ -220,7 +220,7 @@ export async function runSelfTest(report: (result: TestResult) => void): Promise
   };
 
   // O oscilador não produz nada com o contexto de áudio suspenso, e ele só sai
-  // de suspenso depois de um gesto — daí este teste rodar a partir de um botão.
+  // de suspenso depois de um gesto, daí este teste rodar a partir de um botão.
   const ctx = audioContext();
   if (ctx.state === "suspended") await ctx.resume();
   check("contexto de áudio ativo", ctx.state === "running", `state=${ctx.state}`);
@@ -387,7 +387,7 @@ export async function runSelfTest(report: (result: TestResult) => void): Promise
 
     // --- desligar a câmera --------------------------------------------------
     // Não se olha o `muted` da trilha recebida aqui: `replaceTrack(null)` para de
-    // enviar, mas o navegador não promete avisar por evento — um clone que
+    // enviar, mas o navegador não promete avisar por evento, e um clone que
     // dependesse disso deixaria o último quadro congelado na tela. Quem apaga o
     // tile é o estado que vem pelo socket; o que o motor precisa garantir é que
     // os quadros param de chegar, e que só os da câmera param.
@@ -417,7 +417,7 @@ export async function runSelfTest(report: (result: TestResult) => void): Promise
     // assimetria de quem oferta existe pra nunca acontecer. O tratamento de
     // colisão fica no motor como rede de segurança.
     // `engineB` é declarado com `let` (as duas instâncias se referenciam), e esse
-    // tipo não sobrevive dentro dos closures de espera abaixo — daí o atalho.
+    // tipo não sobrevive dentro dos closures de espera abaixo, daí o atalho.
     const negotiationsB = () => engineB!.negotiationCount(A_ID);
     const bothConnected = () => pcA.connectionState === "connected" && pcB.connectionState === "connected";
 

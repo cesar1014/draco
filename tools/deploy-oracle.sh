@@ -5,7 +5,7 @@
 #   bash tools/deploy-oracle.sh seu-nome.duckdns.org
 #
 # Pode rodar de novo quantas vezes quiser: nada é duplicado e o .env é
-# preservado — o script só preenche o que estiver em branco.
+# preservado: o script só preenche o que estiver em branco.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -15,7 +15,7 @@ if [ -z "$DOMAIN" ]; then
   exit 1
 fi
 if [ "$(id -u)" = "0" ]; then
-  echo "rode como usuário normal (ubuntu), não como root — o script chama sudo onde precisa." >&2
+  echo "rode como usuário normal (ubuntu), não como root. O script chama sudo onde precisa." >&2
   exit 1
 fi
 
@@ -28,7 +28,7 @@ TURN_PORTS="49160:49200"
 say() { printf '\n\033[1;35m▸ %s\033[0m\n' "$1"; }
 
 # Lê a chave do .env se já tiver valor; senão grava o valor gerado. Em qualquer
-# caso devolve o valor final pelo stdout. Com "force", o valor passado manda —
+# caso devolve o valor final pelo stdout. Com "force", o valor passado manda,
 # é o caso de ORIGIN e TURN_HOST, que saem do domínio dado na linha de comando.
 set_env() {
   local key="$1" value="$2" mode="${3:-keep}" file="$ROOT/.env" current
@@ -105,7 +105,7 @@ npm run build
 say "Serviço draco"
 sudo tee /etc/systemd/system/draco.service >/dev/null <<EOF
 [Unit]
-Description=Draco — voz, webcam e tela
+Description=Draco: voz, webcam e tela
 After=network.target
 
 [Service]

@@ -1,7 +1,7 @@
 import type { IceConfigResponse } from "@/types";
 
 /**
- * Só STUN público. É o fallback quando `/api/ice` não responde — melhor tentar
+ * Só STUN público. É o fallback quando `/api/ice` não responde, e melhor tentar
  * conectar com o que dá do que não abrir a call.
  */
 const FALLBACK: IceConfigResponse = {

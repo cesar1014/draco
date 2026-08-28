@@ -20,7 +20,7 @@ function AudioOut({ stream, volume, muted, sinkId }: AudioOutProps) {
   const boosted = source !== stream;
   const ref = useStreamRef<HTMLAudioElement>(source);
   // Safari só entrega áudio remoto pra Web Audio se o stream também estiver preso
-  // num elemento. Este fica no mudo — quem toca é o de cima.
+  // num elemento. Este fica no mudo, quem toca é o de cima.
   const anchor = useStreamRef<HTMLAudioElement>(boosted ? stream : null);
 
   // `volume` e `muted` são propriedades do elemento, não atributos: nenhuma se
@@ -54,7 +54,7 @@ function AudioOut({ stream, volume, muted, sinkId }: AudioOutProps) {
 
 /**
  * Acima de 100% o `<audio>` não ajuda: `volume` satura em 1. A saída então passa
- * a ser um desvio pela Web Audio — ganho, limitador e de volta pra um stream que
+ * a ser um desvio pela Web Audio: ganho, limitador e de volta pra um stream que
  * o mesmo elemento toca, de modo que escolher fone e silenciar continuam iguais.
  *
  * O desvio, uma vez ligado, fica: religá-lo a cada ajuste trocaria o `srcObject`

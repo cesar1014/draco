@@ -19,7 +19,7 @@ const useHttps = process.argv.includes("--https");
 
 /**
  * `--dev` significa "estou atrás do proxy do Vite": use a porta combinada em
- * `shared/ports.js` e ignore qualquer `PORT` do ambiente. Ignorar é o ponto —
+ * `shared/ports.js` e ignore qualquer `PORT` do ambiente. Ignorar é o ponto:
  * quem roda o dev pode ter um `PORT` herdado destinado ao servidor da página, e
  * a sinalização subiria na mesma porta que o Vite, deixando o proxy apontando
  * pro vazio. Sem `--dev` (produção) manda o `PORT` da plataforma de deploy.
@@ -28,7 +28,7 @@ const isDev = process.argv.includes("--dev");
 const port = isDev ? DEV_API_PORT : Number(process.env.PORT ?? DEV_API_PORT);
 const origin = process.env.ORIGIN?.trim() || null;
 
-/** Endereços IPv4 da máquina na rede local — pra imprimir link que o celular abre. */
+/** Endereços IPv4 da máquina na rede local, pra imprimir link que o celular abre. */
 function lanAddresses() {
   return Object.values(networkInterfaces())
     .flat()
@@ -38,7 +38,7 @@ function lanAddresses() {
 
 /**
  * Certificado autoassinado pra rede local. Navegador só libera câmera e
- * microfone em origem segura, e `localhost` é a única exceção — então testar no
+ * microfone em origem segura, e `localhost` é a única exceção, então testar no
  * celular ou em outro PC da casa exige HTTPS, mesmo que o certificado seja
  * "inválido" (aparece um aviso que se aceita uma vez por aparelho).
  */
@@ -140,7 +140,7 @@ server.listen(port, "0.0.0.0", async () => {
   }
   console.log("");
   console.log(`  senha da sala  ·  ${process.env.ROOM_PASSWORD ? "configurada" : "nenhuma (link aberto)"}`);
-  console.log(`  TURN           ·  ${ice.hasTurn ? `ativo (${ice.source})` : "ausente — só STUN"}`);
+  console.log(`  TURN           ·  ${ice.hasTurn ? `ativo (${ice.source})` : "ausente, só STUN"}`);
   if (ice.warning) console.log(`  atenção        ·  ${ice.warning}`);
   console.log("");
 });

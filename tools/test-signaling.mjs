@@ -1,6 +1,6 @@
 /**
  * Teste de integração da sinalização. Sobe o servidor num porta própria, conecta
- * clientes de verdade via socket.io-client e checa o protocolo inteiro —
+ * clientes de verdade via socket.io-client e checa o protocolo inteiro,
  * incluindo as regras de segurança, que são as fáceis de quebrar sem perceber.
  *
  *   node tools/test-signaling.mjs
@@ -27,7 +27,7 @@ function check(label, got, want) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Espera um evento chegar, com prazo — teste que trava é pior que teste que falha. */
+/** Espera um evento chegar, com prazo: teste que trava não diz onde parou. */
 function waitFor(socket, event, timeout = 2000) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {

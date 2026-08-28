@@ -433,7 +433,7 @@ export function SettingsModal() {
                 />
                 <span>
                   <strong>Espelhar minha câmera</strong>
-                  <em>Só muda o que você vê — os outros recebem a imagem normal.</em>
+                  <em>Só muda o que você vê. Os outros recebem a imagem normal.</em>
                 </span>
               </label>
             </section>
@@ -537,7 +537,7 @@ export function SettingsModal() {
               )}
               <p className="hint">
                 Vale só para você, e continua valendo quando a pessoa entrar de novo. Acima de 100%
-                o som é reforçado — resolve microfone fraco, e o limitador evita estouro. O som da
+                o som é reforçado, o que resolve microfone fraco, e o limitador evita estouro. O som da
                 tela é separado: dá pra baixar o jogo de alguém e continuar ouvindo a pessoa.
               </p>
             </section>
@@ -605,7 +605,7 @@ export function SettingsModal() {
                 <a href="?selftest=1" target="_blank" rel="noreferrer">
                   autoteste
                 </a>{" "}
-                — roda em outra aba e não interrompe esta call.
+                (roda em outra aba e não interrompe esta call).
               </p>
             </section>
           )}

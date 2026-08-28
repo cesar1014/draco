@@ -66,7 +66,7 @@ export function ScreenShareModal() {
   const platform = desktopPlatform();
   // O loopback do Electron é `audio: "loopback"`, que só o Windows tem. Prometer o
   // som do sistema no Mac ou no Linux renderia uma transmissão muda e um aviso de
-  // falha — dizer antes o que dá pra fazer é melhor que explicar depois.
+  // falha, então a caixa aparece desligada dizendo o porquê.
   //
   // App até a 1.0.0 não informa a plataforma, e o único instalador que existe é o
   // de Windows: tratar o desconhecido como capaz é o que mantém o som do sistema
@@ -221,7 +221,7 @@ export function ScreenShareModal() {
           ) : (
             <p className="join-warning">
               Depois de clicar em <strong>Compartilhar</strong>, o navegador vai perguntar qual tela
-              ou janela mostrar. Essa janela é dele, não do app — nenhum site pode desenhar,
+              ou janela mostrar. Essa janela é dele, não do app, e nenhum site pode desenhar,
               substituir ou pular aquele passo. No app para Windows a escolha é aqui dentro, com as
               miniaturas.
             </p>
@@ -303,7 +303,7 @@ export function ScreenShareModal() {
                     : screenOn
                       ? "O som só pode ser ligado ou desligado ao começar a transmissão."
                       : desktop
-                        ? "Manda o áudio do Windows junto — o som do jogo ou do vídeo."
+                        ? "Manda o áudio do Windows junto: o som do jogo ou do vídeo."
                         : "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio."}
                 </em>
               </span>
@@ -365,7 +365,7 @@ export function ScreenShareModal() {
             {camOn ? " (tela + câmera)" : ""}.{" "}
             {listeners > 0
               ? `Com ${listeners} na call, ~${mbps(total)} Mbps de upload.`
-              : "Cada pessoa que entrar soma outro tanto — é conexão direta, não passa por servidor."}
+              : "Cada pessoa que entrar soma outro tanto: é conexão direta, não passa por servidor."}
             {total > 10_000_000 && " Se travar, baixe a resolução ou a taxa de quadros."}
           </p>
         </div>

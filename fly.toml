@@ -1,4 +1,4 @@
-# Fly.io — a única plataforma barata com região em São Paulo (`gru`).
+# Fly.io: a única plataforma barata com região em São Paulo (`gru`).
 # Subir: fly launch --no-deploy --copy-config  →  fly deploy
 #
 # Trocar o nome se "draco-sp" já existir: nome de app é único no mundo inteiro.
@@ -16,7 +16,7 @@ primary_region = "gru"
   internal_port = 8080
   force_https = true
   # Máquina parada não é cobrada. Com ninguém na call ela dorme, e o primeiro
-  # acesso religa em segundos — é isso que mantém a conta em centavos.
+  # acesso religa em segundos, e é isso que mantém a conta em centavos.
   auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0

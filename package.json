@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Draco — voz, vídeo e compartilhamento de tela em grupo, direto entre os navegadores.",
+  "description": "Draco: voz, vídeo e compartilhamento de tela em grupo, direto entre os navegadores.",
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,magenta npm:dev:server npm:dev:client",
     "dev:server": "node server/index.js --dev",

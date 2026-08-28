@@ -226,7 +226,7 @@ export function describeMicrophoneError(error: unknown): string {
 
 /**
  * Captura de tela não disputa dispositivo com ninguém, então `NotReadableError`
- * aqui não significa "outro programa está usando" — significa que o sistema não
+ * aqui não significa "outro programa está usando", significa que o sistema não
  * entregou os quadros. Dizer a frase de dispositivo ocupado manda a pessoa fechar
  * programas que não têm nada a ver com o problema.
  */
@@ -294,7 +294,7 @@ export class MediaManager {
     return this.#screen?.getVideoTracks()[0] ?? null;
   }
 
-  /** `srcObject` recebe stream, não trilha — e criar um novo a cada render pisca. */
+  /** `srcObject` recebe stream, não trilha, e criar um novo a cada render pisca. */
   get cameraStream(): MediaStream | null {
     return this.#camera;
   }

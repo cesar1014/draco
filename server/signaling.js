@@ -26,8 +26,8 @@ import {
  * chamada, e a resposta volta pelo mesmo caminho. Os eventos `sfu:*` são esse
  * vai e vem.
  *
- * Limites por evento. Sinalização é naturalmente em rajada — o ICE trickle
- * despeja dezenas de candidatos em sequência pra cada peer — então o teto dela
+ * Limites por evento. Sinalização é naturalmente em rajada, porque o ICE trickle
+ * despeja dezenas de candidatos em sequência pra cada peer, então o teto dela
  * é alto de propósito, enquanto o do chat é baixo.
  */
 const LIMITS = {
@@ -44,7 +44,7 @@ const SLOTS = ["mic", "camera", "screen", "screenAudio"];
 
 const voiceRoom = (channelId) => `voice:${channelId}`;
 
-/** Só o que o outro lado precisa saber — nada de vazar detalhe interno. */
+/** Só o que o outro lado precisa saber, sem vazar detalhe interno. */
 function publicMember(member) {
   return {
     id: member.id,
@@ -202,7 +202,7 @@ export function attachSignaling(io, env = process.env) {
 
     // --- SFU ---------------------------------------------------------------
     // Só existe quando há credenciais. Sem elas, cada handler recusa e o cliente
-    // segue em malha direta — que é o comportamento de sempre.
+    // segue em malha direta, que é o comportamento de sempre.
 
     /** Guarda comum: identificado, dentro de uma call e com SFU disponível. */
     function sfuMember(reply) {
@@ -303,7 +303,7 @@ export function attachSignaling(io, env = process.env) {
         if (!owner.sfuSessionId || !SLOTS.includes(entry?.slot)) continue;
         // A sessão que o cliente pediu tem que ser a que está no ar. Uma
         // reconexão do dono cria outra, e assinar a antiga devolveria uma trilha
-        // que o SFU já descartou — som e imagem que nunca chegam.
+        // que o SFU já descartou, e daí som e imagem que nunca chegam.
         if (entry.sessionId !== owner.sfuSessionId) continue;
         const trackName = owner.sfuTracks?.[entry.slot];
         if (!trackName) continue;

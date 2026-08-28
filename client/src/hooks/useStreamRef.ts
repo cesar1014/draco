@@ -3,8 +3,8 @@ import { useEffect, useRef } from "react";
 /**
  * Liga um `MediaStream` a um `<video>` ou `<audio>`.
  *
- * `srcObject` não é atributo HTML — não existe em JSX —, então essa ponte
- * imperativa é obrigatória. O `if` antes de atribuir também não é zelo à toa:
+ * `srcObject` não é atributo HTML (não existe em JSX), então essa ponte
+ * imperativa é obrigatória. O `if` antes de atribuir tem motivo:
  * reatribuir o mesmo stream reinicia o decodificador e a imagem pisca.
  */
 export function useStreamRef<T extends HTMLMediaElement>(stream: MediaStream | null | undefined) {

@@ -10,7 +10,7 @@ const MAX_MESSAGE = 2000;
 
 /**
  * Caracteres de controle e invisíveis. Além dos de controle clássicos, derruba
- * os de largura zero e o override de direção (U+202E) — o truque clássico de
+ * os de largura zero e o override de direção (U+202E), o truque clássico de
  * fazer um nome parecer outro na lista de membros.
  */
 const INVISIBLE = "\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\ufeff";

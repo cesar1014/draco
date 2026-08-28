@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
  * Gera os ícones PNG do aplicativo instalável.
  *
  * Escrever um codificador de PNG à mão parece exagero, mas a alternativa era
- * adicionar `sharp` ou `canvas` ao projeto — dependências nativas que precisam
- * compilar — só pra desenhar um microfone. Aqui não há dependência nenhuma: PNG
+ * adicionar `sharp` ou `canvas` ao projeto, dependências nativas que precisam
+ * compilar, só pra desenhar um microfone. Aqui não há dependência nenhuma: PNG
  * sem interlace é cabeçalho, `deflate` e CRC32, e o `zlib` já vem no Node.
  *
  * Rode com `npm run icons`. Os arquivos vão pra `client/public/icons/`, que o
@@ -87,7 +87,7 @@ function insideRoundedRect(x, y, x0, y0, x1, y1, r) {
 }
 
 /**
- * O microfone, em coordenadas de 0 a 1. `scale` encolhe em torno do centro —
+ * O microfone, em coordenadas de 0 a 1. `scale` encolhe em torno do centro, e
  * é o que mantém o desenho dentro da área segura do ícone mascarável, que o
  * Android e o Windows recortam em círculo ou em quadrado arredondado.
  */
@@ -147,7 +147,7 @@ const variants = [
   { file: "icon-192.png", size: 192, radius: 0.2, glyphScale: 0.78 },
   { file: "icon-512.png", size: 512, radius: 0.2, glyphScale: 0.78 },
   // Mascarável: quadrado inteiro, glifo menor. Quem recorta é o sistema, e ele
-  // pode cortar até 20% de cada lado — desenho grande sairia sem as pontas.
+  // pode cortar até 20% de cada lado, e desenho grande sairia sem as pontas.
   { file: "icon-maskable-512.png", size: 512, radius: 0, glyphScale: 0.62 },
 ];
 

@@ -9,7 +9,7 @@ import type { Member } from "@/types";
 /**
  * Volume e mute de uma pessoa só, pra quem está ouvindo. Nada disso viaja pela
  * rede: é o `<audio>` local que muda, então a outra pessoa não fica sabendo.
- * Microfone e transmissão de tela têm controles separados — o jogo alto de
+ * Microfone e transmissão de tela têm controles separados, porque o jogo alto de
  * alguém não é motivo pra deixar de ouvir a pessoa.
  */
 export function PersonMenu({ member, onClose }: { member: Member; onClose: () => void }) {

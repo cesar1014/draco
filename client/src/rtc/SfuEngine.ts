@@ -12,14 +12,14 @@ import { SLOT_KIND, type MediaSlot } from "@/types";
 /**
  * Caminho por servidor: a mídia sobe uma vez pro SFU da Cloudflare, que replica
  * pra todo mundo na call. É a diferença entre "cada pessoa que entra custa outro
- * tanto do seu upload" e "custa nada" — 1080p pra oito pessoas é a mesma banda
+ * tanto do seu upload" e "custa nada": 1080p pra oito pessoas é a mesma banda
  * que pra uma.
  *
  * Duas conexões, e é o ponto do desenho: uma só envia, a outra só recebe.
  * Alguém entrando na call renegocia apenas a de recepção; a que está carregando
  * a sua tela nem sabe que houve visita.
  *
- * Este módulo nunca fala com a Cloudflare direto — o segredo do app é do
+ * Este módulo nunca fala com a Cloudflare direto. O segredo do app é do
  * servidor. Tudo passa por `sfu:*` no socket.
  */
 
@@ -114,7 +114,7 @@ export class SfuEngine implements CallEngine {
   /**
    * Duas conexões, dois papéis. O que interessa por pessoa está na de recepção,
    * separado pelos `mid` das trilhas dela; a decisão de qualidade sai da de envio,
-   * que é uma só — com SFU o upload não depende de quantas pessoas escutam.
+   * que é uma só: com SFU o upload não depende de quantas pessoas escutam.
    */
   async sample(): Promise<EngineSample> {
     const byMember = new Map<string, Set<string>>();
@@ -178,7 +178,7 @@ export class SfuEngine implements CallEngine {
 
   /**
    * Alinha as assinaturas com o que existe na call. Uma trilha que o dono
-   * desligou continua assinada — vira silêncio, e quem decide se o tile existe é
+   * desligou continua assinada e vira silêncio, e quem decide se o tile existe é
    * o estado que veio pelo socket, então derrubá-la só compraria uma renegociação
    * a cada mute. O que sai são as trilhas de sessões que já não valem: quem
    * reconectou tem sessão nova, e a antiga não entrega mais nada.
@@ -286,8 +286,8 @@ export class SfuEngine implements CallEngine {
       const answer = await this.options.transport.publish(this.#send.localDescription!, pending);
       if (!answer) {
         // A oferta já está aplicada localmente e o SFU não a conhece: esta conexão
-        // não publica mais nada. Quem pode resolver é o dono, refazendo a call —
-        // tentar de novo aqui só empilharia `m=` que ninguém vai atender.
+        // não publica mais nada. Quem pode resolver é o dono, refazendo a call.
+        // Tentar de novo aqui só empilharia `m=` que ninguém vai atender.
         if (!this.#publishFailed) {
           this.#publishFailed = true;
           this.options.onFailure?.("o servidor de mídia recusou a transmissão");
@@ -309,8 +309,8 @@ export class SfuEngine implements CallEngine {
 
   /**
    * Pede as trilhas e resolve a oferta que a Cloudflare devolve. O `mid` de cada
-   * trilha vem na resposta, e é por ele que se sabe qual `m=` é a câmera de quem
-   * — sem depender de ordem, que é o que o caminho em malha precisa fazer.
+   * trilha vem na resposta, e é por ele que se sabe qual `m=` é a câmera de quem,
+   * sem depender de ordem, que é o que o caminho em malha precisa fazer.
    */
   async #subscribe(refs: RemoteTrackRef[]): Promise<void> {
     // Uma pessoa pode ter saído entre o pedido e a vez dele na fila.

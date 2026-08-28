@@ -63,7 +63,7 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-/** Decodifica PNG RGBA de 8 bits sem interlace — o que qualquer editor exporta. */
+/** Decodifica PNG RGBA de 8 bits sem interlace, o que qualquer editor exporta. */
 function decodePng(buffer) {
   let offset = 8;
   let width = 0;
@@ -125,7 +125,7 @@ function decodePng(buffer) {
 /**
  * Recorta o fundo pelas bordas, não por cor.
  *
- * Cortar "tudo que é branco" comeria os brancos de dentro do desenho — dentes,
+ * Cortar "tudo que é branco" comeria os brancos de dentro do desenho: dentes,
  * miolo do escudo. Espalhando a partir da borda, só sai o que está de fato fora.
  * O tom entre 200 e 255 vira alfa parcial, e é isso que mantém a borda lisa em
  * vez de serrada.
@@ -224,7 +224,7 @@ function insideRoundedRect(x, y, r) {
 /**
  * Ícone de aplicativo: fundo escuro com degradê e a arte por cima.
  *
- * Fundo escuro e não colorido porque a arte já é azul — azul sobre azul sumiria
+ * Fundo escuro e não colorido porque a arte já é azul, e azul sobre azul sumiria
  * na barra de tarefas. `inset` reserva a área que o Android e o Windows recortam.
  */
 function appIcon(art, size, { radius, inset }) {

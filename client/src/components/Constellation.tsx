@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 /**
  * Nuvem de partículas que se junta formando a logo e explode quando a pessoa
  * entra. Vive só na tela de entrada: ao logar, a `JoinScreen` sai da árvore e o
- * canvas some junto — nenhum quadro é desenhado durante a call.
+ * canvas some junto, e nenhum quadro é desenhado durante a call.
  *
  * O canvas é uma superfície só, então são centenas de triângulos por quadro em
  * vez de centenas de nós no DOM. O `rAF` para sozinho quando a animação acaba.
