@@ -9,7 +9,7 @@
 **Web · Mobile/PWA · Windows Desktop**
 
 [![Status](https://img.shields.io/badge/status-em%20desenvolvimento-8b5cf6?style=for-the-badge)](#)
-[![Desktop](https://img.shields.io/badge/desktop-v1.0.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
+[![Desktop](https://img.shields.io/badge/desktop-v1.1.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=111827)](#)
 [![Electron](https://img.shields.io/badge/Electron-Windows-47848F?style=for-the-badge&logo=electron&logoColor=white)](#)
 [![WebRTC](https://img.shields.io/badge/WebRTC-malha%20%C2%B7%20SFU-22C55E?style=for-the-badge)](#)
@@ -254,6 +254,8 @@ Alguns exemplos:
 
 > **Importante:** atualmente o projeto não possui um auto-updater nativo para substituir o `.exe`/instalação do Electron. Se uma atualização exigir mudança na parte desktop, será necessário distribuir uma nova versão do instalador.
 
+A **1.1.0** é um desses casos: a ponte entre o app e a página cresceu — a escolha da fonte passou a responder se a janela ainda existe, e o app passou a informar a plataforma. Quem continuar na 1.0.0 não fica de fora: a escolha de tela é enviada nos dois formatos e o que a versão antiga não expõe é tratado como ausente, não como erro. O que só chega com o instalador novo é o aviso de janela fechada e a checagem de som do sistema por plataforma.
+
 ---
 
 ## Tecnologias
@@ -379,7 +381,7 @@ npm run app:build
 O instalador é gerado em:
 
 ```text
-desktop/out/draco-setup-1.0.0.exe
+desktop/out/draco-setup-1.1.0.exe
 ```
 
 A versão vem de `desktop/package.json`.

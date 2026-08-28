@@ -63,10 +63,15 @@ export function ScreenShareModal() {
   const voiceChannelId = useStore((state) => state.voiceChannelId);
 
   const desktop = isDesktopApp();
+  const platform = desktopPlatform();
   // O loopback do Electron é `audio: "loopback"`, que só o Windows tem. Prometer o
   // som do sistema no Mac ou no Linux renderia uma transmissão muda e um aviso de
   // falha — dizer antes o que dá pra fazer é melhor que explicar depois.
-  const systemAudioCapable = !desktop || desktopPlatform() === "win32";
+  //
+  // App até a 1.0.0 não informa a plataforma, e o único instalador que existe é o
+  // de Windows: tratar o desconhecido como capaz é o que mantém o som do sistema
+  // funcionando pra quem ainda não reinstalou.
+  const systemAudioCapable = !desktop || platform === null || platform === "win32";
   const [options, setOptions] = useState(screenOptions);
   const [sources, setSources] = useState<DesktopSource[]>([]);
   const [loading, setLoading] = useState(desktop && !screenOn);

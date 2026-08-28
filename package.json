@@ -15,7 +15,7 @@
     "tunnel": "cloudflared tunnel --url http://localhost:3100",
     "icons": "node tools/make-icons.mjs",
     "app": "npm --prefix desktop start",
-    "app:install": "npm --prefix desktop install",
+    "app:install": "cd desktop && npm install",
     "app:build": "npm --prefix desktop run dist",
     "test:server": "node tools/test-signaling.mjs",
     "typecheck": "tsc --noEmit"
