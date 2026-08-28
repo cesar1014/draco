@@ -1,7 +1,8 @@
 "use strict";
 
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, shell, webContents } = require("electron");
 const path = require("node:path");
+const { checkForUpdates, currentVersion } = require("./updater.js");
 
 /**
  * Processo principal do app de desktop.
@@ -17,6 +18,18 @@ const path = require("node:path");
  * (`setDisplayMediaRequestHandler`), e é exatamente por isso que o app de
  * verdade consegue ter o seletor de miniaturas: ele também é Electron.
  */
+
+/** Log com categoria, no mesmo formato do servidor. */
+const log = {
+  info: (message, detail) => console.log("[ELECTRON]", message, detail ?? ""),
+  warn: (message, detail) => console.warn("[ELECTRON]", message, detail ?? ""),
+  error: (message, detail) => console.error("[ELECTRON]", message, detail ?? ""),
+  debug: (message, detail) => {
+    if (process.env.LOG_LEVEL === "debug") console.log("[ELECTRON]", message, detail ?? "");
+  },
+};
+
+const describe = (error) => (error instanceof Error ? error.message : String(error));
 
 /** Endereço publicado. `DESKTOP_URL` ou `--url=` mandam mais, pra apontar pro localhost em teste. */
 const DEFAULT_URL = "https://dracocall.duckdns.org";
@@ -39,11 +52,36 @@ function sameOrigin(value) {
  * vem logo atrás. É um passo em dois tempos porque `getDisplayMedia` não aceita
  * "quero esta janela" como argumento: quem decide é sempre o lado privilegiado.
  *
+ * Uma reserva por `webContents`, não uma global: com duas janelas abertas (ou uma
+ * janela e um popup), a reserva de uma atenderia o pedido da outra, e a pessoa
+ * transmitiria a tela que o vizinho escolheu.
+ *
  * Guarda o id, não o objeto que o `desktopCapturer` devolveu. Entre escolher e
  * capturar a janela pode ter sido fechada ou reaberta, e conceder um handle velho
  * resulta em captura de nada, sem erro que ajude a entender o porquê.
  */
-let pendingCapture = null;
+const pendingCaptures = new Map();
+
+/** Reserva vencida é reserva que não existe: uma escolha esquecida não vale a próxima captura. */
+const CAPTURE_CLAIM_TTL_MS = 60_000;
+
+/**
+ * A reserva de quem está pedindo a captura. `webContents.fromFrame` é o caminho
+ * normal; quando ele não resolve o frame, uma reserva única serve, porque com uma
+ * janela só não há ambiguidade nenhuma. Com duas ou mais pendentes, não há como
+ * saber de quem é, e conceder a errada mostraria a tela que o vizinho escolheu.
+ */
+function takeClaim(frame) {
+  const requester = frame ? webContents.fromFrame(frame) : null;
+  const key =
+    requester?.id ?? (pendingCaptures.size === 1 ? [...pendingCaptures.keys()][0] : null);
+  if (key === null) return null;
+
+  const claim = pendingCaptures.get(key);
+  pendingCaptures.delete(key);
+  if (!claim) return null;
+  return Date.now() - claim.at > CAPTURE_CLAIM_TTL_MS ? null : claim;
+}
 
 /** Handle atual daquele id, ou `null` quando a tela/janela não existe mais. */
 async function findSource(sourceId) {
@@ -80,8 +118,7 @@ function configureSession(ses) {
 
   ses.setDisplayMediaRequestHandler(
     async (request, callback) => {
-      const capture = pendingCapture;
-      pendingCapture = null;
+      const capture = takeClaim(request.frame);
 
       if (!capture) {
         // Ninguém escolheu nada: não há o que conceder. Acontece só se a página
@@ -95,11 +132,11 @@ function configureSession(ses) {
       try {
         source = await findSource(capture.sourceId);
       } catch (error) {
-        console.error("[desktop] falha ao reler as fontes de captura:", error);
+        log.error("falha ao reler as fontes de captura", { motivo: describe(error) });
       }
 
       if (!source) {
-        console.warn(`[desktop] fonte ${capture.sourceId} sumiu antes da captura`);
+        log.warn("fonte reservada não existe mais", { etapa: "getDisplayMedia" });
         callback({});
         return;
       }
@@ -110,6 +147,10 @@ function configureSession(ses) {
       const loopback =
         request.audioRequested && capture.systemAudio && process.platform === "win32";
 
+      log.info("captura concedida", {
+        tipo: capture.sourceId.startsWith("screen:") ? "tela" : "janela",
+        audioSistema: loopback,
+      });
       callback({ video: source, ...(loopback ? { audio: "loopback" } : {}) });
     },
     // O seletor de miniaturas é o nosso; o do sistema abriria em cima dele.
@@ -127,6 +168,7 @@ ipcMain.handle("desktop:list-sources", async (event) => {
     fetchWindowIcons: true,
   });
 
+  log.debug("fontes listadas", { telas: sources.filter((s) => s.id.startsWith("screen:")).length });
   return sources.map((source) => {
     const isScreen = source.id.startsWith("screen:");
     return {
@@ -155,39 +197,79 @@ ipcMain.handle("desktop:select-source", async (event, request) => {
   if (!sameOrigin(event.senderFrame?.url ?? "")) return { ok: false, reason: "denied" };
   // Só o que precisamos, e só do tipo certo: o que chega aqui vem do renderer, e
   // repassar objeto inteiro de outro processo pra dentro do Electron é risco.
-  if (!request || typeof request.sourceId !== "string") return { ok: false, reason: "invalid" };
+  if (!request || typeof request.sourceId !== "string" || request.sourceId.length > 128) {
+    return { ok: false, reason: "invalid" };
+  }
+  if (!/^(screen|window):/.test(request.sourceId)) return { ok: false, reason: "invalid" };
 
+  const contentsId = event.sender.id;
   try {
     if (!(await findSource(request.sourceId))) {
-      pendingCapture = null;
+      pendingCaptures.delete(contentsId);
       return { ok: false, reason: "gone" };
     }
   } catch (error) {
-    console.error("[desktop] falha ao validar a fonte escolhida:", error);
+    log.error("falha ao validar a fonte escolhida", { motivo: describe(error) });
     return { ok: false, reason: "failed" };
   }
 
-  pendingCapture = { sourceId: request.sourceId, systemAudio: request.systemAudio === true };
+  pendingCaptures.set(contentsId, {
+    sourceId: request.sourceId,
+    systemAudio: request.systemAudio === true,
+    at: Date.now(),
+  });
+  log.debug("fonte reservada", {
+    tipo: request.sourceId.startsWith("screen:") ? "tela" : "janela",
+    audioSistema: request.systemAudio === true,
+  });
   return { ok: true };
 });
 
 /**
  * Diagnóstico de captura no console do app. Fica aqui, e não na interface: quem
  * está na call quer uma frase útil, não `name`, `sourceId` e etapa da falha.
+ *
+ * O id da fonte não é registrado: ele carrega o identificador da janela do
+ * sistema, e o que ajuda a diagnosticar é o tipo e a etapa, não qual janela era.
  */
 ipcMain.handle("desktop:log-capture-failure", (event, report) => {
   if (!sameOrigin(event.senderFrame?.url ?? "")) return;
   if (!report || typeof report !== "object") return;
-  console.error("[desktop] captura de tela falhou:", {
-    stage: String(report.stage ?? ""),
-    error: `${report.name ?? "?"}: ${report.message ?? ""}`,
-    sourceId: String(report.sourceId ?? ""),
-    sourceKind: String(report.sourceKind ?? ""),
-    systemAudio: report.systemAudio === true,
-    platform: process.platform,
+  log.error("captura de tela falhou", {
+    etapa: String(report.stage ?? ""),
+    erro: `${report.name ?? "?"}: ${String(report.message ?? "").slice(0, 200)}`,
+    tipoFonte: String(report.sourceKind ?? ""),
+    audioSistema: report.systemAudio === true,
+    plataforma: process.platform,
     electron: process.versions.electron,
     chrome: process.versions.chrome,
   });
+});
+
+/**
+ * Versão instalada e, quando houver, a publicada. Verificar aqui e não na página
+ * é o ponto: só o processo principal sabe a versão do executável, e a página só
+ * recebe o resultado — nunca a capacidade de baixar ou executar nada.
+ */
+ipcMain.handle("desktop:check-update", async (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "")) return null;
+  const result = await checkForUpdates();
+  if (result.available) log.info("atualização disponível", { versao: result.latest });
+  return result;
+});
+
+/**
+ * Abre a página da release no navegador do sistema. O endereço não vem da página:
+ * ela pede a abertura, e quem escolhe o link é o resultado da verificação, que já
+ * foi conferido como um endereço do repositório de releases. Aceitar uma URL do
+ * renderer aqui transformaria isto num "abra qualquer coisa".
+ */
+ipcMain.handle("desktop:open-release", async (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "")) return false;
+  const result = await checkForUpdates();
+  if (!result.url) return false;
+  await shell.openExternal(result.url);
+  return true;
 });
 
 function showError(window, message) {
@@ -210,36 +292,57 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       // A página é conteúdo remoto: isolar o contexto e manter o Node fora dela
-      // é obrigatório. O preload expõe três funções e nada além.
+      // é obrigatório. O preload expõe um punhado de funções e nada além.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // A página nunca precisa abrir um `file://`, e negar isso fecha o caminho
+      // clássico de ler o disco a partir de conteúdo remoto.
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
 
-  // Link de fora abre no navegador do sistema, não dentro do app: numa janela sem
-  // barra de endereço ninguém vê pra onde o link levou.
-  window.webContents.on("will-navigate", (event, url) => {
-    if (sameOrigin(url)) return;
-    event.preventDefault();
-    void shell.openExternal(url);
-  });
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (sameOrigin(url)) return { action: "allow" };
-    void shell.openExternal(url);
-    return { action: "deny" };
-  });
+  // Uma janela nova (popup autorizado) herda estas preferências mas não os
+  // handlers; instalá-los pra qualquer `webContents` que apareça é o que impede
+  // uma segunda janela de navegar pra onde a principal não pode.
+  window.webContents.on("did-create-window", (child) => guardNavigation(child.webContents));
+  guardNavigation(window.webContents);
 
-  window.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+  window.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
     // `-3` é navegação abortada pelo próprio Chromium (acontece em redirect), e
     // não é falha. Sub-frame que falha também não vale trocar a janela toda.
     if (!isMainFrame || code === -3) return;
-    console.error(`[desktop] falhou ao carregar ${url}: ${description} (${code})`);
+    log.error("falha ao carregar a página", { codigo: code, motivo: description });
     showError(window, description);
   });
 
   void window.loadURL(APP_URL);
   return window;
+}
+
+/**
+ * Navegação fechada na origem do app. Link de fora abre no navegador do sistema,
+ * não dentro do app: numa janela sem barra de endereço ninguém vê pra onde o link
+ * levou, e uma página qualquer carregada aqui herdaria as permissões de captura.
+ *
+ * A página local de erro é a exceção: ela é o `status.html` que este processo
+ * carrega, e não uma navegação vinda de conteúdo remoto.
+ */
+function guardNavigation(contents) {
+  contents.on("will-navigate", (event, url) => {
+    if (sameOrigin(url) || url.startsWith("file://")) return;
+    event.preventDefault();
+    void shell.openExternal(url);
+  });
+  contents.setWindowOpenHandler(({ url }) => {
+    if (sameOrigin(url)) return { action: "allow" };
+    void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  // Anexar um devtools ou um webview seria outra porta pra carregar conteúdo com
+  // as permissões desta janela.
+  contents.on("will-attach-webview", (event) => event.preventDefault());
 }
 
 // Uma janela só. Segunda tentativa de abrir traz a primeira pra frente, em vez
@@ -257,6 +360,7 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     configureSession(session.defaultSession);
     createWindow();
+    log.info("app iniciado", { versao: currentVersion(), origem: APP_ORIGIN });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

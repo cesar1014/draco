@@ -21,17 +21,33 @@ services:
       - key: NODE_VERSION
         value: 20.17.0
 
+      # O Render termina o TLS num proxy: sem isto o limite por IP veria o
+      # endereço dele e todo mundo dividiria o mesmo balde.
+      - key: TRUSTED_PROXY
+        value: "1"
+
       # `sync: false` = o Render pergunta o valor na hora de aplicar e guarda só lá.
       # É o que mantém a senha fora do repositório.
       - key: ROOM_PASSWORD
         sync: false
 
+      # Assina os tokens de sessão. No plano grátis o disco é descartável, então o
+      # segredo não pode ficar no banco: sem esta variável, cada substituição da
+      # instância desconectaria todo mundo da própria identidade.
+      - key: SESSION_SECRET
+        generateValue: true
+
 # Duas variáveis ficam de fora daqui de propósito, porque só fazem sentido depois
 # que o serviço existe. Adicione as duas em Environment, no painel:
 #
 #   ORIGIN                 https://SEU-APP.onrender.com  (o endereço que o Render
-#                          te der). Tranca o CORS do Socket.IO nessa origem só.
+#                          te der). Tranca a origem aceita pelo Socket.IO e pelas
+#                          rotas /api nessa origem só.
 #
 #   TURN_CREDENTIALS_URL   a URL de credenciais do Open Relay. Sem TURN, cerca de
 #                          uma em cada cinco duplas não conecta pela internet.
 #                          Ver a seção TURN do .env.example pros outros dois modos.
+#
+# O plano grátis não tem disco persistente: o SQLite funciona, mas o arquivo pode
+# ser descartado num novo deploy ou numa substituição da instância. Para histórico
+# durável, use um disco de um plano compatível, ou o volume do Fly.io.

@@ -39,14 +39,24 @@ export interface CaptureFailure {
   systemAudio: boolean;
 }
 
+/** Versão instalada e, quando houver, a publicada. */
+export interface UpdateStatus {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  /** Página da release. `null` quando o app não confirmou a origem do link. */
+  url: string | null;
+  notes: string | null;
+}
+
 /**
  * O que o app oferece à página.
  *
- * `platform` e `logCaptureFailure` só existem a partir da 1.1.0, e não há
- * auto-update: um app instalado antes dela continua abrindo esta mesma página,
- * porque é a publicada. Declarar os dois como opcionais é o que faz o compilador
- * cobrar a checagem em cada uso, em vez de deixar a falha pra alguém descobrir
- * compartilhando a tela.
+ * `platform` e `logCaptureFailure` só existem a partir da 1.1.0, e `checkUpdate`
+ * e `openRelease` a partir da 1.2.0. Não há auto-update, então um app instalado
+ * antes disso continua abrindo esta mesma página, porque é a publicada. Declarar
+ * cada um como opcional é o que faz o compilador cobrar a checagem em cada uso,
+ * em vez de deixar a falha pra alguém descobrir compartilhando a tela.
  */
 interface DesktopBridge {
   /** Versão do Electron, só pra aparecer nas configurações. */
@@ -61,6 +71,8 @@ interface DesktopBridge {
     name: string;
   }) => Promise<ClaimResult | undefined>;
   logCaptureFailure?: (report: CaptureFailure) => Promise<void>;
+  checkUpdate?: () => Promise<UpdateStatus | null>;
+  openRelease?: () => Promise<boolean>;
 }
 
 declare global {
@@ -120,4 +132,26 @@ export function reportCaptureFailure(report: CaptureFailure): void {
   // esta linha deveria estar registrando, escondendo justamente o erro que
   // importa.
   void window.desktop?.logCaptureFailure?.(report)?.catch(() => {});
+}
+
+/**
+ * Pergunta ao app se há versão nova. `null` quando não é o app, quando ele é
+ * antigo demais pra saber responder, ou quando a verificação não deu certo — e
+ * nos três casos a interface simplesmente não mostra nada sobre atualização.
+ */
+export async function checkDesktopUpdate(): Promise<UpdateStatus | null> {
+  try {
+    return (await window.desktop?.checkUpdate?.()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pede ao app pra abrir a página da release no navegador do sistema. */
+export async function openDesktopRelease(): Promise<boolean> {
+  try {
+    return (await window.desktop?.openRelease?.()) === true;
+  } catch {
+    return false;
+  }
 }

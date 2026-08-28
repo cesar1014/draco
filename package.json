@@ -17,12 +17,17 @@
     "app": "npm --prefix desktop start",
     "app:install": "cd desktop && npm install",
     "app:build": "npm --prefix desktop run dist",
+    "test": "npm run typecheck && npm run test:server && npm run test:persistence && npm run test:media",
     "test:server": "node tools/test-signaling.mjs",
+    "test:persistence": "node tools/test-persistence.mjs",
+    "test:media": "node tools/test-media.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "better-sqlite3": "11.7.0",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
+    "helmet": "8.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "socket.io": "^4.8.3",
@@ -35,6 +40,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^10.0.5",
+    "esbuild": "0.25.12",
     "selfsigned": "^5.5.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.3"

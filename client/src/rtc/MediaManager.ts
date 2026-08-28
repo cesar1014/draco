@@ -5,7 +5,13 @@ import {
   type CaptureFailure,
   type ClaimFailure,
 } from "@/desktop";
-import { MicChain, loadDenoise, type DenoiseMode, type DenoiseStrength } from "@/rtc/denoise";
+import {
+  MicChain,
+  loadDenoise,
+  type DenoiseMode,
+  type DenoiseStrength,
+  type VoiceProcessor,
+} from "@/rtc/denoise";
 
 /** Ponto único de acesso a microfone, câmera e tela. */
 
@@ -271,7 +277,7 @@ export interface ScreenCapture {
 
 export class MediaManager {
   #mic: MediaStream | null = null;
-  #chain: MicChain | null = null;
+  #chain: VoiceProcessor | null = null;
   #camera: MediaStream | null = null;
   #screen: MediaStream | null = null;
   #micSettings: AudioSettings = DEFAULT_AUDIO_SETTINGS;

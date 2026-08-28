@@ -7,6 +7,13 @@ import { timingSafeEqual } from "node:crypto";
 
 const MAX_USERNAME = 32;
 const MAX_MESSAGE = 2000;
+const MAX_PASSWORD = 256;
+/**
+ * SDP de uma call com tela e quatro trilhas passa longe disso. O teto existe
+ * porque o corpo inteiro do evento é lido antes de qualquer validação, e um SDP
+ * inventado de megabytes viraria memória parada no servidor.
+ */
+const MAX_SDP = 60_000;
 
 /**
  * Caracteres de controle e invisíveis. Além dos de controle clássicos, derruba
@@ -26,16 +33,49 @@ function stripControlChars(value, { allowNewlines = false } = {}) {
 }
 
 export function sanitizeUsername(raw) {
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string" || raw.length > MAX_USERNAME * 4) return null;
   const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim().slice(0, MAX_USERNAME);
   // Um nome só de espaços ou de invisíveis viraria um membro fantasma na lista.
   return cleaned.length >= 2 ? cleaned : null;
 }
 
 export function sanitizeMessage(raw) {
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string" || raw.length > MAX_MESSAGE * 4) return null;
   const cleaned = stripControlChars(raw, { allowNewlines: true }).trim().slice(0, MAX_MESSAGE);
   return cleaned.length > 0 ? cleaned : null;
+}
+
+/** Identificador de mensagem, canal ou sessão: texto curto, sem surpresa. */
+export const isId = (value, max = 64) =>
+  typeof value === "string" && value.length > 0 && value.length <= max;
+
+/** Descrição de sessão com teto de tamanho. `null` quando não serve. */
+export function sanitizeDescription(value) {
+  if (!value || typeof value !== "object") return null;
+  const { type, sdp } = value;
+  if (type !== "offer" && type !== "answer") return null;
+  if (typeof sdp !== "string" || sdp.length === 0 || sdp.length > MAX_SDP) return null;
+  return { type, sdp };
+}
+
+/**
+ * Candidato ICE. Só os campos que o outro navegador usa são repassados: o objeto
+ * chega do cliente e devolver o que veio permitiria enfiar carga arbitrária no
+ * evento que o outro lado recebe.
+ */
+export function sanitizeCandidate(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return undefined;
+  const { candidate, sdpMid, sdpMLineIndex, usernameFragment } = value;
+  if (typeof candidate !== "string" || candidate.length > 512) return undefined;
+  return {
+    candidate,
+    sdpMid: typeof sdpMid === "string" && sdpMid.length <= 16 ? sdpMid : null,
+    sdpMLineIndex: Number.isInteger(sdpMLineIndex) && sdpMLineIndex >= 0 ? sdpMLineIndex : null,
+    ...(typeof usernameFragment === "string" && usernameFragment.length <= 256
+      ? { usernameFragment }
+      : {}),
+  };
 }
 
 /**
@@ -44,7 +84,7 @@ export function sanitizeMessage(raw) {
  */
 export function passwordMatches(expected, provided) {
   if (!expected) return true; // sem senha configurada, entrada liberada
-  if (typeof provided !== "string") return false;
+  if (typeof provided !== "string" || provided.length > MAX_PASSWORD) return false;
   const a = Buffer.from(expected);
   const b = Buffer.from(provided);
   if (a.length !== b.length) return false;
@@ -52,19 +92,44 @@ export function passwordMatches(expected, provided) {
 }
 
 /**
- * Token bucket por socket e por ação. Um cliente com bug (ou alguém mal
- * intencionado) não derruba o servidor nem inunda o chat de todo mundo.
+ * Endereço de quem conectou. Atrás de proxy (Fly, Render, Cloudflare) o socket vê
+ * o IP do proxy, e o real vem no `x-forwarded-for`. Ler o cabeçalho só quando
+ * `TRUSTED_PROXY=1` é o ponto: num servidor exposto direto, qualquer cliente
+ * pode inventar esse cabeçalho e escapar do limite por IP trocando o valor.
+ */
+export function clientAddress(socket, trustProxy) {
+  if (trustProxy) {
+    const forwarded = socket.handshake.headers["x-forwarded-for"];
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return socket.handshake.address ?? "desconhecido";
+}
+
+/** Quanto tempo um balde intocado continua ocupando memória. */
+const BUCKET_TTL_MS = 10 * 60 * 1000;
+const SWEEP_EVERY_MS = 60 * 1000;
+
+/**
+ * Token bucket por chave e por ação.
+ *
+ * A chave importa: usar o id do socket faria reconectar zerar o limite, o que é
+ * exatamente o que um cliente abusivo faria. Quem chama passa o IP antes da
+ * identificação e o `userId` depois dela, porque nenhum dos dois muda quando o
+ * socket cai e volta.
  */
 export class RateLimiter {
   #buckets = new Map();
+  #lastSweep = Date.now();
 
   /**
-   * @param {string} key    identificador do balde, normalmente `socketId:acao`
+   * @param {string} key    identificador do balde, `<escopo>:<ação>`
    * @param {number} burst  quantos eventos seguidos são tolerados
    * @param {number} perSec quantos eventos por segundo repõem o balde
    */
   allow(key, burst, perSec) {
     const now = Date.now();
+    this.#sweep(now);
     const bucket = this.#buckets.get(key) ?? { tokens: burst, at: now };
     bucket.tokens = Math.min(burst, bucket.tokens + ((now - bucket.at) / 1000) * perSec);
     bucket.at = now;
@@ -74,10 +139,28 @@ export class RateLimiter {
     return permitted;
   }
 
-  /** Ao desconectar, joga fora os baldes do socket pra não virar vazamento. */
-  forget(prefix) {
-    for (const key of this.#buckets.keys()) {
-      if (key.startsWith(prefix)) this.#buckets.delete(key);
+  /**
+   * Devolve um token ao balde. Serve pra cobrar só o que deu errado: a tentativa
+   * de entrada consome do balde apertado e, quando ela é legítima, o token volta.
+   * Assim quem acerta a senha nunca esbarra no limite, e quem erra vai ficando
+   * sem tentativas.
+   */
+  refund(key, burst) {
+    const bucket = this.#buckets.get(key);
+    if (!bucket) return;
+    bucket.tokens = Math.min(burst, bucket.tokens + 1);
+  }
+
+  /**
+   * Baldes cheios e parados não guardam informação: recriá-los dá o mesmo
+   * resultado. Sem esta limpeza, um servidor exposto acumularia uma entrada por
+   * IP que já passou por aqui.
+   */
+  #sweep(now) {
+    if (now - this.#lastSweep < SWEEP_EVERY_MS) return;
+    this.#lastSweep = now;
+    for (const [key, bucket] of this.#buckets) {
+      if (now - bucket.at > BUCKET_TTL_MS) this.#buckets.delete(key);
     }
   }
 }

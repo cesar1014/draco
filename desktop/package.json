@@ -1,6 +1,6 @@
 {
   "name": "draco-desktop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Draco para Windows, com seletor de telas e janelas.",
   "author": "Cesar",
@@ -16,12 +16,21 @@
     "appId": "com.cesar.draco",
     "productName": "Draco",
     "artifactName": "draco-setup-${version}.${ext}",
-    "files": ["main.js", "preload.js", "status.html", "icon.png", "!node_modules"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "updater.js",
+      "status.html",
+      "icon.png",
+      "!node_modules"
+    ],
     "directories": {
       "output": "out"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "icon.png"
     },
     "nsis": {

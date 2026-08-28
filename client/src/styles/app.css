@@ -1180,6 +1180,13 @@ button.guild:hover {
   font-size: 14px;
 }
 
+.messages-older {
+  padding: 14px 0 10px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
 .message-group {
   display: flex;
   gap: 12px;
@@ -2422,7 +2429,10 @@ button.guild:hover {
 }
 
 .probe li {
+  display: grid;
+  gap: 2px;
   padding: 8px 12px;
+  border-left: 3px solid var(--line-soft);
   border-radius: var(--radius-xs);
   color: var(--text-dim);
   background: var(--surface-2);
@@ -2430,12 +2440,60 @@ button.guild:hover {
   animation: rise var(--t) var(--ease-out) both;
 }
 
-.probe li[data-ok="true"] {
+/* A cor fica na borda, não no texto: um parágrafo inteiro colorido cansa a
+   leitura, e a barra à esquerda já diz o resultado de longe. */
+.probe li[data-status="ok"] {
+  border-left-color: var(--good);
+}
+
+.probe li[data-status="warn"] {
+  border-left-color: var(--warn);
+}
+
+.probe li[data-status="fail"] {
+  border-left-color: var(--bad);
+}
+
+.probe li strong {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.probe-verdict {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.probe-verdict[data-verdict="excelente"],
+.probe-verdict[data-verdict="boa"] {
   color: var(--good);
 }
 
-.probe li[data-ok="false"] {
+.probe-verdict[data-verdict="limitada"] {
   color: var(--warn);
+}
+
+.probe-verdict[data-verdict="problemas"] {
+  color: var(--bad);
+}
+
+/* Ação escrita dentro de um parágrafo: parece link, e é botão de verdade pra
+   continuar acessível pelo teclado e pelo leitor de tela. */
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand-2);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--text);
 }
 
 .volume-group {

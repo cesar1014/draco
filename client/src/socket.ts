@@ -29,8 +29,13 @@ export interface IdentifyReply {
   ok: boolean;
   error?: string;
   selfId?: string;
-  /** Mesma coisa que `selfId`; guardado no navegador pra reassumir depois. */
-  userId?: string;
+  /**
+   * Token de sessão assinado pelo servidor. Só vem quando muda — na primeira
+   * entrada ou perto de vencer — e é o que o navegador guarda pra voltar como a
+   * mesma pessoa. A identidade em si não é prova de nada: sem a assinatura, o
+   * servidor emite outra.
+   */
+  token?: string;
   /** O servidor tem credenciais do SFU: a mídia passa por servidor. */
   sfu?: boolean;
   state?: ServerSnapshot;
@@ -44,6 +49,15 @@ export interface VoiceJoinReply {
   sfu?: boolean;
 }
 
+export interface ChatHistoryReply {
+  ok: boolean;
+  error?: string;
+  channelId?: string;
+  /** Página anterior, mais antiga primeiro, pra concatenar direto antes do que já existe. */
+  messages?: Message[];
+  more?: boolean;
+}
+
 /** Resposta comum dos eventos `sfu:*`. Erro nunca é fatal: o cliente cai pra malha. */
 interface SfuReply {
   ok: boolean;
@@ -53,7 +67,6 @@ interface SfuReply {
 interface SfuPublishReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
 }
-
 interface SfuSubscribeReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
   requiresImmediateRenegotiation?: boolean;
@@ -62,10 +75,14 @@ interface SfuSubscribeReply extends SfuReply {
 
 interface ClientEvents {
   identify: (
-    payload: { username: string; password: string; userId: string | null },
+    payload: { username: string; password: string; token: string | null },
     ack: (reply: IdentifyReply) => void,
   ) => void;
   "chat:send": (payload: { channelId: string; content: string }) => void;
+  "chat:history": (
+    payload: { channelId: string; beforeId: string },
+    ack: (reply: ChatHistoryReply) => void,
+  ) => void;
   "voice:join": (payload: { channelId: string }, ack: (reply: VoiceJoinReply) => void) => void;
   "voice:leave": () => void;
   "voice:state": (payload: Partial<VoiceFlags>) => void;
@@ -83,7 +100,7 @@ interface ClientEvents {
     ack: (reply: SfuSubscribeReply) => void,
   ) => void;
   "sfu:renegotiate": (
-    payload: { description: RTCSessionDescriptionInit },
+    payload: { role: "send" | "recv"; description: RTCSessionDescriptionInit },
     ack: (reply: SfuReply) => void,
   ) => void;
 }
@@ -132,14 +149,17 @@ export const identify = (
   socket: AppSocket,
   username: string,
   password: string,
-  userId: string | null,
+  token: string | null,
 ) =>
   new Promise<IdentifyReply>((resolve) =>
-    socket.emit("identify", { username, password, userId }, resolve),
+    socket.emit("identify", { username, password, token }, resolve),
   );
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
   new Promise<VoiceJoinReply>((resolve) => socket.emit("voice:join", { channelId }, resolve));
+
+export const loadChatHistory = (socket: AppSocket, channelId: string, beforeId: string) =>
+  ask<ChatHistoryReply>((resolve) => socket.emit("chat:history", { channelId, beforeId }, resolve));
 
 export const sfuJoin = (socket: AppSocket) =>
   ask<SfuReply>((resolve) => socket.emit("sfu:join", {}, resolve));
@@ -155,8 +175,11 @@ export const sfuSubscribe = (
   tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string }>,
 ) => ask<SfuSubscribeReply>((resolve) => socket.emit("sfu:subscribe", { tracks }, resolve));
 
-export const sfuRenegotiate = (socket: AppSocket, description: RTCSessionDescriptionInit) =>
-  ask<SfuReply>((resolve) => socket.emit("sfu:renegotiate", { description }, resolve));
+export const sfuRenegotiate = (
+  socket: AppSocket,
+  role: "send" | "recv",
+  description: RTCSessionDescriptionInit,
+) => ask<SfuReply>((resolve) => socket.emit("sfu:renegotiate", { role, description }, resolve));
 
 /** Códigos do servidor traduzidos pra algo que a pessoa na tela entenda. */
 export function describeSocketError(code: string | undefined): string {

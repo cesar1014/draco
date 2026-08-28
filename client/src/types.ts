@@ -52,6 +52,8 @@ export interface ServerSnapshot {
   channels: Channel[];
   members: Member[];
   messages: Record<string, Message[]>;
+  /** Canais em que ainda existe conversa antes da que veio no snapshot. */
+  history: Record<string, boolean>;
 }
 
 export interface IceConfigResponse {
@@ -59,6 +61,8 @@ export interface IceConfigResponse {
   iceTransportPolicy: RTCIceTransportPolicy;
   hasTurn: boolean;
   source: string;
+  /** Quando a credencial de TURN vence, em epoch ms. `null` quando não expira. */
+  expiresAt: number | null;
   warning: string | null;
 }
 

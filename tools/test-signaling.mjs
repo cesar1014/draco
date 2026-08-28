@@ -6,7 +6,10 @@
  *   node tools/test-signaling.mjs
  */
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io as connect } from "socket.io-client";
 
@@ -14,6 +17,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 3999;
 const PASSWORD = "segredo";
 const URL = `http://localhost:${PORT}`;
+const testDirectory = mkdtempSync(join(tmpdir(), "draco-signaling-"));
+const databasePath = join(testDirectory, "draco.sqlite");
 
 let passed = 0;
 let failed = 0;
@@ -55,12 +60,20 @@ const emit = (socket, event, payload) =>
 
 const server = spawn(process.execPath, ["server/index.js"], {
   cwd: root,
-  env: { ...process.env, PORT: String(PORT), ROOM_PASSWORD: PASSWORD, ORIGIN: "" },
+  env: {
+    ...process.env,
+    DATABASE_PATH: databasePath,
+    PORT: String(PORT),
+    ROOM_PASSWORD: PASSWORD,
+    ORIGIN: "",
+  },
   stdio: ["ignore", "ignore", "inherit"],
 });
 
-const shutdown = () => server.kill();
-process.on("exit", shutdown);
+const stopServer = () => {
+  if (server.exitCode === null && server.signalCode === null) server.kill();
+};
+process.on("exit", stopServer);
 
 try {
   await sleep(1200);
@@ -86,15 +99,17 @@ try {
   check("snapshot traz os canais", joinA.state.channels.length > 0, true);
   // O id da pessoa não é o do socket: é ele que sobrevive a uma reconexão.
   check("selfId é uma identidade própria", /^[0-9a-f-]{36}$/.test(joinA.selfId ?? ""), true);
-  check("selfId e userId são o mesmo id", joinA.userId, joinA.selfId);
+  check("a entrada devolve um token de sessão assinado", /^v1\.[\w-]+\.[\w-]+$/.test(joinA.token ?? ""), true);
   check("identidade não é o id do socket", joinA.selfId !== a.id, true);
   const idA = joinA.selfId;
+  const tokenA = joinA.token;
 
   const memberJoined = waitFor(b, "member:joined");
   const joinB = await emit(b, "identify", { username: "Bruno", password: PASSWORD });
   const joinC = await emit(c, "identify", { username: "Carla", password: PASSWORD });
   const idB = joinB.selfId;
   const idC = joinC.selfId;
+  const tokenC = joinC.token;
   check("identificar duas vezes é recusado", (await emit(b, "identify", { username: "Bruno2", password: PASSWORD })).error, "already-identified");
   void memberJoined;
 
@@ -111,6 +126,31 @@ try {
   a.emit("chat:send", { channelId: "inexistente", content: "oi" });
   await sleep(250);
   check("canal de voz e mensagem vazia não geram chat", chatInVoice.length, 0);
+
+  // --- histórico -----------------------------------------------------------
+  // Uma mensagem só no canal: não há passado antes dela, e o servidor precisa
+  // dizer isso em vez de devolver uma página vazia como se fosse conteúdo.
+  const history = await emit(b, "chat:history", { channelId: "t-geral", beforeId: message.id });
+  check("histórico responde com a página anterior", [history.ok, history.messages, history.more], [
+    true,
+    [],
+    false,
+  ]);
+  check(
+    "histórico recusa id que não é do canal",
+    (await emit(b, "chat:history", { channelId: "t-avisos", beforeId: message.id })).error,
+    "no-message",
+  );
+  check(
+    "histórico recusa canal de voz",
+    (await emit(b, "chat:history", { channelId: "v-geral", beforeId: message.id })).error,
+    "no-channel",
+  );
+  check(
+    "histórico recusa pedido sem âncora",
+    (await emit(b, "chat:history", { channelId: "t-geral" })).error,
+    "bad-request",
+  );
 
   // --- entrar em voz -------------------------------------------------------
   const joinVoiceA = await emit(a, "voice:join", { channelId: "v-geral" });
@@ -162,12 +202,35 @@ try {
   // --- reconexão com a mesma identidade ------------------------------------
   const d = connect(URL, { transports: ["websocket"] });
   await waitFor(d, "connect");
-  const rejoin = await emit(d, "identify", { username: "Carla", password: PASSWORD, userId: idC });
-  check("reassumir o userId devolve o mesmo membro", rejoin.selfId, idC);
+  const rejoin = await emit(d, "identify", { username: "Carla", password: PASSWORD, token: tokenC });
+  check("o token devolve a mesma identidade", rejoin.selfId, idC);
   const onlineIds = rejoin.state.members.map((m) => m.id).sort();
   check("reconectar não duplica ninguém na lista", onlineIds, [idA, idB, idC].sort());
   d.close();
   await sleep(250);
+
+  // --- identidade é do servidor, não do cliente ----------------------------
+  // O ataque que isto fecha: conhecer o id de alguém era suficiente pra entrar
+  // como essa pessoa. Agora sem a assinatura o servidor emite outra identidade.
+  const e = connect(URL, { transports: ["websocket"] });
+  await waitFor(e, "connect");
+  const impostor = await emit(e, "identify", { username: "Falsa", password: PASSWORD, userId: idA });
+  check("mandar o userId de outra pessoa não assume a identidade dela", impostor.selfId !== idA, true);
+  const forged = `${tokenA.split(".").slice(0, 2).join(".")}.assinaturafalsa`;
+  const f = connect(URL, { transports: ["websocket"] });
+  await waitFor(f, "connect");
+  const tampered = await emit(f, "identify", { username: "Falsa2", password: PASSWORD, token: forged });
+  check("token com assinatura trocada não vale", tampered.selfId !== idA, true);
+  e.close();
+  f.close();
+  await sleep(250);
+
+  // --- validação de payload ------------------------------------------------
+  const junkSignals = collect(b, "rtc:signal");
+  a.emit("rtc:signal", { to: idB, description: { type: "offer", sdp: "x".repeat(70_000) } });
+  a.emit("rtc:signal", { to: idB, candidate: { candidate: 42 } });
+  await sleep(250);
+  check("SDP gigante e candidato malformado são descartados", junkSignals.length, 0);
 
   // --- saída ---------------------------------------------------------------
   const peerLeftOnA = waitFor(a, "voice:peer-left");
@@ -190,5 +253,16 @@ try {
 }
 
 console.log(`\n${passed} passaram, ${failed} falharam`);
-server.kill();
-process.exit(failed === 0 ? 0 : 1);
+stopServer();
+if (server.exitCode === null && server.signalCode === null) await once(server, "exit");
+process.off("exit", stopServer);
+
+const temporaryRoot = resolve(tmpdir());
+const resolvedDirectory = resolve(testDirectory);
+if (
+  resolve(dirname(resolvedDirectory)) === temporaryRoot &&
+  basename(resolvedDirectory).startsWith("draco-signaling-")
+) {
+  rmSync(resolvedDirectory, { recursive: true, force: true });
+}
+process.exitCode = failed === 0 ? 0 : 1;

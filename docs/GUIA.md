@@ -206,8 +206,10 @@ contorno:
 
 - **WebSocket.** A sinalização do WebRTC é uma conexão aberta e contínua, que é exatamente o que
   uma função serverless não sustenta.
-- **Estado em memória.** Quem está em qual canal, e as mensagens, vivem dentro do processo. Com
-  várias instâncias que nascem e morrem, cada requisição cairia numa memória diferente.
+- **Presença em memória.** Sockets, canais de voz e sessões de mídia pertencem ao processo que
+  mantém cada conexão aberta.
+- **SQLite local.** Perfis, servidores, canais e mensagens usam um arquivo gravável e durável,
+  algo que uma função descartável não oferece.
 
 Você conseguiria publicar a *página* na Vercel, mas o servidor de voz teria que ficar em outro
 lugar de qualquer jeito. Melhor manter os dois juntos.
@@ -252,7 +254,8 @@ variáveis. As duas ficaram fora do `render.yaml` justamente porque dependem des
 | `TURN_CREDENTIALS_URL` | a URL do Open Relay, logo abaixo |
 
 Salvar reinicia o serviço sozinho. Sem `ORIGIN` o app funciona igual, só aceitando conexão de
-qualquer origem.
+qualquer origem, e o boot avisa isso em voz alta. O `render.yaml` já gera um `SESSION_SECRET` e
+liga `TRUSTED_PROXY`, porque o disco do plano grátis é descartável e o TLS termina num proxy.
 
 ### Configure TURN antes de chamar os amigos
 
@@ -277,8 +280,9 @@ Duas coisas pra saber antes de escolher:
 - **Dorme sozinho.** Sem ninguém acessando por ~15 minutos, o Render desliga o serviço. O
   próximo acesso religa, e essa primeira carga demora bem, meio minuto ou mais. Depois disso
   fica normal. Avise os amigos, ou pague o plano mais barato, que não dorme.
-- **Reiniciar apaga o chat.** Não há banco de dados: as mensagens estão na memória do processo.
-  Dormir, acordar ou publicar uma alteração zera o histórico. Voz e vídeo não se importam.
+- **O disco do plano grátis é efêmero.** O SQLite funciona, mas o Render pode descartar o arquivo
+  numa substituição da instância ou novo deploy. Para histórico durável, use um disco persistente
+  de um plano compatível ou o volume configurado no Fly.io.
 
 Nada disso afeta a qualidade da call: a mídia vai direto de uma pessoa pra outra e nunca passa
 pelo Render.
@@ -313,10 +317,16 @@ fly launch --copy-config --no-deploy
 ```
 
 Ele pergunta o nome do app (o do arquivo é `draco-sp`, troque se já estiver tomado) e confirma a
-região. **Não** deixe ele criar banco de dados nem Redis: não há nada pra guardar.
+região. Não é necessário criar Postgres nem Redis. Crie apenas o volume usado pelo SQLite:
 
 ```bash
-fly secrets set ROOM_PASSWORD=suasenha ORIGIN=https://SEU-APP.fly.dev
+fly volumes create draco_data --region gru --size 1
+```
+
+O nome `draco_data` e o destino `/data` já estão declarados no `fly.toml`.
+
+```bash
+fly secrets set ROOM_PASSWORD=suasenha ORIGIN=https://SEU-APP.fly.dev \n  SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 ```bash
@@ -430,12 +440,25 @@ só pra confirmar que o TURN funciona, porque gasta banda do provedor.
 
 ## Verificar que o núcleo funciona
 
-Dois testes automáticos, nenhum deles precisa de uma segunda pessoa nem de câmera.
+Três testes automáticos, nenhum deles precisa de uma segunda pessoa nem de câmera. `npm test` roda os três junto com o typecheck.
 
 O servidor de sinalização (relay, presença de voz, senha, rate limit):
 
 ```bash
 npm run test:server
+```
+
+As migrations e a recuperação do SQLite depois de encerrar e iniciar outro processo:
+
+```bash
+npm run test:persistence
+```
+
+O ciclo de vida das trilhas publicadas no SFU, que é onde mora o defeito de ligar a câmera, desligar
+e ligar de novo:
+
+```bash
+npm run test:media
 ```
 
 O núcleo WebRTC, numa aba só: duas conexões independentes com mídia sintética, provando que a
@@ -479,18 +502,23 @@ server/
   index.js       Express + Socket.IO + HTTPS opcional + serve a build
   signaling.js   relay de rtc:signal, presença de voz, chat
   ice.js         monta os iceServers (3 modos de TURN)
-  state.js       guilds, canais, mensagens, presença, em memória
-  security.js    sanitização, rate limit por socket, senha da sala
+  state.js       contrato de estado; presença e call ficam em memória
+  data/          SQLite, repositório de dados e migrations
+  auth.js        tokens de sessão assinados pelo servidor
+  log.js         log com categoria (SIGNAL, SFU, TURN, AUTH, DB…)
+  security.js    sanitização, validação de payload, rate limit, senha da sala
 client/
   index.html
   public/        manifest e ícones do app instalável
   src/
-    rtc/           VoiceEngine, MediaManager, SpeakingDetector, iceConfig
+    rtc/           VoiceEngine, SfuEngine, MediaManager, denoise, diagnostics
     state/store.ts estado da aplicação (zustand)
     components/    a interface
     dev/           autoteste do WebRTC
 tools/
-  test-signaling.mjs  testes do servidor
+  test-signaling.mjs   testes do servidor
+  test-persistence.mjs testes do SQLite, em dois processos
+  test-media.mjs       ciclo de vida das trilhas publicadas no SFU
   make-brand.mjs      gera a arte do logo (node tools/make-brand.mjs)
   make-icons.mjs      gera os PNG do ícone (npm run icons)
   deploy-oracle.sh    sobe tudo numa VM Ubuntu: build, serviço, HTTPS e TURN
@@ -504,6 +532,17 @@ shared/ports.js  as portas de desenvolvimento, num lugar só
 Malha P2P: cada pessoa envia o próprio vídeo pra todas as outras, então o upload cresce junto com
 a call. Até 6–8 pessoas vai bem; acima disso o caminho é um SFU, que é outro projeto.
 
-Não há banco de dados: canais e mensagens vivem na memória do servidor e se perdem ao
-reiniciar. Identidade é só um apelido guardado no navegador: não há conta, senha por pessoa, DM,
-cargo, reação, upload de arquivo nem notificação push.
+O SQLite mantém perfis, associações a servidores, canais, cargos e as últimas 5000 mensagens de
+cada canal. O arquivo padrão é `data/draco.sqlite`; em deploy ele precisa estar num volume
+persistente. A entrada carrega as 50 mensagens mais recentes por canal, e rolar pra cima busca as
+anteriores no banco, uma página por vez. Presença, sockets e estado de mídia são transitórios por
+definição.
+
+Identidade é um apelido mais um token assinado pelo servidor, guardado no navegador. Isso já
+impede alguém de assumir a identidade de outra pessoa, mas não é conta: não há e-mail, senha por
+pessoa, recuperação de acesso, DM, reação, upload de arquivo nem notificação push. O schema já
+reserva cargos, permissões, configurações, convites e bans para os fluxos administrativos futuros.
+
+Uma instância só. Presença, limite de frequência e sessões de mídia vivem na memória do processo,
+então subir duas instâncias por trás de um balanceador exigiria estado compartilhado — e é aí que um
+Redis passaria a fazer sentido. Enquanto for um processo, ele não é necessário.
