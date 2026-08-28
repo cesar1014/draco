@@ -231,6 +231,18 @@ export const PinIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const PeopleIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0 1.5c-3.6 0-6.5 1.9-6.5 4.2V19a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-2.3c0-2.3-2.9-4.2-6.5-4.2Zm7.6-1.6a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Zm.4 1.6c-.7 0-1.4.1-2 .3 1.5 1 2.5 2.5 2.5 4.2V20h3.5a1 1 0 0 0 1-1v-2c0-2.1-2.2-3.5-5-3.5Z" />
+  </Icon>
+);
+
+export const TrashIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9.5 2h5a1 1 0 0 1 1 1v1H20a1 1 0 1 1 0 2H4a1 1 0 1 1 0-2h4.5V3a1 1 0 0 1 1-1Zm-3.4 6h11.8l-.8 12.1a2 2 0 0 1-2 1.9H8.9a2 2 0 0 1-2-1.9L6.1 8Zm3.4 3a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1Zm5 0a1 1 0 0 0-1 1v6a1 1 0 1 0 2 0v-6a1 1 0 0 0-1-1Z" />
+  </Icon>
+);
+
 /**
  * A marca vem do PNG da arte, não de um SVG redesenhado: é a mesma imagem que o
  * ícone do app e do PWA usam, então a identidade não se divide em duas versões.

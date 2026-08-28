@@ -1,6 +1,6 @@
-import { useMemo } from "react";
-import { CloseIcon, HashIcon, SpeakerIcon } from "@/components/Icons";
-import { OnlineList } from "@/components/OnlineList";
+import { useMemo, useState } from "react";
+import { ChannelCreateModal } from "@/components/GuildAdmin";
+import { CloseIcon, GearIcon, HashIcon, PlusIcon, SpeakerIcon, TrashIcon } from "@/components/Icons";
 import { UserPanel } from "@/components/UserPanel";
 import { VoiceChannelMembers } from "@/components/VoiceChannelMembers";
 import { VoiceStrip } from "@/components/VoiceStrip";
@@ -13,11 +13,23 @@ export function ChannelSidebar() {
   const activeGuildId = useStore((state) => state.activeGuildId);
   const activeChannelId = useStore((state) => state.activeChannelId);
   const voiceChannelId = useStore((state) => state.voiceChannelId);
+  const selfId = useStore((state) => state.selfId);
   const selectChannel = useStore((state) => state.selectChannel);
   const joinVoice = useStore((state) => state.joinVoice);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
+  const openAdmin = useStore((state) => state.openAdmin);
+  const deleteChannel = useStore((state) => state.deleteChannel);
+
+  const [creating, setCreating] = useState(false);
 
   const guild = guilds.find((item) => item.id === activeGuildId);
+  /**
+   * Servidor do catálogo padrão não tem dono e não é administrável: ele é de todo
+   * mundo que entra, e deixar um convidado apagar canal ali seria vandalismo sem
+   * responsável. Os controles simplesmente não aparecem.
+   */
+  const managed = Boolean(guild && guild.ownerId !== null);
+  const owner = managed && guild?.ownerId === selfId;
 
   /** Agrupa por categoria mantendo a ordem em que o servidor mandou. */
   const groups = useMemo(() => {
@@ -35,6 +47,16 @@ export function ChannelSidebar() {
     <aside className="sidebar">
       <header className="sidebar-header">
         <strong>{guild?.name ?? "Servidor"}</strong>
+        {managed && (
+          <button
+            type="button"
+            className="sidebar-action"
+            onClick={() => void openAdmin(activeGuildId)}
+            title="Convites e membros"
+          >
+            <GearIcon size={16} />
+          </button>
+        )}
         <button
           type="button"
           className="sidebar-close"
@@ -52,7 +74,7 @@ export function ChannelSidebar() {
             {list.map((channel) => {
               const voice = channel.type === "voice";
               return (
-                <div key={channel.id}>
+                <div key={channel.id} className="channel-slot">
                   <button
                     type="button"
                     className="channel"
@@ -67,17 +89,39 @@ export function ChannelSidebar() {
                     {voice ? <SpeakerIcon size={18} /> : <HashIcon size={18} />}
                     <span className="channel-name">{channel.name}</span>
                   </button>
+                  {/* Aparece no hover da linha: um ícone de lixeira por canal,
+                      sempre visível, transformaria a lista num campo minado. */}
+                  {owner && (
+                    <button
+                      type="button"
+                      className="channel-delete"
+                      onClick={() => void deleteChannel(channel.id)}
+                      title={`Apagar ${channel.name}`}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  )}
                   {voice && <VoiceChannelMembers channelId={channel.id} />}
                 </div>
               );
             })}
           </section>
         ))}
-        <OnlineList />
+
+        {owner && (
+          <button type="button" className="channel add-channel" onClick={() => setCreating(true)}>
+            <PlusIcon size={16} />
+            <span className="channel-name">Criar canal</span>
+          </button>
+        )}
       </div>
 
       <VoiceStrip />
       <UserPanel />
+
+      {creating && (
+        <ChannelCreateModal guildId={activeGuildId} onClose={() => setCreating(false)} />
+      )}
     </aside>
   );
 }

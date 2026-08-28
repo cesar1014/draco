@@ -55,8 +55,19 @@ function collect(socket, event) {
   return received;
 }
 
-const emit = (socket, event, payload) =>
-  new Promise((resolve) => socket.emit(event, payload, (response) => resolve(response)));
+/**
+ * Emite e espera o ack, com prazo. O prazo é o que importa: um handler que
+ * esquece de responder, ou um socket que o servidor já derrubou, travaria o teste
+ * para sempre em vez de apontar onde parou.
+ */
+const emit = (socket, event, payload, timeout = 3000) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: false, error: "sem-resposta" }), timeout);
+    socket.emit(event, payload, (response) => {
+      clearTimeout(timer);
+      resolve(response);
+    });
+  });
 
 const server = spawn(process.execPath, ["server/index.js"], {
   cwd: root,
@@ -245,8 +256,123 @@ try {
   await sleep(400);
   check("rate limit corta enxurrada de chat", flood.length <= 8, true);
 
+  // --- servidores, canais, convites e banimentos ----------------------------
+  // A ordem importa: cada bloco usa o que o anterior criou. Dois sockets novos
+  // porque os antigos não servem: `c` foi derrubado quando `d` reassumiu a
+  // identidade de Carla, e quem testa "não sou membro" tem que continuar de fora.
+  const g = connect(URL, { transports: ["websocket"] });
+  const h = connect(URL, { transports: ["websocket"] });
+  await Promise.all([waitFor(g, "connect"), waitFor(h, "connect")]);
+  const joinG = await emit(g, "identify", { username: "Davi", password: PASSWORD });
+  await emit(h, "identify", { username: "Elena", password: PASSWORD });
+  const idG = joinG.selfId;
+
+  const defaultChannels = joinA.state.channels.length;
+  check(
+    "servidor do catálogo padrão não aceita canal novo",
+    (await emit(a, "channel:create", { guildId: "g-main", type: "text", name: "x" })).error,
+    "default-guild",
+  );
+
+  const created = await emit(a, "guild:create", { name: "Servidor de Teste" });
+  check("criar servidor devolve o servidor e o estado", [created.ok, created.guild?.name], [
+    true,
+    "Servidor de Teste",
+  ]);
+  const guildId = created.guild.id;
+  check("quem cria é o dono", created.guild.ownerId, idA);
+  // Dois canais de largada: um servidor sem canal nenhum abre numa tela vazia.
+  const mine = created.state.channels.filter((channel) => channel.guildId === guildId);
+  check("o servidor novo nasce com um canal de texto e um de voz", mine.map((ch) => ch.type).sort(), [
+    "text",
+    "voice",
+  ]);
+
+  // Privado por padrão: quem não foi convidado não administra nem vê.
+  check(
+    "quem não é membro não administra",
+    (await emit(h, "guild:admin", { guildId })).error,
+    "not-member",
+  );
+
+  const channelCreated = waitFor(a, "channel:created");
+  const newChannel = await emit(a, "channel:create", {
+    guildId,
+    type: "text",
+    name: "  Assuntos  Gerais!! ",
+  });
+  check("nome de canal de texto é normalizado", newChannel.channel?.name, "assuntos-gerais");
+  check("criar canal avisa quem é do servidor", (await channelCreated)?.channel?.id, newChannel.channel.id);
+
+  const voiceOnly = mine.find((channel) => channel.type === "voice");
+  check(
+    "o último canal de voz não pode ser apagado",
+    (await emit(a, "channel:delete", { channelId: voiceOnly.id })).error,
+    "last-channel",
+  );
+  check(
+    "canal extra pode ser apagado",
+    (await emit(a, "channel:delete", { channelId: newChannel.channel.id })).ok,
+    true,
+  );
+
+  // Convite de uso único: a segunda pessoa a tentar não entra.
+  const invite = await emit(a, "invite:create", { guildId, maxUses: 1 });
+  check("convite nasce com código", /^[BCDFGHJKLMNPQRSTVWXYZ23456789]{10}$/.test(invite.code ?? ""), true);
+
+  const accepted = await emit(g, "invite:accept", { code: invite.code });
+  check("convite aceito entra no servidor", [accepted.ok, accepted.guildId], [true, guildId]);
+  check(
+    "o servidor novo aparece no estado de quem entrou",
+    accepted.state.guilds.some((guild) => guild.id === guildId),
+    true,
+  );
+  check(
+    "convite de uso único não serve duas vezes",
+    (await emit(h, "invite:accept", { code: invite.code })).error,
+    "invite-used-up",
+  );
+  check(
+    "código inventado é recusado",
+    (await emit(h, "invite:accept", { code: "ZZZZZZZZZZ" })).error,
+    "invite-invalid",
+  );
+
+  // Banir tira do servidor e impede a volta pelo mesmo convite.
+  const openInvite = await emit(a, "invite:create", { guildId });
+  check("banir remove do elenco", (await emit(a, "member:ban", { guildId, userId: idG })).ok, true);
+  check(
+    "quem foi banido não volta nem com convite válido",
+    (await emit(g, "invite:accept", { code: openInvite.code })).error,
+    "banned",
+  );
+  check("readmitir libera a volta", (await emit(a, "member:unban", { guildId, userId: idG })).ok, true);
+  check(
+    "depois de readmitido o convite funciona",
+    (await emit(g, "invite:accept", { code: openInvite.code })).ok,
+    true,
+  );
+
+  check(
+    "quem não é dono não apaga canal",
+    (await emit(g, "channel:delete", { channelId: voiceOnly.id })).error,
+    "not-owner",
+  );
+  check("quem não é dono pode sair", (await emit(g, "guild:leave", { guildId })).ok, true);
+  check(
+    "o dono não sai do próprio servidor",
+    (await emit(a, "guild:leave", { guildId })).error,
+    "is-owner",
+  );
+
+  const panel = await emit(a, "guild:admin", { guildId });
+  check("o painel do dono traz elenco e convites", [panel.ok, panel.owner], [true, true]);
+  // O catálogo padrão continua de todo mundo: nada disso mexeu nele.
+  check("o servidor padrão segue intacto", joinA.state.channels.length, defaultChannels);
+
   a.close();
-  c.close();
+  g.close();
+  h.close();
 } catch (error) {
   failed += 1;
   console.log(`FAIL  exceção inesperada: ${error.stack}`);

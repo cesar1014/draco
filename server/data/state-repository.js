@@ -17,7 +17,15 @@ const DEFAULT_PERMISSIONS = ["view_channels", "send_messages", "connect", "speak
 const CATALOG_SEEDED = "catalog:seeded_at";
 
 function mapGuild(row) {
-  return { id: row.id, name: row.name, initials: row.initials, color: row.color };
+  return {
+    id: row.id,
+    name: row.name,
+    initials: row.initials,
+    color: row.color,
+    // `null` nos servidores do catálogo padrão: eles não têm dono, e é isso que
+    // impede alguém de apagá-los como se fossem seus.
+    ownerId: row.owner_id ?? null,
+  };
 }
 
 function mapChannel(row) {
@@ -47,7 +55,7 @@ export class StateRepository {
     this.database = database;
     this.statements = {
       listGuilds: database.prepare(`
-        SELECT id, name, initials, color
+        SELECT id, name, initials, color, owner_id
         FROM guilds
         ORDER BY position, id
       `),
@@ -197,6 +205,86 @@ export class StateRepository {
           value_json = excluded.value_json,
           updated_at = excluded.updated_at
       `),
+
+      // --- associação a servidores -------------------------------------------
+      listGuildsForUser: database.prepare(`
+        SELECT g.id, g.name, g.initials, g.color, g.owner_id AS owner_id
+        FROM guilds g
+        JOIN guild_members gm ON gm.guild_id = g.id
+        WHERE gm.user_id = ?
+        ORDER BY g.position, g.id
+      `),
+      // Quem pertence ao servidor, esteja conectado ou não. É daqui que sai a
+      // parte "offline" da lista de membros: presença vem da memória, o elenco
+      // vem do banco.
+      listGuildRoster: database.prepare(`
+        SELECT p.user_id, p.username, p.color
+        FROM guild_members gm
+        JOIN profiles p ON p.user_id = gm.user_id
+        WHERE gm.guild_id = ?
+        ORDER BY gm.joined_at, p.username
+      `),
+      deleteGuildMember: database.prepare(
+        "DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?",
+      ),
+      nextGuildPosition: database.prepare(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM guilds",
+      ),
+      insertOwnedGuild: database.prepare(`
+        INSERT INTO guilds (id, owner_id, name, initials, color, position, created_at, updated_at)
+        VALUES (@id, @ownerId, @name, @initials, @color, @position, @now, @now)
+      `),
+
+      // --- canais -------------------------------------------------------------
+      nextChannelPosition: database.prepare(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM channels WHERE guild_id = ?",
+      ),
+      deleteChannel: database.prepare("DELETE FROM channels WHERE id = ?"),
+      countChannelsOfType: database.prepare(
+        "SELECT COUNT(*) AS total FROM channels WHERE guild_id = ? AND type = ?",
+      ),
+
+      // --- convites -----------------------------------------------------------
+      insertInvite: database.prepare(`
+        INSERT INTO invites (code, guild_id, channel_id, inviter_user_id, max_uses, expires_at, created_at)
+        VALUES (@code, @guildId, @channelId, @inviterId, @maxUses, @expiresAt, @now)
+      `),
+      findInvite: database.prepare(`
+        SELECT code, guild_id, inviter_user_id, max_uses, uses, expires_at, revoked_at
+        FROM invites
+        WHERE code = ?
+      `),
+      bumpInviteUses: database.prepare("UPDATE invites SET uses = uses + 1 WHERE code = ?"),
+      revokeInvite: database.prepare(
+        "UPDATE invites SET revoked_at = ? WHERE code = ? AND guild_id = ? AND revoked_at IS NULL",
+      ),
+      listInvites: database.prepare(`
+        SELECT code, guild_id, inviter_user_id, max_uses, uses, expires_at, created_at
+        FROM invites
+        WHERE guild_id = ? AND revoked_at IS NULL
+        ORDER BY created_at DESC
+      `),
+
+      // --- bans ---------------------------------------------------------------
+      insertBan: database.prepare(`
+        INSERT INTO bans (guild_id, user_id, moderator_user_id, reason, created_at)
+        VALUES (@guildId, @userId, @moderatorId, @reason, @now)
+        ON CONFLICT(guild_id, user_id) DO UPDATE SET
+          moderator_user_id = excluded.moderator_user_id,
+          reason = excluded.reason,
+          created_at = excluded.created_at
+      `),
+      deleteBan: database.prepare("DELETE FROM bans WHERE guild_id = ? AND user_id = ?"),
+      findBan: database.prepare(
+        "SELECT guild_id, user_id, expires_at FROM bans WHERE guild_id = ? AND user_id = ?",
+      ),
+      listBans: database.prepare(`
+        SELECT b.guild_id, b.user_id, b.reason, b.created_at, p.username
+        FROM bans b
+        LEFT JOIN profiles p ON p.user_id = b.user_id
+        WHERE b.guild_id = ?
+        ORDER BY b.created_at DESC
+      `),
     };
 
     this.seedCatalogTransaction = database.transaction((guilds, channels, now) => {
@@ -231,6 +319,68 @@ export class StateRepository {
     this.addMessageTransaction = database.transaction((message, retention) => {
       this.statements.insertMessage.run(message);
       this.statements.pruneMessages.run(message.channelId, retention);
+    });
+
+    /**
+     * Servidor novo nasce com dono, cargo padrão, um canal de texto e um de voz.
+     * Numa transação só porque um servidor sem canal nenhum é um estado que a
+     * interface não sabe desenhar: melhor não existir do que existir pela metade.
+     */
+    this.createGuildTransaction = database.transaction((guild, channels, now) => {
+      this.statements.insertOwnedGuild.run({
+        ...guild,
+        position: this.statements.nextGuildPosition.get().position,
+        now,
+      });
+      this.statements.insertDefaultRole.run({
+        id: `${guild.id}:everyone`,
+        guildId: guild.id,
+        permissions: JSON.stringify(DEFAULT_PERMISSIONS),
+        now,
+      });
+      for (const [position, channel] of channels.entries()) {
+        this.statements.insertChannel.run({ ...channel, guildId: guild.id, position, now });
+      }
+      this.statements.upsertGuildMember.run({ guildId: guild.id, userId: guild.ownerId, now });
+      this.statements.assignDefaultRole.run({ guildId: guild.id, userId: guild.ownerId, now });
+    });
+
+    /**
+     * Aceitar convite: entra no servidor e gasta um uso. Junto porque o contador
+     * é o que impede um convite de uso único de virar dois, e conferir antes de
+     * gravar não bastaria — duas pessoas colando o mesmo código no mesmo instante
+     * passariam as duas.
+     */
+    this.acceptInviteTransaction = database.transaction((code, userId, now) => {
+      const invite = this.statements.findInvite.get(code);
+      if (!invite || invite.revoked_at) return { ok: false, error: "invite-invalid" };
+      if (invite.expires_at !== null && invite.expires_at <= now) {
+        return { ok: false, error: "invite-expired" };
+      }
+      if (invite.max_uses !== null && invite.uses >= invite.max_uses) {
+        return { ok: false, error: "invite-used-up" };
+      }
+      if (this.statements.findBan.get(invite.guild_id, userId)) {
+        return { ok: false, error: "banned" };
+      }
+
+      // Já era membro: o convite não é gasto. Colar o link duas vezes não deveria
+      // consumir um uso que outra pessoa poderia aproveitar.
+      const already = this.statements.listGuildsForUser
+        .all(userId)
+        .some((row) => row.id === invite.guild_id);
+      if (!already) {
+        this.statements.upsertGuildMember.run({ guildId: invite.guild_id, userId, now });
+        this.statements.assignDefaultRole.run({ guildId: invite.guild_id, userId, now });
+        this.statements.bumpInviteUses.run(code);
+      }
+      return { ok: true, guildId: invite.guild_id, joined: !already };
+    });
+
+    /** Banir tira do servidor e registra o banimento: as duas coisas ou nenhuma. */
+    this.banTransaction = database.transaction((ban, now) => {
+      this.statements.insertBan.run({ ...ban, now });
+      this.statements.deleteGuildMember.run(ban.guildId, ban.userId);
     });
   }
 
@@ -297,6 +447,119 @@ export class StateRepository {
 
   addMessage(message, retention) {
     this.addMessageTransaction(message, retention);
+  }
+
+  // --- servidores ------------------------------------------------------------
+
+  /** Servidores de que esta pessoa é membro. Vazio para quem acabou de chegar. */
+  listGuildsForUser(userId) {
+    return this.statements.listGuildsForUser.all(userId).map(mapGuild);
+  }
+
+  /**
+   * Todo mundo que pertence ao servidor. Presença não entra aqui: quem está
+   * conectado agora está na memória, e juntar as duas coisas é trabalho de quem
+   * monta o snapshot.
+   */
+  listGuildRoster(guildId) {
+    return this.statements.listGuildRoster.all(guildId).map((row) => ({
+      id: row.user_id,
+      username: row.username,
+      color: row.color,
+    }));
+  }
+
+  createGuild(guild, channels) {
+    this.createGuildTransaction(guild, channels, Date.now());
+  }
+
+  isMember(guildId, userId) {
+    return this.statements.listGuildsForUser.all(userId).some((row) => row.id === guildId);
+  }
+
+  isOwner(guildId, userId) {
+    return this.statements.listGuildsForUser
+      .all(userId)
+      .some((row) => row.id === guildId && row.owner_id === userId);
+  }
+
+  leaveGuild(guildId, userId) {
+    this.statements.deleteGuildMember.run(guildId, userId);
+  }
+
+  // --- canais ----------------------------------------------------------------
+
+  createChannel(channel) {
+    this.statements.insertChannel.run({
+      ...channel,
+      position: this.statements.nextChannelPosition.get(channel.guildId).position,
+      now: Date.now(),
+    });
+  }
+
+  /** Quantos canais daquele tipo o servidor tem. Serve pra não deixar chegar a zero. */
+  countChannelsOfType(guildId, type) {
+    return this.statements.countChannelsOfType.get(guildId, type).total;
+  }
+
+  deleteChannel(channelId) {
+    this.statements.deleteChannel.run(channelId);
+  }
+
+  // --- convites --------------------------------------------------------------
+
+  createInvite(invite) {
+    this.statements.insertInvite.run({ ...invite, now: Date.now() });
+  }
+
+  acceptInvite(code, userId) {
+    return this.acceptInviteTransaction(code, userId, Date.now());
+  }
+
+  revokeInvite(guildId, code) {
+    return this.statements.revokeInvite.run(Date.now(), code, guildId).changes > 0;
+  }
+
+  listInvites(guildId) {
+    return this.statements.listInvites.all(guildId).map((row) => ({
+      code: row.code,
+      guildId: row.guild_id,
+      inviterId: row.inviter_user_id,
+      maxUses: row.max_uses,
+      uses: row.uses,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+    }));
+  }
+
+  // --- bans ------------------------------------------------------------------
+
+  ban(ban) {
+    this.banTransaction(ban, Date.now());
+  }
+
+  /** Banimento vencido não vale: o prazo é conferido na leitura, não por rotina. */
+  isBanned(guildId, userId) {
+    const ban = this.statements.findBan.get(guildId, userId);
+    if (!ban) return false;
+    if (ban.expires_at !== null && ban.expires_at <= Date.now()) {
+      this.statements.deleteBan.run(guildId, userId);
+      return false;
+    }
+    return true;
+  }
+
+  unban(guildId, userId) {
+    return this.statements.deleteBan.run(guildId, userId).changes > 0;
+  }
+
+  listBans(guildId) {
+    return this.statements.listBans.all(guildId).map((row) => ({
+      userId: row.user_id,
+      username: row.username,
+      reason: row.reason,
+      createdAt: row.created_at,
+    }));
   }
 
   close() {

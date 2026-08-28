@@ -1,5 +1,16 @@
 import { io, type Socket } from "socket.io-client";
-import type { MediaSlot, Member, Message, ServerSnapshot, SignalPayload } from "@/types";
+import type {
+  BanEntry,
+  Channel,
+  Guild,
+  Invite,
+  MediaSlot,
+  Member,
+  Message,
+  RosterEntry,
+  ServerSnapshot,
+  SignalPayload,
+} from "@/types";
 
 /**
  * Contrato de eventos com `server/signaling.js`, escrito como tipo pra o
@@ -14,7 +25,13 @@ interface ServerEvents {
   "chat:message": (message: Message) => void;
   "voice:peer-joined": (payload: { channelId: string; member: Member }) => void;
   "voice:peer-left": (payload: { channelId: string; memberId: string }) => void;
+  "voice:channel-closed": (payload: { channelId: string }) => void;
   "rtc:signal": (payload: SignalPayload & { from: string }) => void;
+  "channel:created": (payload: { channel: Channel }) => void;
+  "channel:deleted": (payload: { guildId: string; channelId: string }) => void;
+  "guild:member-joined": (payload: { guildId: string; member: RosterEntry }) => void;
+  "guild:member-left": (payload: { guildId: string; userId: string }) => void;
+  "guild:banned": (payload: { guildId: string }) => void;
 }
 
 export interface VoiceFlags {
@@ -64,6 +81,45 @@ interface SfuReply {
   error?: string;
 }
 
+/** Resposta mínima de uma ação administrativa. */
+export interface Ack {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Ações que mudam a que servidores a pessoa pertence devolvem o snapshot inteiro.
+ * É mais dado do que um delta, e é de propósito: entrar num servidor traz canais,
+ * elenco e conversa de uma vez, e aplicar isso por partes na ordem certa é onde
+ * costumam nascer telas que discordam do servidor.
+ */
+export interface GuildReply extends Ack {
+  guild?: Guild;
+  guildId?: string;
+  state?: ServerSnapshot;
+}
+
+export interface ChannelReply extends Ack {
+  channel?: Channel;
+}
+
+export interface InviteReply extends Ack {
+  code?: string;
+  invites?: Invite[];
+}
+
+export interface BanReply extends Ack {
+  bans?: BanEntry[];
+}
+
+/** O painel de administração pede tudo de uma vez: um evento, uma ida ao banco. */
+export interface AdminReply extends Ack {
+  owner?: boolean;
+  roster?: RosterEntry[];
+  invites?: Invite[];
+  bans?: BanEntry[];
+}
+
 interface SfuPublishReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
 }
@@ -102,6 +158,34 @@ interface ClientEvents {
   "sfu:renegotiate": (
     payload: { role: "send" | "recv"; description: RTCSessionDescriptionInit },
     ack: (reply: SfuReply) => void,
+  ) => void;
+
+  // --- administração ------------------------------------------------------
+  "guild:create": (payload: { name: string }, ack: (reply: GuildReply) => void) => void;
+  "guild:leave": (payload: { guildId: string }, ack: (reply: GuildReply) => void) => void;
+  "guild:admin": (payload: { guildId: string }, ack: (reply: AdminReply) => void) => void;
+  "channel:create": (
+    payload: { guildId: string; type: "text" | "voice"; name: string },
+    ack: (reply: ChannelReply) => void,
+  ) => void;
+  "channel:delete": (payload: { channelId: string }, ack: (reply: Ack) => void) => void;
+  "invite:create": (
+    payload: { guildId: string; maxUses?: number | null; expiresInHours?: number | null },
+    ack: (reply: InviteReply) => void,
+  ) => void;
+  "invite:accept": (payload: { code: string }, ack: (reply: GuildReply) => void) => void;
+  "invite:revoke": (
+    payload: { guildId: string; code: string },
+    ack: (reply: InviteReply) => void,
+  ) => void;
+  "invite:list": (payload: { guildId: string }, ack: (reply: InviteReply) => void) => void;
+  "member:ban": (
+    payload: { guildId: string; userId: string; reason?: string },
+    ack: (reply: BanReply) => void,
+  ) => void;
+  "member:unban": (
+    payload: { guildId: string; userId: string },
+    ack: (reply: BanReply) => void,
   ) => void;
 }
 
@@ -181,6 +265,47 @@ export const sfuRenegotiate = (
   description: RTCSessionDescriptionInit,
 ) => ask<SfuReply>((resolve) => socket.emit("sfu:renegotiate", { role, description }, resolve));
 
+// --- administração -----------------------------------------------------------
+// Todas com prazo: cada uma escreve no banco, e um servidor mudo travaria a tela
+// esperando uma resposta que não vem.
+
+export const createGuild = (socket: AppSocket, name: string) =>
+  ask<GuildReply>((resolve) => socket.emit("guild:create", { name }, resolve));
+
+export const leaveGuild = (socket: AppSocket, guildId: string) =>
+  ask<GuildReply>((resolve) => socket.emit("guild:leave", { guildId }, resolve));
+
+export const loadGuildAdmin = (socket: AppSocket, guildId: string) =>
+  ask<AdminReply>((resolve) => socket.emit("guild:admin", { guildId }, resolve));
+
+export const createChannel = (
+  socket: AppSocket,
+  guildId: string,
+  type: "text" | "voice",
+  name: string,
+) => ask<ChannelReply>((resolve) => socket.emit("channel:create", { guildId, type, name }, resolve));
+
+export const deleteChannel = (socket: AppSocket, channelId: string) =>
+  ask<Ack>((resolve) => socket.emit("channel:delete", { channelId }, resolve));
+
+export const createInvite = (
+  socket: AppSocket,
+  guildId: string,
+  options: { maxUses?: number | null; expiresInHours?: number | null } = {},
+) => ask<InviteReply>((resolve) => socket.emit("invite:create", { guildId, ...options }, resolve));
+
+export const acceptInvite = (socket: AppSocket, code: string) =>
+  ask<GuildReply>((resolve) => socket.emit("invite:accept", { code }, resolve));
+
+export const revokeInvite = (socket: AppSocket, guildId: string, code: string) =>
+  ask<InviteReply>((resolve) => socket.emit("invite:revoke", { guildId, code }, resolve));
+
+export const banMember = (socket: AppSocket, guildId: string, userId: string, reason?: string) =>
+  ask<BanReply>((resolve) => socket.emit("member:ban", { guildId, userId, reason }, resolve));
+
+export const unbanMember = (socket: AppSocket, guildId: string, userId: string) =>
+  ask<BanReply>((resolve) => socket.emit("member:unban", { guildId, userId }, resolve));
+
 /** Códigos do servidor traduzidos pra algo que a pessoa na tela entenda. */
 export function describeSocketError(code: string | undefined): string {
   switch (code) {
@@ -194,6 +319,28 @@ export function describeSocketError(code: string | undefined): string {
       return "Esta aba já entrou. Recarregue a página.";
     case "no-channel":
       return "Esse canal de voz não existe mais.";
+    case "bad-name":
+      return "Escolha um nome com pelo menos duas letras.";
+    case "not-member":
+      return "Você não faz parte desse servidor.";
+    case "not-owner":
+      return "Só quem criou o servidor pode fazer isso.";
+    case "default-guild":
+      return "Os servidores que já vêm no Draco não podem ser alterados. Crie o seu para administrá-lo.";
+    case "is-owner":
+      return "Você criou este servidor, então não pode sair dele.";
+    case "last-channel":
+      return "Este é o último canal do tipo. Crie outro antes de apagar este.";
+    case "invite-invalid":
+      return "Convite inválido. Confira o código.";
+    case "invite-expired":
+      return "Esse convite expirou. Peça um novo.";
+    case "invite-used-up":
+      return "Esse convite já foi usado o número máximo de vezes.";
+    case "banned":
+      return "Você não pode entrar nesse servidor.";
+    case "cannot-ban-self":
+      return "Você não pode banir a si mesmo.";
     // Silêncio, não recusa: o servidor não respondeu no prazo. Em hospedagem
     // grátis quase sempre é o serviço acordando, então a mensagem sugere esperar
     // em vez de mandar a pessoa investigar se o servidor caiu.

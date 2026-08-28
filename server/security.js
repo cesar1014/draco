@@ -8,6 +8,9 @@ import { timingSafeEqual } from "node:crypto";
 const MAX_USERNAME = 32;
 const MAX_MESSAGE = 2000;
 const MAX_PASSWORD = 256;
+const MAX_GUILD_NAME = 48;
+const MAX_CHANNEL_NAME = 32;
+const MAX_REASON = 200;
 /**
  * SDP de uma call com tela e quatro trilhas passa longe disso. O teto existe
  * porque o corpo inteiro do evento é lido antes de qualquer validação, e um SDP
@@ -42,6 +45,44 @@ export function sanitizeUsername(raw) {
 export function sanitizeMessage(raw) {
   if (typeof raw !== "string" || raw.length > MAX_MESSAGE * 4) return null;
   const cleaned = stripControlChars(raw, { allowNewlines: true }).trim().slice(0, MAX_MESSAGE);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/** Nome de servidor: mesmas regras do apelido, só o teto é outro. */
+export function sanitizeGuildName(raw) {
+  if (typeof raw !== "string" || raw.length > MAX_GUILD_NAME * 4) return null;
+  const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim().slice(0, MAX_GUILD_NAME);
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
+/**
+ * Nome de canal. Canal de texto vira minúsculo com hífen no lugar do espaço,
+ * como a interface já desenha (`#bate-papo`); canal de voz mantém a escrita
+ * normal, porque é um rótulo que se lê ("Sala de Jogo").
+ */
+export function sanitizeChannelName(raw, type) {
+  if (typeof raw !== "string" || raw.length > MAX_CHANNEL_NAME * 4) return null;
+  const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim();
+  if (type === "voice") {
+    const voice = cleaned.slice(0, MAX_CHANNEL_NAME);
+    return voice.length >= 1 ? voice : null;
+  }
+  const text = cleaned
+    .toLowerCase()
+    .replace(/\s/g, "-")
+    // Só o que sobrevive num nome de canal: letra, número, hífen e sublinhado.
+    .replace(/[^\p{L}\p{N}_-]/gu, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_CHANNEL_NAME);
+  return text.length >= 1 ? text : null;
+}
+
+/** Motivo de banimento. Opcional: ausente é diferente de vazio. */
+export function sanitizeReason(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return null;
+  const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim().slice(0, MAX_REASON);
   return cleaned.length > 0 ? cleaned : null;
 }
 

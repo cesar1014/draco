@@ -4,10 +4,11 @@ Como rodar na sua máquina, gerar o `.exe`, chamar amigos por um link e publicar
 Para a visão geral do projeto, volte ao [README](../README.md).
 
 Voz, webcam e compartilhamento de tela numa call em grupo. A casca tem barra de servidores, canais
-de texto e voz, chat, painel do usuário, grade de vídeo e barra de controles da call.
+de texto e voz, chat, painel de membros à direita, grade de vídeo e barra de controles da call.
 
-WebRTC em malha (cada pessoa conecta direto com cada pessoa), pensado pra **6–8 pessoas por
-call**. Servidor Node só faz sinalização e chat, e a mídia nunca passa por ele.
+WebRTC em malha por padrão (cada pessoa conecta direto com cada pessoa), pensado pra **6–8 pessoas
+por call**; com credenciais do Cloudflare Realtime a mídia passa a subir uma vez pro SFU. O
+servidor Node cuida da sinalização, do chat, dos servidores e canais, e da configuração de conexão.
 
 ---
 
@@ -128,9 +129,14 @@ Três coisas que travam esse comando na primeira vez:
 | Espelhar a própria imagem | ícone de espelho no canto do tile, ou engrenagem → *Vídeo* |
 | Mudar resolução e FPS durante a transmissão | ícone de controles ao lado do monitor |
 | Sair da call | ícone vermelho de telefone |
-| Escolher microfone, saída de som e câmera | engrenagem no painel de baixo |
+| Escolher microfone, saída de som e câmera | na tela que abre ao clicar num canal de voz, ou na engrenagem |
 | Ajustar o volume de cada pessoa | engrenagem → *Pessoas* |
-| Testar se a conexão atravessa | engrenagem → *Testar conexão* |
+| Testar se a conexão atravessa | engrenagem → *Conexão* → *Testar minha conexão* |
+| Ver quem está no servidor | contador de pessoas no canto superior direito |
+| Criar um servidor, ou entrar por convite | botão **+** no fim da barra de servidores |
+| Criar ou apagar canal | engrenagem ao lado do nome do servidor cria; a lixeira na linha do canal apaga |
+| Convidar alguém | engrenagem ao lado do nome do servidor → *Criar convite* |
+| Banir ou readmitir | mesma tela, na lista de membros |
 
 Mutar desliga a faixa de áudio sem derrubar a conexão, então voltar a falar é instantâneo.
 Ligar câmera ou tela também não renegocia nada: os quatro canais de mídia (microfone, câmera,
@@ -440,9 +446,15 @@ só pra confirmar que o TURN funciona, porque gasta banda do provedor.
 
 ## Verificar que o núcleo funciona
 
-Três testes automáticos, nenhum deles precisa de uma segunda pessoa nem de câmera. `npm test` roda os três junto com o typecheck.
+Quatro testes automáticos, nenhum deles precisa de uma segunda pessoa nem de câmera. `npm test` roda os quatro junto com o typecheck.
 
-O servidor de sinalização (relay, presença de voz, senha, rate limit):
+As regras que erram calado, sem socket nem banco (backoff do TURN, rate limit, nomes de canal):
+
+```bash
+npm run test:logic
+```
+
+O servidor de sinalização (relay, presença de voz, senha, rate limit, administração):
 
 ```bash
 npm run test:server
@@ -500,7 +512,7 @@ Abrir para amigos.bat    atalho: build + servidor + túnel, imprime o link
 render.yaml              descreve o serviço pra publicar no Render
 server/
   index.js       Express + Socket.IO + HTTPS opcional + serve a build
-  signaling.js   relay de rtc:signal, presença de voz, chat
+  signaling.js   relay de rtc:signal, presença de voz, chat, administração
   ice.js         monta os iceServers (3 modos de TURN)
   state.js       contrato de estado; presença e call ficam em memória
   data/          SQLite, repositório de dados e migrations
@@ -513,10 +525,11 @@ client/
   src/
     rtc/           VoiceEngine, SfuEngine, MediaManager, denoise, diagnostics
     state/store.ts estado da aplicação (zustand)
-    components/    a interface
+    components/    a interface (canais, membros, pré-call, administração)
     dev/           autoteste do WebRTC
 tools/
-  test-signaling.mjs   testes do servidor
+  test-server-logic.mjs backoff do TURN, rate limit e nomes
+  test-signaling.mjs   protocolo do servidor e administração
   test-persistence.mjs testes do SQLite, em dois processos
   test-media.mjs       ciclo de vida das trilhas publicadas no SFU
   make-brand.mjs      gera a arte do logo (node tools/make-brand.mjs)
@@ -540,8 +553,12 @@ definição.
 
 Identidade é um apelido mais um token assinado pelo servidor, guardado no navegador. Isso já
 impede alguém de assumir a identidade de outra pessoa, mas não é conta: não há e-mail, senha por
-pessoa, recuperação de acesso, DM, reação, upload de arquivo nem notificação push. O schema já
-reserva cargos, permissões, configurações, convites e bans para os fluxos administrativos futuros.
+pessoa, recuperação de acesso, DM, reação, upload de arquivo nem notificação push.
+
+Servidores, canais, convites e banimentos já são criados pela interface. Cargos e permissões por
+canal, não: o schema reserva as tabelas (`roles`, `guild_member_roles`,
+`channel_permission_overwrites`), e hoje todo membro de um servidor vê todos os canais dele. Quem
+criou o servidor é o único que administra.
 
 Uma instância só. Presença, limite de frequência e sessões de mídia vivem na memória do processo,
 então subir duas instâncias por trás de um balanceador exigiria estado compartilhado — e é aí que um

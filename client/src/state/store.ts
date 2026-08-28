@@ -35,26 +35,39 @@ import { loadIceConfig } from "@/rtc/iceConfig";
 import { forgetStats, type PeerStats } from "@/rtc/stats";
 import { playCue, setSoundVolume, setSoundsEnabled } from "@/rtc/sounds";
 import {
+  acceptInvite,
+  banMember,
+  createChannel,
+  createGuild,
+  createInvite,
   createSocket,
+  deleteChannel,
   describeSocketError,
   identify,
   joinVoiceChannel,
+  leaveGuild,
   loadChatHistory,
+  loadGuildAdmin,
+  revokeInvite,
   sfuJoin,
   sfuPublish,
   sfuRenegotiate,
   sfuSubscribe,
+  unbanMember,
   type AppSocket,
   type VoiceFlags,
 } from "@/socket";
 import {
   SLOT_ORDER,
+  type BanEntry,
   type Channel,
   type Guild,
   type IceConfigResponse,
+  type Invite,
   type MediaSlot,
   type Member,
   type Message,
+  type RosterEntry,
   type ServerSnapshot,
 } from "@/types";
 
@@ -257,6 +270,12 @@ interface Store {
   guilds: Guild[];
   channels: Channel[];
   members: Record<string, Member>;
+  /**
+   * Por servidor: quem pertence a ele, conectado ou não. Vem do banco, enquanto
+   * `members` é presença. Ter os dois é o que permite listar quem está offline
+   * sem inventar estado de call pra quem nem está aqui.
+   */
+  roster: Record<string, RosterEntry[]>;
   messages: Record<string, Message[]>;
   /**
    * Por canal: ainda existe conversa antes da mais antiga que temos. Vem do
@@ -271,6 +290,13 @@ interface Store {
   activeChannelId: string;
   /** Gaveta lateral no celular. */
   sidebarOpen: boolean;
+  /**
+   * Painel de membros da direita. Fechado por padrão: canais e conversa ganham a
+   * largura, e quem quer ver quem está por aqui abre pelo contador do topo.
+   */
+  membersOpen: boolean;
+  /** Painel de administração do servidor, quando aberto. */
+  admin: AdminState | null;
 
   // --- voz ----------------------------------------------------------------
   voiceChannelId: string | null;
@@ -330,6 +356,7 @@ interface Store {
   selectGuild: (guildId: string) => void;
   selectChannel: (channelId: string) => void;
   setSidebarOpen: (open: boolean) => void;
+  setMembersOpen: (open: boolean) => void;
   sendChat: (content: string) => void;
   loadOlderMessages: (channelId: string) => Promise<void>;
   joinVoice: (channelId: string) => Promise<void>;
@@ -360,6 +387,38 @@ interface Store {
   closeSettings: () => void;
   dismissMediaError: () => void;
   dismissNotice: () => void;
+
+  // --- administração ------------------------------------------------------
+  createGuild: (name: string) => Promise<string | null>;
+  leaveGuild: (guildId: string) => Promise<string | null>;
+  joinByInvite: (code: string) => Promise<string | null>;
+  createChannel: (guildId: string, type: "text" | "voice", name: string) => Promise<string | null>;
+  deleteChannel: (channelId: string) => Promise<string | null>;
+  openAdmin: (guildId: string) => Promise<void>;
+  closeAdmin: () => void;
+  createInvite: (options?: { maxUses?: number | null; expiresInHours?: number | null }) => Promise<string | null>;
+  revokeInvite: (code: string) => Promise<void>;
+  banMember: (userId: string, reason?: string) => Promise<string | null>;
+  unbanMember: (userId: string) => Promise<void>;
+}
+
+/**
+ * Painel de administração do servidor. Vive no estado porque é um pedido só ao
+ * servidor: elenco, convites e banimentos chegam juntos, e recarregar cada parte
+ * em separado renderia três idas ao banco pra abrir uma tela.
+ */
+export interface AdminState {
+  guildId: string;
+  /** Só o dono vê banimentos e pode criar ou apagar canal. */
+  owner: boolean;
+  roster: RosterEntry[];
+  invites: Invite[];
+  bans: BanEntry[];
+  /** Uma ação por vez: dois cliques no mesmo botão criariam dois convites. */
+  busy: boolean;
+  error: string | null;
+  /** Código recém-criado, pro botão de copiar aparecer em destaque. */
+  lastCode: string | null;
 }
 
 /** Nível atual do próprio microfone (0 a 1), pro medidor das configurações. */
@@ -729,18 +788,31 @@ export const useStore = create<Store>()((set, get) => {
     guilds: snapshot.guilds,
     channels: snapshot.channels,
     members: byId(snapshot.members),
+    roster: snapshot.roster ?? {},
     messages: snapshot.messages,
     history: snapshot.history ?? {},
     loadingHistory: null,
   });
 
-  /** Numa reconexão o canal já está escolhido e a pessoa continua onde estava. */
+  /**
+   * Garante que a seleção aponte pra algo que existe. Numa reconexão o canal já
+   * está escolhido e a pessoa continua onde estava; depois de sair de um servidor
+   * ou de ter um canal apagado, a seleção antiga aponta pro vazio, e aí cai no
+   * primeiro canal de texto disponível.
+   */
   const ensureSelection = () => {
-    if (get().activeChannelId) return;
-    const guild = get().guilds[0];
-    if (!guild) return;
-    const channel = get().channels.find((c) => c.guildId === guild.id && c.type === "text");
-    set({ activeGuildId: guild.id, activeChannelId: channel?.id ?? "" });
+    const { guilds, channels, activeGuildId, activeChannelId } = get();
+    const guild = guilds.find((item) => item.id === activeGuildId) ?? guilds[0];
+    if (!guild) {
+      set({ activeGuildId: "", activeChannelId: "" });
+      return;
+    }
+
+    const current = channels.find((c) => c.id === activeChannelId && c.guildId === guild.id);
+    if (current && guild.id === activeGuildId) return;
+
+    const first = channels.find((c) => c.guildId === guild.id && c.type === "text");
+    set({ activeGuildId: guild.id, activeChannelId: first?.id ?? "" });
   };
 
   const wire = (s: AppSocket) => {
@@ -831,6 +903,89 @@ export const useStore = create<Store>()((set, get) => {
     });
 
     s.on("rtc:signal", ({ from, ...payload }) => engine?.handleSignal(from, payload));
+
+    // --- catálogo e associação ---------------------------------------------
+
+    s.on("channel:created", ({ channel }) => {
+      set((state) =>
+        state.channels.some((item) => item.id === channel.id)
+          ? state
+          : { channels: [...state.channels, channel] },
+      );
+    });
+
+    s.on("channel:deleted", ({ channelId }) => {
+      set((state) => {
+        const messages = { ...state.messages };
+        const history = { ...state.history };
+        delete messages[channelId];
+        delete history[channelId];
+        return {
+          channels: state.channels.filter((channel) => channel.id !== channelId),
+          messages,
+          history,
+        };
+      });
+      ensureSelection();
+    });
+
+    /** O canal em que a pessoa estava foi apagado: sair é o único caminho. */
+    s.on("voice:channel-closed", ({ channelId }) => {
+      if (get().voiceChannelId !== channelId) return;
+      get().leaveVoice();
+      set({ notice: "O canal de voz em que você estava foi apagado." });
+    });
+
+    s.on("guild:member-joined", ({ guildId, member }) => {
+      set((state) => {
+        const current = state.roster[guildId] ?? [];
+        if (current.some((entry) => entry.id === member.id)) return state;
+        return { roster: { ...state.roster, [guildId]: [...current, member] } };
+      });
+    });
+
+    s.on("guild:member-left", ({ guildId, userId }) => {
+      set((state) => ({
+        roster: {
+          ...state.roster,
+          [guildId]: (state.roster[guildId] ?? []).filter((entry) => entry.id !== userId),
+        },
+      }));
+      // O painel de administração aberto mostra o elenco; sem isto ele exibiria
+      // alguém que acabou de sair até a pessoa reabrir a tela.
+      set((state) =>
+        state.admin?.guildId === guildId
+          ? {
+              admin: {
+                ...state.admin,
+                roster: state.admin.roster.filter((entry) => entry.id !== userId),
+              },
+            }
+          : state,
+      );
+    });
+
+    /** Banido: o servidor sai da lista, com aviso, em vez de sumir sem explicação. */
+    s.on("guild:banned", ({ guildId }) => {
+      const guild = get().guilds.find((item) => item.id === guildId);
+      const channelIds = new Set(
+        get().channels.filter((channel) => channel.guildId === guildId).map((channel) => channel.id),
+      );
+      if (channelIds.has(get().voiceChannelId ?? "")) get().leaveVoice();
+
+      set((state) => {
+        const roster = { ...state.roster };
+        delete roster[guildId];
+        return {
+          guilds: state.guilds.filter((item) => item.id !== guildId),
+          channels: state.channels.filter((channel) => channel.guildId !== guildId),
+          roster,
+          admin: state.admin?.guildId === guildId ? null : state.admin,
+          notice: `Você não faz mais parte de ${guild?.name ?? "um servidor"}.`,
+        };
+      });
+      ensureSelection();
+    });
   };
 
   const initialSettings = loadSettings();
@@ -847,6 +1002,7 @@ export const useStore = create<Store>()((set, get) => {
     guilds: [],
     channels: [],
     members: {},
+    roster: {},
     messages: {},
     history: {},
     loadingHistory: null,
@@ -854,6 +1010,8 @@ export const useStore = create<Store>()((set, get) => {
     activeGuildId: "",
     activeChannelId: "",
     sidebarOpen: false,
+    membersOpen: false,
+    admin: null,
 
     voiceChannelId: null,
     muted: false,
@@ -942,6 +1100,10 @@ export const useStore = create<Store>()((set, get) => {
 
     setSidebarOpen(open) {
       set({ sidebarOpen: open });
+    },
+
+    setMembersOpen(open) {
+      set({ membersOpen: open });
     },
 
     sendChat(content) {
@@ -1345,6 +1507,206 @@ export const useStore = create<Store>()((set, get) => {
 
     dismissNotice() {
       set({ notice: null });
+    },
+
+    // --- administração ------------------------------------------------------
+    // Todas devolvem `null` quando dá certo e a mensagem de erro quando não. É a
+    // forma que o formulário aberto precisa: ele mostra a falha ao lado do campo
+    // em vez de deixar um toast global explicar o que a pessoa acabou de tentar.
+
+    async createGuild(name) {
+      const s = socket;
+      if (!s) return "Sem conexão com o servidor.";
+      const reply = await createGuild(s, name);
+      if (!reply.ok || !reply.state || !reply.guild) return describeSocketError(reply.error);
+
+      const guildId = reply.guild.id;
+      set(fromSnapshot(reply.state));
+      // Vai direto pro servidor novo: criar e continuar olhando o antigo obrigaria
+      // um segundo clique pra ver o que acabou de nascer.
+      const first = reply.state.channels.find((c) => c.guildId === guildId && c.type === "text");
+      set({ activeGuildId: guildId, activeChannelId: first?.id ?? "", sidebarOpen: false });
+      return null;
+    },
+
+    async leaveGuild(guildId) {
+      const s = socket;
+      if (!s) return "Sem conexão com o servidor.";
+      const reply = await leaveGuild(s, guildId);
+      if (!reply.ok || !reply.state) return describeSocketError(reply.error);
+
+      set(fromSnapshot(reply.state));
+      set((state) => (state.admin?.guildId === guildId ? { admin: null } : state));
+      ensureSelection();
+      return null;
+    },
+
+    async joinByInvite(code) {
+      const s = socket;
+      if (!s) return "Sem conexão com o servidor.";
+      const reply = await acceptInvite(s, code);
+      if (!reply.ok || !reply.state || !reply.guildId) return describeSocketError(reply.error);
+
+      const guildId = reply.guildId;
+      set(fromSnapshot(reply.state));
+      const first = reply.state.channels.find((c) => c.guildId === guildId && c.type === "text");
+      set({ activeGuildId: guildId, activeChannelId: first?.id ?? "", sidebarOpen: false });
+      return null;
+    },
+
+    async createChannel(guildId, type, name) {
+      const s = socket;
+      if (!s) return "Sem conexão com o servidor.";
+      const reply = await createChannel(s, guildId, type, name);
+      if (!reply.ok || !reply.channel) return describeSocketError(reply.error);
+
+      // O evento `channel:created` também chega, e os dois caminhos convergem: a
+      // inserção confere se o canal já está na lista antes de adicioná-lo.
+      const channel = reply.channel;
+      set((state) =>
+        state.channels.some((item) => item.id === channel.id)
+          ? state
+          : { channels: [...state.channels, channel] },
+      );
+      return null;
+    },
+
+    async deleteChannel(channelId) {
+      const s = socket;
+      if (!s) return "Sem conexão com o servidor.";
+      const reply = await deleteChannel(s, channelId);
+      return reply.ok ? null : describeSocketError(reply.error);
+    },
+
+    async openAdmin(guildId) {
+      const s = socket;
+      if (!s) return;
+      set({
+        admin: {
+          guildId,
+          owner: false,
+          roster: [],
+          invites: [],
+          bans: [],
+          busy: true,
+          error: null,
+          lastCode: null,
+        },
+      });
+
+      const reply = await loadGuildAdmin(s, guildId);
+      // A pessoa pode ter fechado o painel, ou trocado de servidor, na ida e volta.
+      if (get().admin?.guildId !== guildId) return;
+      if (!reply.ok) {
+        set((state) =>
+          state.admin ? { admin: { ...state.admin, busy: false, error: describeSocketError(reply.error) } } : state,
+        );
+        return;
+      }
+      set({
+        admin: {
+          guildId,
+          owner: reply.owner === true,
+          roster: reply.roster ?? [],
+          invites: reply.invites ?? [],
+          bans: reply.bans ?? [],
+          busy: false,
+          error: null,
+          lastCode: null,
+        },
+      });
+    },
+
+    closeAdmin() {
+      set({ admin: null });
+    },
+
+    async createInvite(options = {}) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin || admin.busy) return null;
+
+      set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await createInvite(s, admin.guildId, options);
+      const current = get().admin;
+      if (current?.guildId !== admin.guildId) return null;
+
+      if (!reply.ok || !reply.code) {
+        set({ admin: { ...current, busy: false, error: describeSocketError(reply.error) } });
+        return null;
+      }
+      set({
+        admin: {
+          ...current,
+          invites: reply.invites ?? current.invites,
+          busy: false,
+          error: null,
+          lastCode: reply.code,
+        },
+      });
+      return reply.code;
+    },
+
+    async revokeInvite(code) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin || admin.busy) return;
+
+      set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await revokeInvite(s, admin.guildId, code);
+      const current = get().admin;
+      if (current?.guildId !== admin.guildId) return;
+      set({
+        admin: {
+          ...current,
+          invites: reply.invites ?? current.invites,
+          busy: false,
+          error: reply.ok ? null : describeSocketError(reply.error),
+          lastCode: current.lastCode === code ? null : current.lastCode,
+        },
+      });
+    },
+
+    async banMember(userId, reason) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin || admin.busy) return "Nada a fazer agora.";
+
+      set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await banMember(s, admin.guildId, userId, reason);
+      const current = get().admin;
+      if (current?.guildId !== admin.guildId) return null;
+
+      const error = reply.ok ? null : describeSocketError(reply.error);
+      set({
+        admin: {
+          ...current,
+          roster: reply.ok ? current.roster.filter((entry) => entry.id !== userId) : current.roster,
+          bans: reply.bans ?? current.bans,
+          busy: false,
+          error,
+        },
+      });
+      return error;
+    },
+
+    async unbanMember(userId) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin || admin.busy) return;
+
+      set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await unbanMember(s, admin.guildId, userId);
+      const current = get().admin;
+      if (current?.guildId !== admin.guildId) return;
+      set({
+        admin: {
+          ...current,
+          bans: reply.bans ?? current.bans,
+          busy: false,
+          error: reply.ok ? null : describeSocketError(reply.error),
+        },
+      });
     },
   };
 });
