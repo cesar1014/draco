@@ -30,8 +30,17 @@ export function App() {
   const screenOn = useStore((state) => state.screenOn);
   const mediaError = useStore((state) => state.mediaError);
   const dismissMediaError = useStore((state) => state.dismissMediaError);
+  const notice = useStore((state) => state.notice);
+  const dismissNotice = useStore((state) => state.dismissNotice);
   const channels = useStore((state) => state.channels);
   const activeChannelId = useStore((state) => state.activeChannelId);
+
+  /** O aviso é informativo: sai sozinho em vez de exigir um clique. */
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(dismissNotice, 8000);
+    return () => clearTimeout(timer);
+  }, [notice, dismissNotice]);
 
   /**
    * Qualquer gesto na página destranca o áudio. O navegador nasce com o
@@ -141,6 +150,15 @@ export function App() {
           <p>{mediaError}</p>
           <button type="button" onClick={dismissMediaError}>
             Entendi
+          </button>
+        </div>
+      )}
+
+      {notice && !mediaError && (
+        <div className="toast notice" role="status">
+          <p>{notice}</p>
+          <button type="button" onClick={dismissNotice}>
+            Ok
           </button>
         </div>
       )}

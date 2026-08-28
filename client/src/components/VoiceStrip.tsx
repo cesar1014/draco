@@ -14,6 +14,8 @@ export function VoiceStrip() {
   const voiceChannelId = useStore((state) => state.voiceChannelId);
   const peerStates = useStore((state) => state.peerStates);
   const stats = useStore((state) => state.stats);
+  const viaServer = useStore((state) => state.viaServer);
+  const qualityStep = useStore((state) => state.qualityStep);
   const leaveVoice = useStore((state) => state.leaveVoice);
 
   if (!voiceChannelId) return null;
@@ -23,15 +25,23 @@ export function VoiceStrip() {
   const trouble = states.find((state) => state !== "connected" && state !== "closed");
   const samples = Object.values(stats);
   const worstRtt = samples.reduce((worst, sample) => Math.max(worst, sample.rtt ?? 0), 0);
+  const route = viaServer ? "Mídia pelo servidor" : "Mídia direta entre os navegadores";
 
   return (
     <div className="voice-strip">
       <div className="voice-strip-info">
-        <span className="voice-strip-status" data-trouble={Boolean(trouble)}>
+        <span className="voice-strip-status" data-trouble={Boolean(trouble)} title={route}>
           <SignalIcon size={14} />
           {trouble ? (STATE_LABEL[trouble] ?? "Reconectando…") : worstRtt ? `${worstRtt} ms` : "Conectado"}
         </span>
-        <span className="voice-strip-channel">{channel?.name ?? "canal de voz"}</span>
+        <span className="voice-strip-channel">
+          {channel?.name ?? "canal de voz"}
+          {qualityStep > 0 && (
+            <span className="voice-strip-quality" title="A qualidade caiu pra caber na sua banda.">
+              qualidade reduzida
+            </span>
+          )}
+        </span>
       </div>
 
       <div className="voice-strip-actions">

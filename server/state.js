@@ -4,6 +4,11 @@ import { randomUUID } from "node:crypto";
  * Todo o estado vive em memória: reiniciar o processo zera canais e mensagens.
  * É deliberado — o objetivo era funcionar sem instalar banco de dados. Trocar
  * por SQLite depois é local: só estas funções tocam o estado.
+ *
+ * Quem identifica uma pessoa é o `userId`, não o socket. O socket muda a cada
+ * oscilação de Wi-Fi; a pessoa não. Manter os dois separados é o que faz o
+ * volume que você ajustou, o destaque que você fixou e a tela que você estava
+ * assistindo continuarem valendo depois de uma reconexão.
  */
 
 /** Quantas mensagens ficam guardadas por canal antes de as antigas caírem. */
@@ -26,8 +31,10 @@ export const CHANNELS = [
 /** Cor do avatar, escolhida de forma estável a partir do nome. */
 const AVATAR_COLORS = ["#5b6cff", "#3ddc97", "#ffb457", "#ff5f7a", "#f45ec1", "#a06bff", "#4fd8ff"];
 
-/** socketId -> membro conectado */
+/** userId -> membro conectado */
 const members = new Map();
+/** socketId -> userId, pra achar quem é o dono de um pacote que chegou */
+const sockets = new Map();
 /** channelId -> mensagens, mais antiga primeiro */
 const messages = new Map();
 
@@ -37,9 +44,20 @@ export function colorForName(name) {
   return AVATAR_COLORS[hash % AVATAR_COLORS.length];
 }
 
-export function addMember(socketId, username) {
-  const member = {
-    id: socketId,
+export const newUserId = () => randomUUID();
+
+/**
+ * Entra ou reassume uma identidade. Quando o mesmo `userId` volta com um socket
+ * novo — reconexão, ou a mesma pessoa recarregando a página — o membro é o mesmo
+ * objeto: preferências e estado de voz seguem de pé. O socket antigo é devolvido
+ * pra quem chamou, que precisa derrubá-lo pra não ficarem dois donos do mesmo id.
+ */
+export function addMember(socketId, userId, username) {
+  const existing = members.get(userId);
+  const previousSocketId = existing?.socketId ?? null;
+
+  const member = existing ?? {
+    id: userId,
     username,
     color: colorForName(username),
     voiceChannelId: null,
@@ -50,18 +68,57 @@ export function addMember(socketId, username) {
     camOn: false,
     screenOn: false,
     speaking: false,
+    /**
+     * Sessões no SFU. Duas de propósito: numa a pessoa só envia, na outra só
+     * recebe. Assim uma renegociação de quem entrou na call não passa pela mesma
+     * conexão que está carregando a câmera de quem já estava — e o SDP de
+     * publicação nunca precisa ser reescrito porque alguém apareceu.
+     *
+     * Só a de envio é anunciada aos outros: é dela que saem as trilhas.
+     */
+    sfuSessionId: null,
+    sfuRecvSessionId: null,
+    /** Nome das trilhas publicadas, por slot — é o que os outros assinam. */
+    sfuTracks: {},
+    since: Date.now(),
   };
-  members.set(socketId, member);
-  return member;
+
+  member.username = username;
+  member.color = colorForName(username);
+  member.socketId = socketId;
+
+  // Socket novo, sessão de mídia nova: os ids antigos apontam pra uma sessão que
+  // o SFU já está descartando, e anunciá-los faria os outros assinarem o vazio.
+  if (previousSocketId && previousSocketId !== socketId) {
+    member.sfuSessionId = null;
+    member.sfuRecvSessionId = null;
+    member.sfuTracks = {};
+    sockets.delete(previousSocketId);
+  }
+
+  members.set(userId, member);
+  sockets.set(socketId, userId);
+  return { member, previousSocketId };
 }
 
+/** O membro dono deste socket, ou `undefined` se o socket não se identificou. */
 export function getMember(socketId) {
-  return members.get(socketId);
+  const userId = sockets.get(socketId);
+  return userId ? members.get(userId) : undefined;
 }
 
+export function getMemberById(userId) {
+  return members.get(userId);
+}
+
+/** Só remove se o socket ainda for o atual: reconexão rápida chega antes do `disconnect`. */
 export function removeMember(socketId) {
-  const member = members.get(socketId);
-  members.delete(socketId);
+  const userId = sockets.get(socketId);
+  sockets.delete(socketId);
+  if (!userId) return null;
+  const member = members.get(userId);
+  if (!member || member.socketId !== socketId) return null;
+  members.delete(userId);
   return member;
 }
 
@@ -70,13 +127,13 @@ export function listMembers() {
 }
 
 /** Quem mais está no mesmo canal de voz — a lista com quem abrir peer connection. */
-export function peersInVoiceChannel(channelId, exceptSocketId) {
+export function peersInVoiceChannel(channelId, exceptUserId) {
   if (!channelId) return [];
-  return [...members.values()].filter((m) => m.voiceChannelId === channelId && m.id !== exceptSocketId);
+  return [...members.values()].filter((m) => m.voiceChannelId === channelId && m.id !== exceptUserId);
 }
 
-export function setVoiceChannel(socketId, channelId) {
-  const member = members.get(socketId);
+export function setVoiceChannel(userId, channelId) {
+  const member = members.get(userId);
   if (!member) return null;
   member.voiceChannelId = channelId;
   if (channelId === null) {
@@ -85,16 +142,37 @@ export function setVoiceChannel(socketId, channelId) {
     member.camOn = false;
     member.screenOn = false;
     member.speaking = false;
+    member.sfuSessionId = null;
+    member.sfuRecvSessionId = null;
+    member.sfuTracks = {};
   }
   return member;
 }
 
-export function setVoiceState(socketId, patch) {
-  const member = members.get(socketId);
+export function setVoiceState(userId, patch) {
+  const member = members.get(userId);
   if (!member) return null;
   for (const key of ["muted", "deafened", "camOn", "screenOn", "speaking"]) {
     if (typeof patch?.[key] === "boolean") member[key] = patch[key];
   }
+  return member;
+}
+
+/** Sessão no SFU. Uma por socket: reconectar cria outra, e a antiga expira sozinha. */
+export function setSfuSession(userId, { sendSessionId, recvSessionId }) {
+  const member = members.get(userId);
+  if (!member) return null;
+  member.sfuSessionId = sendSessionId;
+  member.sfuRecvSessionId = recvSessionId;
+  member.sfuTracks = {};
+  return member;
+}
+
+/** Registra as trilhas publicadas. É o que diz aos outros o que existe pra assinar. */
+export function setSfuTracks(userId, tracks) {
+  const member = members.get(userId);
+  if (!member) return null;
+  member.sfuTracks = { ...member.sfuTracks, ...tracks };
   return member;
 }
 
