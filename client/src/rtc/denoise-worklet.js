@@ -70,12 +70,8 @@ class Denoise extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const preset = options?.processorOptions ?? {};
-    this.floor = preset.floor ?? 0.16;
-    this.gate = preset.gate ?? 0.24;
-    this.port.onmessage = ({ data }) => {
-      if (typeof data?.floor === "number") this.floor = data.floor;
-      if (typeof data?.gate === "number") this.gate = data.gate;
-    };
+    this.tune(preset);
+    this.port.onmessage = ({ data }) => this.tune(data);
 
     this.fft = new FFT(N);
     this.win = new Float32Array(N);
@@ -97,6 +93,24 @@ class Denoise extends AudioWorkletProcessor {
 
     this.lo = Math.max(1, Math.round((250 * N) / sampleRate));
     this.hi = Math.min(BINS - 1, Math.round((3800 * N) / sampleRate));
+  }
+
+  /**
+   * `floor` é o quanto sobra do ruído fora da banda de voz, e `voiceFloor` o
+   * quanto sobra dentro dela. Os dois existem separados porque é aí que mora a
+   * diferença entre "forte" e "ilegível": cortar 24 dB numa consoante surda
+   * (s, f, ch, t) apaga a consoante, e a frase passa a soar mastigada. Fora de
+   * 250–3800 Hz não há fala pra preservar, e ali o corte pode ser fundo.
+   *
+   * `gate` é o quanto sobra entre as frases.
+   */
+  tune(preset) {
+    if (typeof preset?.floor === "number") this.floor = preset.floor;
+    if (typeof preset?.voiceFloor === "number") this.voiceFloor = preset.voiceFloor;
+    if (typeof preset?.gate === "number") this.gate = preset.gate;
+    this.floor ??= 0.16;
+    this.voiceFloor ??= 0.2;
+    this.gate ??= 0.24;
   }
 
   process(inputs, outputs) {
@@ -143,12 +157,15 @@ class Denoise extends AudioWorkletProcessor {
       this.noise[k] = learn * this.noise[k] + (1 - learn) * this.power[k];
 
       const prio = 0.98 * this.snr[k] + 0.02 * Math.max(post - 1, 0);
-      const g = Math.max(this.floor, prio / (1 + prio));
+      // Dentro da banda de voz o piso é mais alto: é lá que estão as consoantes
+      // surdas, que têm pouca energia e viram silêncio se o corte for fundo.
+      const inVoice = k >= this.lo && k <= this.hi;
+      const g = Math.max(inVoice ? this.voiceFloor : this.floor, prio / (1 + prio));
       this.gain[k] = g;
       this.snr[k] = g * g * post;
       // O portão olha o valor cru: média de 35 bins já é estável, e reage no
       // primeiro quadro da palavra em vez de esperar a suavização subir.
-      if (k >= this.lo && k <= this.hi) {
+      if (inVoice) {
         bandSum += raw / this.noise[k];
         bandCount += 1;
       }

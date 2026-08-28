@@ -11,6 +11,14 @@ primary_region = "gru"
 # duas divergirem o deploy sobe e o health check nunca passa.
 [env]
   PORT = "8080"
+  DATABASE_PATH = "/data/draco.sqlite"
+  # O Fly termina o TLS num proxy: sem isto o limite por IP veria o endereço dele
+  # e todo mundo dividiria o mesmo balde.
+  TRUSTED_PROXY = "1"
+
+[mounts]
+  source = "draco_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080

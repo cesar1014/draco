@@ -14,7 +14,8 @@ import {
   type DenoiseMode,
   type DenoiseStrength,
 } from "@/rtc/denoise";
-import { runIceDiagnostics } from "@/rtc/iceConfig";
+import { runConnectionDiagnostics, VERDICT_LABEL, type DiagnosticsReport } from "@/rtc/diagnostics";
+import { checkDesktopUpdate, openDesktopRelease, type UpdateStatus } from "@/desktop";
 import { playCue } from "@/rtc/sounds";
 import { MAX_PERSON_VOLUME, membersInVoice, micLevel, prefsFor, useStore } from "@/state/store";
 
@@ -57,7 +58,6 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number][0];
-type Diagnostics = Awaited<ReturnType<typeof runIceDiagnostics>>;
 
 const mbps = (bits: number) => (bits / 1_000_000).toFixed(1).replace(".", ",");
 
@@ -82,7 +82,8 @@ export function SettingsModal() {
   const [level, setLevel] = useState(0);
   const [capturing, setCapturing] = useState(false);
   const [probing, setProbing] = useState(false);
-  const [probe, setProbe] = useState<Diagnostics | null>(null);
+  const [report, setReport] = useState<DiagnosticsReport | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
 
   const peers = useMemo(
     () => membersInVoice(members, voiceChannelId).filter((member) => member.id !== selfId),
@@ -125,12 +126,24 @@ export function SettingsModal() {
     return () => navigator.mediaDevices?.removeEventListener("devicechange", onChange);
   }, [refreshDevices]);
 
+  // Só quando a aba de conexão aparece: no navegador não há o que verificar, e
+  // fazer isso na abertura das configurações gastaria uma requisição por clique.
+  useEffect(() => {
+    if (tab !== "net") return;
+    let active = true;
+    void checkDesktopUpdate().then((status) => {
+      if (active) setUpdate(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, [tab]);
+
   async function testConnection() {
-    if (!ice) return;
     setProbing(true);
-    setProbe(null);
+    setReport(null);
     try {
-      setProbe(await runIceDiagnostics(ice));
+      setReport(await runConnectionDiagnostics());
     } finally {
       setProbing(false);
     }
@@ -589,15 +602,35 @@ export function SettingsModal() {
                 onClick={() => void testConnection()}
                 disabled={probing}
               >
-                {probing ? "Testando…" : "Testar conexão"}
+                {probing ? "Testando…" : "Testar minha conexão"}
               </button>
 
-              {probe && (
-                <ul className="probe">
-                  <li data-ok={probe.host}>Rede local (host): {probe.host ? "ok" : "nada"}</li>
-                  <li data-ok={probe.srflx}>STUN (srflx): {probe.srflx ? "ok" : "nada"}</li>
-                  <li data-ok={probe.relay}>TURN (relay): {probe.relay ? "ok" : "nada"}</li>
-                </ul>
+              {report && (
+                <>
+                  <p className="probe-verdict" data-verdict={report.verdict}>
+                    {VERDICT_LABEL[report.verdict]}
+                  </p>
+                  <ul className="probe">
+                    {report.checks.map((check) => (
+                      <li key={check.id} data-status={check.status}>
+                        <strong>{check.label}</strong>
+                        <span>{check.detail}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              {update?.available && (
+                <p className="status-warn">
+                  Versão {update.latest} disponível (você tem a {update.current}).{" "}
+                  <button type="button" className="link-button" onClick={() => void openDesktopRelease()}>
+                    Abrir a página de download
+                  </button>
+                </p>
+              )}
+              {update && !update.available && (
+                <p className="hint">Aplicativo atualizado (versão {update.current}).</p>
               )}
 
               <p className="hint">

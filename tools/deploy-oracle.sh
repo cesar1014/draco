@@ -92,6 +92,13 @@ say "Configuração do app"
 [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
 ROOM_PASSWORD="$(set_env ROOM_PASSWORD "$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9')")"
 TURN_SECRET="$(set_env TURN_SECRET "$(openssl rand -hex 32)")"
+# O segredo de sessão fica no .env, não sorteado a cada boot: assim os tokens já
+# emitidos continuam válidos depois de um deploy ou de um restart do serviço.
+set_env SESSION_SECRET "$(openssl rand -hex 32)" >/dev/null
+set_env DATABASE_PATH "$ROOT/data/draco.sqlite" >/dev/null
+# O Caddy é o proxy: sem isto o limite por IP veria o endereço dele, e todo mundo
+# compartilharia o mesmo balde.
+set_env TRUSTED_PROXY 1 force >/dev/null
 set_env ORIGIN "https://$DOMAIN" force >/dev/null
 set_env TURN_HOST "turn:$DOMAIN:3478" force >/dev/null
 chmod 600 "$ROOT/.env"

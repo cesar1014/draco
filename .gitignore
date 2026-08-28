@@ -1,11 +1,23 @@
 node_modules/
 dist/
 desktop/out/
+# Barra na frente: sem ela isto casaria com `server/data/`, que é código.
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 .env
+.env.*
+!.env.example
 server/certs/
 *.log
 selftest-report.json
 .DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
 
 # Anotações locais, fora do repositório
 NOVO DISCORD.MD

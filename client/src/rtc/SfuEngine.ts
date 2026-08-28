@@ -33,12 +33,12 @@ export interface SfuTransport {
   publish(
     description: RTCSessionDescriptionInit,
     tracks: Array<{ mid: string; slot: MediaSlot }>,
-  ): Promise<RTCSessionDescriptionInit | null>;
+  ): Promise<{ description: RTCSessionDescriptionInit | null; stale: boolean }>;
   subscribe(tracks: RemoteTrackRef[]): Promise<{
     description: RTCSessionDescriptionInit | null;
     tracks: SfuTrackReply[];
   } | null>;
-  renegotiate(description: RTCSessionDescriptionInit): Promise<boolean>;
+  renegotiate(role: "send" | "recv", description: RTCSessionDescriptionInit): Promise<boolean>;
 }
 
 export interface SfuEngineOptions {
@@ -57,6 +57,27 @@ const DEFAULT_PROFILES: Partial<Record<MediaSlot, TrackProfile>> = {
   screenAudio: { maxBitrate: 192_000 },
 };
 
+/**
+ * Estado de uma trilha que sobe daqui.
+ *
+ * Três estados, e são poucos de propósito: `live` é a publicação que o SFU
+ * conhece e aceita `replaceTrack`, `publishing` é a que está sendo negociada
+ * agora, e `stale` é a que existiu mas não vale mais — sessão trocada, transporte
+ * fechado, transceiver encerrado. `stale` não se reaproveita: ela é republicada.
+ *
+ * O ciclo que isso resolve é o de sempre: ligar a câmera, desligar, esperar, e
+ * ligar de novo. Com um sender guardado e nenhuma noção de validade, a segunda vez
+ * fazia `replaceTrack` numa publicação que o SFU já tinha descartado, e a imagem
+ * simplesmente não chegava do outro lado, sem erro nenhum.
+ */
+type PublicationState = "publishing" | "live" | "stale";
+
+interface Publication {
+  state: PublicationState;
+  transceiver: RTCRtpTransceiver;
+  sender: RTCRtpSender;
+}
+
 /** Uma trilha remota que já foi pedida ao SFU. */
 interface Subscription {
   ref: RemoteTrackRef;
@@ -67,14 +88,18 @@ interface Subscription {
 /** Recorte do que sobe daqui. Não é o id de ninguém: não colide com um `memberId`. */
 const UPLINK_KEY = "sfu|uplink";
 
+/** Espera antes de tratar `disconnected` como queda: troca de rede se resolve sozinha. */
+const ICE_GRACE_MS = 6000;
+/** Reinícios de ICE por conexão. Depois disso quem decide é o dono da call. */
+const MAX_ICE_RESTARTS = 2;
+
 const slotKey = (memberId: string, slot: MediaSlot) => `${memberId}|${slot}`;
 
 export class SfuEngine implements CallEngine {
   readonly #send: RTCPeerConnection;
   readonly #recv: RTCPeerConnection;
   readonly #localTracks = new Map<MediaSlot, MediaStreamTrack | null>();
-  readonly #senders = new Map<MediaSlot, RTCRtpSender>();
-  readonly #published = new Set<MediaSlot>();
+  readonly #publications = new Map<MediaSlot, Publication>();
   readonly #profiles = new Map<MediaSlot, TrackProfile>(
     Object.entries(DEFAULT_PROFILES) as [MediaSlot, TrackProfile][],
   );
@@ -88,7 +113,11 @@ export class SfuEngine implements CallEngine {
   /** Uma fila por conexão: dois `setLocalDescription` sobrepostos derrubam a sessão. */
   #sendQueue: Promise<void> = Promise.resolve();
   #recvQueue: Promise<void> = Promise.resolve();
-  #publishFailed = false;
+  #iceRestarts = { send: 0, recv: 0 };
+  #iceTimers: { send: ReturnType<typeof setTimeout> | null; recv: ReturnType<typeof setTimeout> | null } = {
+    send: null,
+    recv: null,
+  };
   #closed = false;
 
   constructor(private options: SfuEngineOptions) {
@@ -98,7 +127,14 @@ export class SfuEngine implements CallEngine {
     this.#send.onconnectionstatechange = () => {
       const state = this.#send.connectionState;
       this.options.onConnectionState?.("send", state);
-      if (state === "connected") void this.#applyEncodings();
+      if (state === "connected") {
+        this.#iceRestarts.send = 0;
+        void this.#applyEncodings();
+      }
+      // Transporte morto invalida toda publicação que passava por ele: elas não
+      // voltam com `replaceTrack`, e marcar aqui é o que faz a próxima tentativa
+      // republicar em vez de escrever numa trilha que não existe mais.
+      if (state === "failed" || state === "closed") this.#invalidatePublications();
       if (state === "failed") this.options.onFailure?.("envio caiu");
     };
 
@@ -107,8 +143,12 @@ export class SfuEngine implements CallEngine {
       // Sozinho na call não há nada pra receber, e a conexão fica em `new` pra
       // sempre. Anunciar isso apareceria como "conectando" que nunca termina.
       if (this.#subscriptions.size > 0) this.options.onConnectionState?.("recv", state);
+      if (state === "connected") this.#iceRestarts.recv = 0;
       if (state === "failed") this.options.onFailure?.("recepção caiu");
     };
+
+    this.#send.oniceconnectionstatechange = () => this.#watchIce("send", this.#send);
+    this.#recv.oniceconnectionstatechange = () => this.#watchIce("recv", this.#recv);
   }
 
   /**
@@ -153,15 +193,19 @@ export class SfuEngine implements CallEngine {
     if (this.#closed) return;
     this.#localTracks.set(slot, track);
 
-    const sender = this.#senders.get(slot);
-    if (sender) {
+    const publication = this.#publications.get(slot);
+    // Publicação viva aceita a troca sem renegociar, que é o caminho barato: é o
+    // que faz mutar e desmutar, ou trocar de câmera, não custar uma negociação.
+    if (publication && this.#usable(publication)) {
       try {
-        await sender.replaceTrack(track);
+        await publication.sender.replaceTrack(track);
+        if (track) await this.#applyEncodings();
+        return;
       } catch (error) {
-        console.error(`[sfu] replaceTrack(${slot}) falhou:`, error);
+        // A troca falhou: a publicação não serve mais, mesmo que o objeto exista.
+        console.warn(`[sfu] replaceTrack(${slot}) falhou; republicando:`, error);
+        publication.state = "stale";
       }
-      if (track) await this.#applyEncodings();
-      return;
     }
 
     // Sem trilha ainda não há o que publicar: o SFU precisa de mídia real no
@@ -217,14 +261,19 @@ export class SfuEngine implements CallEngine {
   close(): void {
     this.#closed = true;
     for (const key of [...this.#subscriptions.keys()]) this.#release(key);
+    for (const role of ["send", "recv"] as const) {
+      const timer = this.#iceTimers[role];
+      if (timer) clearTimeout(timer);
+      this.#iceTimers[role] = null;
+    }
     for (const pc of [this.#send, this.#recv]) {
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
       pc.ontrack = null;
       pc.close();
     }
     this.#localTracks.clear();
-    this.#senders.clear();
-    this.#published.clear();
+    this.#publications.clear();
   }
 
   /** Solta os listeners de uma trilha recebida; a mídia em si é do `RTCRtpReceiver`. */
@@ -236,6 +285,73 @@ export class SfuEngine implements CallEngine {
     track.onunmute = null;
     track.onmute = null;
     track.onended = null;
+  }
+
+  // --- recuperação de rede ---------------------------------------------------
+
+  /**
+   * `disconnected` costuma ser uma troca de rede e se resolve sozinho; `failed` é
+   * definitivo pro caminho atual e exige ICE novo. O teto de tentativas existe
+   * porque reiniciar ICE contra um TURN que não responde só repetiria a falha,
+   * e aí quem tem que agir é o dono da call, refazendo-a.
+   */
+  #watchIce(role: "send" | "recv", pc: RTCPeerConnection): void {
+    const timer = this.#iceTimers[role];
+    if (timer) {
+      clearTimeout(timer);
+      this.#iceTimers[role] = null;
+    }
+    if (this.#closed) return;
+
+    if (pc.iceConnectionState === "failed") {
+      void this.#restartIce(role, pc);
+      return;
+    }
+    if (pc.iceConnectionState === "disconnected") {
+      this.#iceTimers[role] = setTimeout(() => {
+        this.#iceTimers[role] = null;
+        if (pc.iceConnectionState === "disconnected") void this.#restartIce(role, pc);
+      }, ICE_GRACE_MS);
+    }
+  }
+
+  async #restartIce(role: "send" | "recv", pc: RTCPeerConnection): Promise<void> {
+    if (this.#closed || pc.signalingState === "closed") return;
+    if (this.#iceRestarts[role] >= MAX_ICE_RESTARTS) {
+      this.options.onFailure?.(role === "send" ? "envio não reconectou" : "recepção não reconectou");
+      return;
+    }
+    this.#iceRestarts[role] += 1;
+
+    const work = async () => {
+      if (this.#closed || pc.signalingState === "closed") return;
+      const offer = await pc.createOffer({ iceRestart: true });
+      await this.#setLocal(pc, offer);
+      const accepted = await this.options.transport.renegotiate(role, pc.localDescription!);
+      if (accepted) return;
+      // O SFU não aceitou o ICE novo: a sessão do outro lado não existe mais.
+      if (role === "send") this.#invalidatePublications();
+      this.options.onFailure?.(role === "send" ? "envio caiu" : "recepção caiu");
+    };
+
+    await (role === "send" ? this.#enqueueSend(work) : this.#enqueueRecv(work));
+  }
+
+  /** Toda publicação passa a exigir republicação. Não mexe nas trilhas locais. */
+  #invalidatePublications(): void {
+    for (const publication of this.#publications.values()) publication.state = "stale";
+  }
+
+  /**
+   * A publicação continua servindo pra `replaceTrack`? Precisa estar viva no
+   * nosso controle e o transceiver precisa continuar de pé: um `stop()` do
+   * navegador, ou um transporte que caiu, deixa o objeto lá sem entregar nada.
+   */
+  #usable(publication: Publication): boolean {
+    if (publication.state === "stale") return false;
+    if (publication.transceiver.currentDirection === "stopped") return false;
+    const state = this.#send.connectionState;
+    return state !== "failed" && state !== "closed";
   }
 
   // --- envio -----------------------------------------------------------------
@@ -255,19 +371,34 @@ export class SfuEngine implements CallEngine {
   }
 
   /**
-   * Sobe uma trilha nova. O `mid` só existe depois de `setLocalDescription`, e é
-   * ele que amarra "esta linha do SDP" ao nome que os outros vão assinar.
+   * Sobe uma trilha nova, ou repõe uma que deixou de valer. O `mid` só existe
+   * depois de `setLocalDescription`, e é ele que amarra "esta linha do SDP" ao
+   * nome que os outros vão assinar.
    */
   #publish(slot: MediaSlot, track: MediaStreamTrack): Promise<void> {
     return this.#enqueueSend(async () => {
       if (this.#closed || !(await this.start())) return;
-      if (this.#senders.has(slot)) {
-        await this.#senders.get(slot)?.replaceTrack(track);
+      // A trilha pode ter sido trocada (ou desligada) enquanto esta subia na fila.
+      if (this.#localTracks.get(slot) !== track) return;
+
+      const existing = this.#publications.get(slot);
+      if (existing && this.#usable(existing)) {
+        await existing.sender.replaceTrack(track);
         return;
+      }
+      // Transceiver de uma publicação morta não volta: encerrá-lo é o que evita
+      // deixar um `m=` mudo ocupando lugar no SDP de cada renegociação seguinte.
+      if (existing) {
+        this.#publications.delete(slot);
+        try {
+          existing.transceiver.stop();
+        } catch {
+          // Navegador antigo sem `stop()`: o `m=` fica, e é só isso.
+        }
       }
 
       const transceiver = this.#send.addTransceiver(track, { direction: "sendonly" });
-      this.#senders.set(slot, transceiver.sender);
+      this.#publications.set(slot, { state: "publishing", transceiver, sender: transceiver.sender });
 
       const offer = await this.#send.createOffer();
       await this.#setLocal(this.#send, offer);
@@ -275,33 +406,41 @@ export class SfuEngine implements CallEngine {
       // Todas as pendentes de uma vez: o SDP que acabou de ser criado descreve
       // tudo, e mandar só a última deixaria as outras sem nome no SFU.
       const pending: Array<{ mid: string; slot: MediaSlot }> = [];
-      for (const [candidate, sender] of this.#senders) {
-        if (this.#published.has(candidate)) continue;
-        const mid = this.#send.getTransceivers().find((t) => t.sender === sender)?.mid;
+      for (const [candidate, publication] of this.#publications) {
+        if (publication.state === "live") continue;
+        const mid = publication.transceiver.mid;
         if (!mid) continue;
         pending.push({ mid, slot: candidate });
       }
       if (pending.length === 0) return;
 
-      const answer = await this.options.transport.publish(this.#send.localDescription!, pending);
-      if (!answer) {
-        // A oferta já está aplicada localmente e o SFU não a conhece: esta conexão
-        // não publica mais nada. Quem pode resolver é o dono, refazendo a call.
-        // Tentar de novo aqui só empilharia `m=` que ninguém vai atender.
-        if (!this.#publishFailed) {
-          this.#publishFailed = true;
-          this.options.onFailure?.("o servidor de mídia recusou a transmissão");
-        }
+      const { description, stale } = await this.options.transport.publish(
+        this.#send.localDescription!,
+        pending,
+      );
+      if (!description) {
+        // A oferta já está aplicada localmente. `stale` é a sessão que trocou no
+        // meio (uma reconexão), e aí a call inteira vai ser refeita de qualquer
+        // jeito; qualquer outra recusa é o SFU dizendo que esta conexão não
+        // publica mais, e insistir aqui só empilharia `m=` que ninguém atende.
+        this.#invalidatePublications();
+        this.options.onFailure?.(
+          stale ? "a sessão de mídia foi substituída" : "o servidor de mídia recusou a transmissão",
+        );
         throw new Error(`o SFU não aceitou ${slot}`);
       }
-      await this.#send.setRemoteDescription(answer);
-      for (const entry of pending) this.#published.add(entry.slot);
+      await this.#send.setRemoteDescription(description);
+      for (const entry of pending) {
+        const publication = this.#publications.get(entry.slot);
+        if (publication) publication.state = "live";
+      }
     });
   }
 
   async #applyEncodings(): Promise<void> {
-    for (const [slot, sender] of this.#senders) {
-      await applyProfile(sender, this.#profiles.get(slot));
+    for (const [slot, publication] of this.#publications) {
+      if (publication.state === "stale") continue;
+      await applyProfile(publication.sender, this.#profiles.get(slot));
     }
   }
 
@@ -339,7 +478,7 @@ export class SfuEngine implements CallEngine {
       await this.#recv.setRemoteDescription(result.description);
       const answer = await this.#recv.createAnswer();
       await this.#setLocal(this.#recv, answer);
-      const accepted = await this.options.transport.renegotiate(this.#recv.localDescription!);
+      const accepted = await this.options.transport.renegotiate("recv", this.#recv.localDescription!);
       if (!accepted) {
         for (const ref of live) this.#forget(ref);
         return;

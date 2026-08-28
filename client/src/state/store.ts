@@ -39,6 +39,7 @@ import {
   describeSocketError,
   identify,
   joinVoiceChannel,
+  loadChatHistory,
   sfuJoin,
   sfuPublish,
   sfuRenegotiate,
@@ -87,6 +88,12 @@ let joining = false;
 let lastRestart = 0;
 /** Reentradas gastas nesta permanência no canal. Zera ao entrar por clique. */
 let restartAttempts = 0;
+/**
+ * A próxima entrada precisa de configuração de ICE nova, não da guardada. Vira
+ * verdadeiro quando a mídia caiu: se a credencial de TURN foi o motivo, reusá-la
+ * levaria à mesma falha, e o cliente ficaria preso em STUN até recarregar.
+ */
+let refreshIce = false;
 
 export interface PeerMedia {
   streams: Partial<Record<MediaSlot, MediaStream>>;
@@ -142,7 +149,7 @@ export const MAX_PERSON_VOLUME = 2;
 const SETTINGS_KEY = "draco:settings";
 const SCREEN_KEY = "draco:screen";
 const PEOPLE_KEY = "draco:people";
-const USER_KEY = "draco:user";
+const SESSION_KEY = "draco:session";
 const STATS_INTERVAL_MS = 2000;
 /** Espaço entre duas tentativas de refazer a call por queda de mídia. */
 const RESTART_COOLDOWN_MS = 5000;
@@ -166,13 +173,17 @@ function writeJson(key: string, value: unknown): void {
 }
 
 /**
- * Id da pessoa, guardado no navegador. É o que permite reconectar como a mesma
- * pessoa: sem ele, cada oscilação de Wi-Fi criaria um membro novo na lista de
- * todos e apagaria o volume que os outros ajustaram pra você.
+ * Token de sessão, guardado no navegador. É o que permite reconectar como a
+ * mesma pessoa: sem ele, cada oscilação de Wi-Fi criaria um membro novo na lista
+ * de todos e apagaria o volume que os outros ajustaram pra você.
+ *
+ * Guarda o token, não o identificador. Quem decide de quem é a identidade é o
+ * servidor, que só a devolve pra quem apresenta a assinatura dele: antes bastava
+ * conhecer o id de alguém pra entrar como essa pessoa.
  */
-function readUserId(): string | null {
-  const raw = readJson(USER_KEY);
-  return typeof raw === "string" && /^[0-9a-f-]{36}$/i.test(raw) ? raw : null;
+function readSessionToken(): string | null {
+  const raw = readJson(SESSION_KEY);
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 512 ? raw : null;
 }
 
 function loadSettings(): Settings {
@@ -247,6 +258,13 @@ interface Store {
   channels: Channel[];
   members: Record<string, Member>;
   messages: Record<string, Message[]>;
+  /**
+   * Por canal: ainda existe conversa antes da mais antiga que temos. Vem do
+   * servidor e é o que decide se rolar até o topo pede mais ou para ali.
+   */
+  history: Record<string, boolean>;
+  /** Canal com um pedido de histórico em curso, pra não disparar dois. */
+  loadingHistory: string | null;
 
   // --- navegação ----------------------------------------------------------
   activeGuildId: string;
@@ -313,6 +331,7 @@ interface Store {
   selectChannel: (channelId: string) => void;
   setSidebarOpen: (open: boolean) => void;
   sendChat: (content: string) => void;
+  loadOlderMessages: (channelId: string) => Promise<void>;
   joinVoice: (channelId: string) => Promise<void>;
   leaveVoice: () => void;
   toggleMute: () => void;
@@ -519,7 +538,13 @@ export const useStore = create<Store>()((set, get) => {
     join: async () => (await sfuJoin(s)).ok,
     publish: async (description, tracks) => {
       const reply = await sfuPublish(s, description, tracks);
-      return reply.ok ? (reply.description ?? null) : null;
+      // `stale-session` é a sessão que trocou durante a publicação: a call vai ser
+      // refeita de qualquer jeito, e distingui-la evita mostrar "o servidor
+      // recusou" pra algo que foi só uma reconexão.
+      return {
+        description: reply.ok ? (reply.description ?? null) : null,
+        stale: reply.error === "stale-session",
+      };
     },
     subscribe: async (refs) => {
       // A sessão vai no pedido pra o servidor conferir que a trilha ainda é
@@ -532,7 +557,7 @@ export const useStore = create<Store>()((set, get) => {
       if (!reply.ok) return null;
       return { description: reply.description ?? null, tracks: reply.tracks ?? [] };
     },
-    renegotiate: async (description) => (await sfuRenegotiate(s, description)).ok,
+    renegotiate: async (role, description) => (await sfuRenegotiate(s, role, description)).ok,
   });
 
   /**
@@ -555,6 +580,9 @@ export const useStore = create<Store>()((set, get) => {
       return;
     }
     restartAttempts += 1;
+    // A configuração guardada pode ser justamente o problema: credencial de TURN
+    // revogada ou vencida derruba o ICE, e insistir na mesma repetiria a falha.
+    refreshIce = true;
     set({ notice: `A conexão de mídia caiu (${reason}). Reconectando…` });
     void get().joinVoice(channelId);
   };
@@ -579,7 +607,11 @@ export const useStore = create<Store>()((set, get) => {
     }
     micTrack.enabled = !micSilent();
 
-    const ice = get().ice ?? (await loadIceConfig());
+    // Sempre pelo cache com prazo, nunca pelo que ficou no estado: uma sessão
+    // longa precisa de credencial de TURN válida agora, não da de quando entrou.
+    const ice = await loadIceConfig(refreshIce);
+    refreshIce = false;
+    set({ ice });
     const selfId = get().selfId;
     if (!selfId) return;
 
@@ -698,6 +730,8 @@ export const useStore = create<Store>()((set, get) => {
     channels: snapshot.channels,
     members: byId(snapshot.members),
     messages: snapshot.messages,
+    history: snapshot.history ?? {},
+    loadingHistory: null,
   });
 
   /** Numa reconexão o canal já está escolhido e a pessoa continua onde estava. */
@@ -713,15 +747,16 @@ export const useStore = create<Store>()((set, get) => {
     s.on("connect", () => {
       void (async () => {
         const fresh = get().status !== "ready";
-        const reply = await identify(s, credentials.username, credentials.password, readUserId());
+        const reply = await identify(s, credentials.username, credentials.password, readSessionToken());
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
           s.disconnect();
           return;
         }
 
-        // Guardar o id é o que faz a próxima reconexão voltar como a mesma pessoa.
-        if (reply.userId) writeJson(USER_KEY, reply.userId);
+        // Guardar o token é o que faz a próxima reconexão voltar como a mesma
+        // pessoa. Ele só vem quando muda; o de antes continua valendo.
+        if (reply.token) writeJson(SESSION_KEY, reply.token);
         sfuAvailable = reply.sfu === true;
 
         set({
@@ -813,6 +848,8 @@ export const useStore = create<Store>()((set, get) => {
     channels: [],
     members: {},
     messages: {},
+    history: {},
+    loadingHistory: null,
 
     activeGuildId: "",
     activeChannelId: "",
@@ -912,6 +949,36 @@ export const useStore = create<Store>()((set, get) => {
       const trimmed = content.trim();
       if (!trimmed || !channelId) return;
       socket?.emit("chat:send", { channelId, content: trimmed });
+    },
+
+    async loadOlderMessages(channelId) {
+      const s = socket;
+      const oldest = get().messages[channelId]?.[0];
+      // Sem âncora não há de onde continuar, e um segundo pedido em cima do
+      // primeiro devolveria a mesma página duas vezes.
+      if (!s || !oldest || !get().history[channelId] || get().loadingHistory) return;
+
+      set({ loadingHistory: channelId });
+      const reply = await loadChatHistory(s, channelId, oldest.id);
+      if (!reply.ok || !reply.messages) {
+        // Um erro que apaga o aviso de "há mais" faria a conversa parecer completa;
+        // deixar como está permite tentar de novo ao rolar outra vez.
+        set({ loadingHistory: null });
+        return;
+      }
+
+      set((state) => {
+        const current = state.messages[channelId] ?? [];
+        // A página pedida pode ter chegado depois de a pessoa trocar de canal e
+        // voltar, com o snapshot já refeito: só entra o que ainda não está aqui.
+        const known = new Set(current.map((message) => message.id));
+        const older = reply.messages!.filter((message) => !known.has(message.id));
+        return {
+          messages: { ...state.messages, [channelId]: [...older, ...current] },
+          history: { ...state.history, [channelId]: reply.more === true },
+          loadingHistory: null,
+        };
+      });
     },
 
     async joinVoice(channelId) {
