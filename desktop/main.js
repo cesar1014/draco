@@ -210,7 +210,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       // A página é conteúdo remoto: isolar o contexto e manter o Node fora dela
-      // não é exagero, é o mínimo. O preload expõe duas funções e nada além.
+      // não é exagero, é o mínimo. O preload expõe três funções e nada além.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
