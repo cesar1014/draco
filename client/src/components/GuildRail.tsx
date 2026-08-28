@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { AddGuildButton } from "@/components/GuildAdmin";
 import { BrandMark } from "@/components/Icons";
 import { useStore } from "@/state/store";
 
@@ -30,6 +31,8 @@ export function GuildRail() {
           </button>
         </span>
       ))}
+
+      <AddGuildButton />
     </nav>
   );
 }

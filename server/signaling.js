@@ -5,25 +5,44 @@ import {
   isId,
   passwordMatches,
   sanitizeCandidate,
+  sanitizeChannelName,
   sanitizeDescription,
+  sanitizeGuildName,
   sanitizeMessage,
+  sanitizeReason,
   sanitizeUsername,
 } from "./security.js";
 import { createSession, newTracks, renegotiate, sfuConfig } from "./sfu.js";
 import {
+  acceptInvite,
   addMember,
   addMessage,
+  banMember,
+  createChannel,
+  createGuild,
+  createInvite,
+  deleteChannel,
   findChannel,
   getMember,
   getMemberById,
+  guildRoster,
+  guildsOf,
+  isDefaultGuild,
+  isGuildMember,
+  isGuildOwner,
+  leaveGuild,
+  listBans,
+  listInvites,
   loadHistory,
   peersInVoiceChannel,
   removeMember,
+  revokeInvite,
   setSfuSession,
   setSfuTracks,
   setVoiceChannel,
   setVoiceState,
   snapshot,
+  unban,
 } from "./state.js";
 
 /**
@@ -55,6 +74,16 @@ const LIMITS = {
   voiceState: { burst: 30, perSec: 12 },
   signal: { burst: 400, perSec: 200 },
   sfu: { burst: 40, perSec: 10 },
+  /**
+   * Ações administrativas. A rajada é generosa porque montar um servidor é uma
+   * sequência: criar, dois ou três canais, um convite, abrir o painel. Quem
+   * segura o abuso é a reposição lenta — meia ação por segundo não deixa ninguém
+   * criar mil servidores, e cada uma delas escreve no banco.
+   */
+  admin: { burst: 15, perSec: 0.5 },
+  // Aceitar convite é apertado por outro motivo: tentar códigos até acertar um
+  // é o único caminho pra entrar num servidor sem ser convidado.
+  invite: { burst: 5, perSec: 0.1 },
 };
 
 /** Trilhas que uma pessoa pode publicar. Espelha `SLOT_ORDER` no cliente. */
@@ -64,6 +93,12 @@ const log = logger("SIGNAL");
 const sfuLog = logger("SFU");
 
 const voiceRoom = (channelId) => `voice:${channelId}`;
+/**
+ * Uma sala de socket por servidor. É o que faz um servidor criado por alguém ser
+ * privado de fato: canal novo, convite e banimento só chegam a quem é membro, em
+ * vez de vazarem pra todo mundo conectado.
+ */
+const guildRoom = (guildId) => `guild:${guildId}`;
 
 /** Só o que o outro lado precisa saber, sem vazar detalhe interno. */
 function publicMember(member) {
@@ -120,6 +155,52 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
       io.emit("member:state", publicMember(getMemberById(member.id)));
     }
 
+    /**
+     * O canal existe, é do tipo certo e pertence a um servidor de que esta pessoa
+     * é membro. A última parte é a que importa: sem ela, conhecer o id de um canal
+     * bastaria pra ler e escrever num servidor privado.
+     */
+    function visibleChannel(channelId, type) {
+      const channel = findChannel(channelId);
+      if (!channel || channel.type !== type) return null;
+      return isGuildMember(channel.guildId, userId) ? channel : null;
+    }
+
+    /** Entra nas salas dos servidores de que a pessoa é membro. */
+    function joinGuildRooms() {
+      for (const guild of guildsOf(userId)) socket.join(guildRoom(guild.id));
+    }
+
+    /**
+     * Guarda das ações administrativas: identificada, dentro do limite, membro do
+     * servidor e — quando a ação exige — dona dele. Servidor do catálogo padrão
+     * nunca é administrável: ele é de todo mundo, e deixar um convidado renomear
+     * ou apagar canal ali seria vandalismo sem dono.
+     */
+    function guildAction(reply, guildId, { owner = false } = {}) {
+      if (!identified) {
+        reply({ ok: false, error: "not-identified" });
+        return false;
+      }
+      if (!allow("admin")) {
+        reply({ ok: false, error: "rate-limited" });
+        return false;
+      }
+      if (!isId(guildId) || !isGuildMember(guildId, userId)) {
+        reply({ ok: false, error: "not-member" });
+        return false;
+      }
+      if (isDefaultGuild(guildId)) {
+        reply({ ok: false, error: "default-guild" });
+        return false;
+      }
+      if (owner && !isGuildOwner(guildId, userId)) {
+        reply({ ok: false, error: "not-owner" });
+        return false;
+      }
+      return true;
+    }
+
     socket.on("identify", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
       if (identified) return reply({ ok: false, error: "already-identified" });
@@ -161,6 +242,7 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
       }
 
       log.info("identificado", { userId: member.id, retomada: Boolean(session) });
+      joinGuildRooms();
       reply({
         ok: true,
         selfId: member.id,
@@ -168,7 +250,7 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
         // e reescrevê-lo no cliente a cada reconexão seria gravação sem motivo.
         ...(issued ? { token: issued.token } : {}),
         sfu: Boolean(sfu),
-        state: snapshot(),
+        state: snapshot(member.id),
       });
       socket.broadcast.emit("member:joined", publicMember(member));
     });
@@ -176,11 +258,13 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
     socket.on("chat:send", (payload) => {
       if (!identified || !allow("chat")) return;
       const member = getMember(socket.id);
-      const channel = findChannel(payload?.channelId);
-      if (!member || channel?.type !== "text") return;
+      const channel = visibleChannel(payload?.channelId, "text");
+      if (!member || !channel) return;
       const content = sanitizeMessage(payload?.content);
       if (!content) return;
-      io.emit("chat:message", addMessage(channel.id, member, content));
+      // Só quem é do servidor: mandar pra todo mundo conectado vazaria a conversa
+      // de um servidor privado pra quem não faz parte dele.
+      io.to(guildRoom(channel.guildId)).emit("chat:message", addMessage(channel.id, member, content));
     });
 
     /**
@@ -191,8 +275,8 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
     socket.on("chat:history", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
       if (!identified || !allow("history")) return reply({ ok: false, error: "rate-limited" });
-      const channel = findChannel(payload?.channelId);
-      if (channel?.type !== "text") return reply({ ok: false, error: "no-channel" });
+      const channel = visibleChannel(payload?.channelId, "text");
+      if (!channel) return reply({ ok: false, error: "no-channel" });
       if (!isId(payload?.beforeId)) return reply({ ok: false, error: "bad-request" });
 
       const page = loadHistory(channel.id, payload.beforeId);
@@ -203,8 +287,8 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
     socket.on("voice:join", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
       if (!identified || !allow("voiceJoin")) return reply({ ok: false, error: "rate-limited" });
-      const channel = findChannel(payload?.channelId);
-      if (channel?.type !== "voice") return reply({ ok: false, error: "no-channel" });
+      const channel = visibleChannel(payload?.channelId, "voice");
+      if (!channel) return reply({ ok: false, error: "no-channel" });
 
       leaveVoice();
 
@@ -428,6 +512,185 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
         });
         reply({ ok: false, error: "sfu-failed" });
       }
+    });
+
+    // --- servidores, canais, convites e banimentos ---------------------------
+    // Escrevem no banco e mudam o que as pessoas veem, então cada handler confere
+    // associação e propriedade antes de tocar em qualquer coisa. Um servidor do
+    // catálogo padrão não é administrável: ele é de todo mundo.
+
+    socket.on("guild:create", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified) return reply({ ok: false, error: "not-identified" });
+      if (!allow("admin")) return reply({ ok: false, error: "rate-limited" });
+
+      const name = sanitizeGuildName(payload?.name);
+      if (!name) return reply({ ok: false, error: "bad-name" });
+
+      const guild = createGuild(userId, name);
+      if (!guild) return reply({ ok: false, error: "create-failed" });
+      socket.join(guildRoom(guild.id));
+      log.info("servidor criado", { guildId: guild.id, ownerId: userId });
+      reply({ ok: true, guild, state: snapshot(userId) });
+    });
+
+    socket.on("guild:leave", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || !allow("admin")) return reply({ ok: false, error: "rate-limited" });
+      const guildId = payload?.guildId;
+      if (!isId(guildId)) return reply({ ok: false, error: "bad-request" });
+
+      const result = leaveGuild(guildId, userId);
+      if (!result.ok) return reply(result);
+
+      // Estava numa call deste servidor: sair do servidor tira da call também.
+      const member = getMember(socket.id);
+      const current = member?.voiceChannelId ? findChannel(member.voiceChannelId) : null;
+      if (current?.guildId === guildId) leaveVoice();
+
+      socket.leave(guildRoom(guildId));
+      io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId });
+      reply({ ok: true, state: snapshot(userId) });
+    });
+
+    socket.on("channel:create", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { owner: true })) return;
+
+      const type = payload?.type === "voice" ? "voice" : "text";
+      const name = sanitizeChannelName(payload?.name, type);
+      if (!name) return reply({ ok: false, error: "bad-name" });
+
+      const channel = createChannel(guildId, type, name);
+      if (!channel) return reply({ ok: false, error: "create-failed" });
+      io.to(guildRoom(guildId)).emit("channel:created", { channel });
+      reply({ ok: true, channel });
+    });
+
+    socket.on("channel:delete", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const channel = findChannel(payload?.channelId);
+      if (!channel) return reply({ ok: false, error: "no-channel" });
+      if (!guildAction(reply, channel.guildId, { owner: true })) return;
+
+      const result = deleteChannel(channel.id);
+      if (!result.ok) return reply(result);
+
+      // Quem estava na call do canal apagado precisa saber, senão o cliente
+      // continuaria mostrando uma call que não existe mais.
+      io.to(voiceRoom(channel.id)).emit("voice:channel-closed", { channelId: channel.id });
+      io.to(guildRoom(channel.guildId)).emit("channel:deleted", {
+        guildId: channel.guildId,
+        channelId: channel.id,
+      });
+      reply({ ok: true });
+    });
+
+    socket.on("invite:create", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+
+      // Limites opcionais, e conferidos: um `maxUses` negativo violaria o CHECK
+      // do schema e derrubaria o handler em vez de recusar com jeito.
+      const maxUses = Number.isInteger(payload?.maxUses) && payload.maxUses > 0 ? payload.maxUses : null;
+      const hours =
+        Number.isFinite(payload?.expiresInHours) && payload.expiresInHours > 0
+          ? Math.min(payload.expiresInHours, 24 * 30)
+          : null;
+
+      const code = createInvite(guildId, userId, { maxUses, expiresInHours: hours });
+      reply({ ok: true, code, invites: listInvites(guildId) });
+    });
+
+    socket.on("invite:accept", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified) return reply({ ok: false, error: "not-identified" });
+      if (!allow("invite")) return reply({ ok: false, error: "rate-limited" });
+
+      const code = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : null;
+      if (!code || code.length > 32) return reply({ ok: false, error: "bad-request" });
+
+      const result = acceptInvite(code, userId);
+      if (!result.ok) return reply(result);
+
+      socket.join(guildRoom(result.guildId));
+      if (result.joined) {
+        const member = getMember(socket.id);
+        io.to(guildRoom(result.guildId)).emit("guild:member-joined", {
+          guildId: result.guildId,
+          member: { id: userId, username: member?.username ?? "", color: member?.color ?? "" },
+        });
+      }
+      log.info("convite aceito", { guildId: result.guildId, userId, novo: result.joined });
+      reply({ ok: true, guildId: result.guildId, state: snapshot(userId) });
+    });
+
+    socket.on("invite:revoke", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+      if (!isId(payload?.code, 32)) return reply({ ok: false, error: "bad-request" });
+
+      const removed = revokeInvite(guildId, payload.code);
+      reply({ ok: removed, invites: listInvites(guildId), ...(removed ? {} : { error: "no-invite" }) });
+    });
+
+    socket.on("invite:list", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+      reply({ ok: true, invites: listInvites(guildId) });
+    });
+
+    socket.on("member:ban", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { owner: true })) return;
+      const target = payload?.userId;
+      if (!isId(target)) return reply({ ok: false, error: "bad-request" });
+      if (target === userId) return reply({ ok: false, error: "cannot-ban-self" });
+      if (!isGuildMember(guildId, target)) return reply({ ok: false, error: "not-member" });
+
+      const banned = banMember(guildId, target, userId, sanitizeReason(payload?.reason));
+      io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId: target });
+
+      // A pessoa banida precisa sair da sala do servidor agora: continuar nela
+      // significaria continuar recebendo o chat de onde ela não pode mais entrar.
+      const socketId = banned?.socketId;
+      if (socketId) {
+        const targetSocket = io.sockets.sockets.get(socketId);
+        targetSocket?.leave(guildRoom(guildId));
+        targetSocket?.emit("guild:banned", { guildId });
+      }
+      log.info("membro banido", { guildId, userId: target, por: userId });
+      reply({ ok: true, bans: listBans(guildId) });
+    });
+
+    socket.on("member:unban", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { owner: true })) return;
+      if (!isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+
+      const removed = unban(guildId, payload.userId);
+      reply({ ok: removed, bans: listBans(guildId), ...(removed ? {} : { error: "no-ban" }) });
+    });
+
+    socket.on("guild:admin", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+      const owner = isGuildOwner(guildId, userId);
+      reply({
+        ok: true,
+        owner,
+        roster: guildRoster(guildId),
+        invites: listInvites(guildId),
+        // Lista de banidos é informação de moderação: só o dono precisa dela.
+        bans: owner ? listBans(guildId) : [],
+      });
     });
 
     socket.on("disconnect", () => {

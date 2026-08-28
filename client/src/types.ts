@@ -5,6 +5,8 @@ export interface Guild {
   name: string;
   initials: string;
   color: string;
+  /** Quem criou. `null` nos servidores do catálogo padrão, que não têm dono. */
+  ownerId: string | null;
 }
 
 export interface Channel {
@@ -47,13 +49,44 @@ export interface Message {
   at: number;
 }
 
+/**
+ * Alguém que pertence a um servidor, conectado ou não. Presença é o `Member`; isto
+ * é o elenco, que vem do banco. Juntar os dois é o que permite mostrar quem está
+ * offline sem inventar estado de call pra quem não está lá.
+ */
+export interface RosterEntry {
+  id: string;
+  username: string;
+  color: string;
+}
+
 export interface ServerSnapshot {
   guilds: Guild[];
   channels: Channel[];
   members: Member[];
+  /** guildId -> quem pertence àquele servidor. */
+  roster: Record<string, RosterEntry[]>;
   messages: Record<string, Message[]>;
   /** Canais em que ainda existe conversa antes da que veio no snapshot. */
   history: Record<string, boolean>;
+}
+
+/** Convite ativo de um servidor, como a tela de administração o mostra. */
+export interface Invite {
+  code: string;
+  guildId: string;
+  inviterId: string | null;
+  maxUses: number | null;
+  uses: number;
+  expiresAt: number | null;
+  createdAt: number;
+}
+
+export interface BanEntry {
+  userId: string;
+  username: string | null;
+  reason: string | null;
+  createdAt: number;
 }
 
 export interface IceConfigResponse {

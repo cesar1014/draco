@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { HashIcon, MenuIcon, SendIcon } from "@/components/Icons";
+import { MembersToggle } from "@/components/MembersToggle";
 import { MessageGroup, groupMessages } from "@/components/MessageGroup";
 import { useStore } from "@/state/store";
 
@@ -17,7 +18,6 @@ export function ChatView({ channelId }: { channelId: string }) {
   const messages = useStore((state) => state.messages[channelId]);
   const hasOlder = useStore((state) => state.history[channelId] === true);
   const loadingHistory = useStore((state) => state.loadingHistory === channelId);
-  const memberCount = useStore((state) => Object.keys(state.members).length);
   const sendChat = useStore((state) => state.sendChat);
   const loadOlderMessages = useStore((state) => state.loadOlderMessages);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
@@ -110,9 +110,7 @@ export function ChatView({ channelId }: { channelId: string }) {
         </button>
         <HashIcon size={22} />
         <h1>{channel?.name ?? "canal"}</h1>
-        <span className="content-header-meta">
-          {memberCount} {memberCount === 1 ? "pessoa online" : "pessoas online"}
-        </span>
+        <MembersToggle />
       </header>
 
       <div className="messages" ref={scroller} onScroll={trackScroll}>

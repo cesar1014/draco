@@ -50,7 +50,8 @@ async function readState() {
   const state = await import("../server/state.js");
   const { createSessionAuthority } = await import("../server/auth.js");
   const { MESSAGE_PAGE } = state;
-  const current = state.snapshot();
+  // O snapshot é por pessoa: cada uma recebe só os servidores de que é membro.
+  const current = state.snapshot(userId);
   const recent = current.messages["t-geral"];
 
   assert.equal(current.members.length, 0, "presença não sobrevive a um reinício");

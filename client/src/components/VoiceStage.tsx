@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { CallControls } from "@/components/CallControls";
 import { GridIcon, MenuIcon, ScreenIcon, SpeakerIcon } from "@/components/Icons";
+import { MembersToggle } from "@/components/MembersToggle";
+import { PreCall } from "@/components/PreCall";
 import { TileThumb, VideoTile, type TileData } from "@/components/VideoTile";
 import { media, membersInVoice, useStore, type PeerMedia } from "@/state/store";
 import type { Member } from "@/types";
@@ -68,7 +70,6 @@ export function VoiceStage({ channelId }: { channelId: string }) {
   const clearFocus = useStore((state) => state.clearFocus);
   const pruneTiles = useStore((state) => state.pruneTiles);
   const watch = useStore((state) => state.watch);
-  const joinVoice = useStore((state) => state.joinVoice);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
 
   const joined = voiceChannelId === channelId;
@@ -101,11 +102,6 @@ export function VoiceStage({ channelId }: { channelId: string }) {
         </button>
         <SpeakerIcon size={22} />
         <h1>{channel?.name ?? "canal de voz"}</h1>
-        <span className="content-header-meta">
-          {present.length === 0
-            ? "ninguém na call"
-            : `${present.length} ${present.length === 1 ? "pessoa" : "pessoas"}`}
-        </span>
 
         {joined && tiles.length > 1 && (
           <div className="stage-modes">
@@ -139,6 +135,8 @@ export function VoiceStage({ channelId }: { channelId: string }) {
             </button>
           </div>
         )}
+
+        <MembersToggle />
       </header>
 
       {joined ? (
@@ -179,20 +177,7 @@ export function VoiceStage({ channelId }: { channelId: string }) {
           <CallControls />
         </>
       ) : (
-        <div className="stage-join">
-          <span className="stage-join-icon">
-            <SpeakerIcon size={40} />
-          </span>
-          <h2>{channel?.name ?? "Canal de voz"}</h2>
-          <p>
-            {present.length === 0
-              ? "Ninguém está aqui ainda."
-              : `${present.map((member) => member.username).join(", ")} ${present.length === 1 ? "está" : "estão"} na call.`}
-          </p>
-          <button type="button" className="stage-join-button" onClick={() => void joinVoice(channelId)}>
-            Entrar na chamada
-          </button>
-        </div>
+        <PreCall channelId={channelId} />
       )}
     </div>
   );

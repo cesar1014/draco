@@ -45,7 +45,7 @@ Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o se
 - Calls de voz em grupo
 - Mute e deafen
 - Push-to-talk configurável
-- Escolha de microfone e saída de áudio
+- Escolha de microfone e saída de áudio, com prévia antes de entrar na call
 - Cancelamento de eco
 - Redução de ruído
 - Controle automático de ganho
@@ -58,7 +58,7 @@ Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o se
 
 ### 📹 Câmera
 
-- Escolha de câmera
+- Escolha de câmera, com prévia antes de entrar na call
 - **360p, 480p, 720p e 1080p**
 - **15, 24, 30 ou 60 FPS**
 - Espelhamento da própria câmera
@@ -105,14 +105,15 @@ Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o se
 
 ### 💬 Experiência
 
-- Canais de voz e texto
+- Criar servidores, canais de voz e texto pela interface
+- Convites por link, com validade e limite de usos
 - Chat em tempo real, com histórico que sobrevive ao restart
 - Conversa anterior carregada ao rolar para cima
 - Interface responsiva para desktop e celular
 - PWA para adicionar à tela inicial
 - Sons de entrada/saída configuráveis
 - Modo leve para PCs mais antigos
-- Lista de online em ordem de chegada
+- Painel de membros recolhível, separando quem está online de quem está offline
 
 </td>
 <td width="50%" valign="top">
@@ -234,9 +235,20 @@ A divisão é simples: **o que faz sentido depois de um restart vai para o SQLit
 | servidores e canais | quem está em qual canal de voz |
 | membros e cargos | sessões do SFU, tracks e streams |
 | mensagens | estado de mute, câmera e tela |
-| segredo de assinatura das sessões | baldes de rate limit |
+| convites e banimentos | baldes de rate limit |
+| segredo de assinatura das sessões | |
 
 Presença e mídia não são "estado que se perdeu": eles deixam de ser verdade no instante em que o processo cai, e ressuscitá-los mostraria gente numa call que não existe.
+
+### Servidores e privacidade
+
+Os dois servidores que já vêm no Draco são de todo mundo: quem entra pela primeira vez encontra os dois, e ninguém pode renomeá-los ou apagar canais deles — não têm dono, então não há a quem responsabilizar por vandalismo.
+
+Um servidor **criado pela interface** funciona ao contrário: nasce privado, com um canal de texto e um de voz, e só quem recebe um convite entra. Isso não é uma regra de permissão à parte — o snapshot que cada cliente recebe é montado a partir dos servidores de que aquela pessoa é membro, então um servidor de que ela não faz parte simplesmente não existe do ponto de vista dela: nem os canais, nem a conversa.
+
+Quem cria é o dono. Ele cria e apaga canais, convida, bane e readmite; os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
+
+Convites são códigos de dez caracteres, num alfabeto sem vogais e sem os caracteres que se confundem ao ler em voz alta (`0`/`O`, `1`/`I`). Aceitam validade e limite de usos, e gastar um uso acontece na mesma transação que registra a entrada — duas pessoas colando o mesmo convite de uso único no mesmo instante não entram as duas.
 
 ### Migrations
 
@@ -255,6 +267,26 @@ O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e
 Não é sistema de contas: não há e-mail, senha por pessoa nem recuperação de acesso. Mas **o servidor passou a ser a autoridade da identidade**, que é o que faltava para o resto poder ser construído em cima.
 
 O segredo de assinatura vem de `SESSION_SECRET` ou, na falta dele, é sorteado no primeiro boot e guardado no banco. Guardar em vez de sortear a cada boot é o que faz um deploy não desconectar todo mundo da própria identidade.
+
+---
+
+## A tela
+
+Três colunas no desktop, e a do meio é a que importa: é onde está a conversa ou a call.
+
+**Canais à esquerda.** A coluna é só navegação — servidores, canais de texto e de voz, e quem está em cada call de voz. Nada mais divide espaço com ela.
+
+**Membros à direita, fechado por padrão.** Quem abre é o contador de pessoas do canto superior direito. A lista de quem está no servidor é informação que se consulta de vez em quando ("quem está aí?"), não que se lê o tempo todo, então ela não fica ocupando largura por padrão — e separa quem está online de quem pertence ao servidor mas está offline.
+
+Abrir o painel **encolhe a área de conteúdo** em vez de cobri-la: a conversa se ajusta, e nada fica escondido atrás de uma sobreposição.
+
+**No celular são gavetas.** Não cabem três colunas: os canais entram pela esquerda, os membros pela direita, e o mesmo contador do topo abre e fecha. Um toque fora fecha a que estiver aberta.
+
+### Antes de entrar na call
+
+Escolher o microfone errado é o tipo de erro que só aparece quando alguém já disse "não te ouço". Clicar num canal de voz agora abre uma tela de preparação: seleção de microfone, câmera e saída de som, prévia da própria imagem, medidor que mostra se o microfone capta e um som de teste para a saída.
+
+A prévia abre os dispositivos por conta própria e os fecha ao sair da tela — ela não passa pelo mesmo caminho que a call usa, senão uma câmera de teste continuaria ligada dentro da call de quem entrou com a câmera desligada. Se a câmera estava ligada na prévia, ela entra ligada.
 
 ---
 
@@ -362,6 +394,7 @@ Draco/
 ├── desktop/                # aplicativo Electron para Windows
 │   ├── main.js
 │   ├── preload.js
+│   ├── updater.js          # verificação de versão
 │   ├── status.html
 │   └── package.json
 │
@@ -477,8 +510,9 @@ Duas consequências práticas:
 | `npm run app` | abre o Electron |
 | `npm run app:install` | instala dependências do desktop |
 | `npm run app:build` | gera o instalador Windows |
-| `npm test` | typecheck + os três conjuntos de teste |
-| `npm run test:server` | testa o protocolo de sinalização |
+| `npm test` | typecheck + os quatro conjuntos de teste |
+| `npm run test:logic` | testa backoff do TURN, rate limit e nomes |
+| `npm run test:server` | testa o protocolo de sinalização e a administração |
 | `npm run test:persistence` | testa migrations e persistência após reinício |
 | `npm run test:media` | testa o ciclo de vida das trilhas no SFU |
 | `npm run typecheck` | valida os tipos TypeScript |
@@ -565,13 +599,15 @@ No servidor:
 - payload de cada evento é validado por tipo e por tamanho; SDP e candidatos ICE são recortados antes de serem repassados;
 - credenciais TURN podem ser geradas/obtidas pelo servidor sem expor chaves permanentes no cliente, com prazo, renovação antes do vencimento e retry com backoff limitado;
 - o segredo do SFU nunca chega ao navegador: quem assina as chamadas à Cloudflare é o servidor;
-- só é possível assinar a trilha de quem está no mesmo canal de voz, e da sessão que está no ar.
+- só é possível assinar a trilha de quem está no mesmo canal de voz, e da sessão que está no ar;
+- **o que cada pessoa vê vem da associação a servidores, não do que ela pede.** Conhecer o id de um canal não dá acesso a ele: ler, escrever e entrar em voz exigem ser membro do servidor daquele canal, e o chat é entregue à sala do servidor em vez de a todo mundo conectado;
+- ações administrativas conferem associação e propriedade antes de tocar no banco, e têm limite próprio de frequência — aceitar convite tem o mais apertado, porque tentar códigos é o único caminho para entrar sem ser convidado.
 
 ---
 
 ## Testes
 
-`npm test` roda tudo: typecheck e os três conjuntos. Nenhum deles precisa de câmera, microfone ou uma segunda pessoa.
+`npm test` roda tudo: typecheck e os quatro conjuntos. Nenhum deles precisa de câmera, microfone ou uma segunda pessoa.
 
 ### Sinalização
 
@@ -579,7 +615,17 @@ No servidor:
 npm run test:server
 ```
 
-Sobe o servidor num socket real e verifica entrada com senha, presença, chat, repasse de sinalização, as guardas dos eventos `sfu:*`, limite de frequência e reconexão sem duplicar ninguém na lista, e que a identidade só é reassumida com o token assinado pelo servidor. **36 testes.**
+Sobe o servidor num socket real e verifica entrada com senha, presença, chat, repasse de sinalização, as guardas dos eventos `sfu:*`, limite de frequência e reconexão sem duplicar ninguém na lista, e que a identidade só é reassumida com o token assinado pelo servidor.
+
+Cobre também a administração: um servidor criado é privado, quem não é membro não o administra, o último canal de um tipo não pode ser apagado, convite de uso único não serve duas vezes, e quem foi banido não volta nem com convite válido. **59 testes.**
+
+### Lógica de servidor
+
+```bash
+npm run test:logic
+```
+
+As regras que erram calado, testadas sem socket nem banco: o backoff do TURN (uma falha inicial não prende a sala em STUN, e a tentativa seguinte espera antes de insistir), o balde de limite (errar a senha esgota as tentativas, acertar não custa nada) e a normalização de nomes de canal e servidor. **8 testes.**
 
 ### TypeScript
 
@@ -658,8 +704,9 @@ O Draco está em desenvolvimento ativo. Alguns caminhos naturais para as próxim
 - [x] persistência SQLite de perfis, servidores, canais e chat;
 - [x] identidade assinada pelo servidor;
 - [x] aviso de versão nova no aplicativo Windows;
-- [ ] tela de configuração de dispositivos antes de entrar na call;
-- [ ] criar servidores, canais e convites pela interface;
+- [x] tela de configuração de dispositivos antes de entrar na call;
+- [x] criar servidores, canais e convites pela interface;
+- [ ] cargos e permissões por canal (o schema já reserva as tabelas);
 - [ ] substituição automática do instalador (depende de assinatura de código);
 - [ ] camadas simultâneas de qualidade (simulcast), para quem tem banda ver melhor que quem não tem;
 - [ ] evolução da experiência mobile;

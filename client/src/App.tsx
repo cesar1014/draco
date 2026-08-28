@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { ChannelSidebar } from "@/components/ChannelSidebar";
 import { ChatView } from "@/components/ChatView";
+import { GuildAdminModal } from "@/components/GuildAdmin";
 import { GuildRail } from "@/components/GuildRail";
 import { JoinScreen } from "@/components/JoinScreen";
+import { MembersPanel } from "@/components/MembersPanel";
 import { RemoteAudioSink } from "@/components/RemoteAudioSink";
 import { ScreenShareModal } from "@/components/ScreenShareModal";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -25,6 +27,10 @@ export function App() {
   const screenPickerOpen = useStore((state) => state.screenPickerOpen);
   const sidebarOpen = useStore((state) => state.sidebarOpen);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
+  const membersOpen = useStore((state) => state.membersOpen);
+  const setMembersOpen = useStore((state) => state.setMembersOpen);
+  const admin = useStore((state) => state.admin);
+  const joinByInvite = useStore((state) => state.joinByInvite);
   const liteMode = useStore((state) => state.settings.liteMode);
   const camOn = useStore((state) => state.camOn);
   const screenOn = useStore((state) => state.screenOn);
@@ -60,6 +66,23 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.lite = liteMode ? "on" : "off";
   }, [liteMode]);
+
+  /**
+   * Link de convite: `?convite=CODIGO`. Vale uma vez, depois de a pessoa entrar —
+   * antes disso não há identidade pra associar ao servidor. O parâmetro sai da
+   * barra de endereço em seguida, senão um F5 tentaria aceitar de novo e gastaria
+   * um uso do convite.
+   */
+  useEffect(() => {
+    if (status !== "ready") return;
+    const code = new URLSearchParams(window.location.search).get("convite");
+    if (!code) return;
+
+    window.history.replaceState(null, "", window.location.pathname);
+    void joinByInvite(code).then((error) => {
+      if (error) useStore.setState({ mediaError: error });
+    });
+  }, [status, joinByInvite]);
 
   /**
    * Encodar câmera ou tela é o que mais custa CPU numa call. Enquanto isso está
@@ -117,16 +140,24 @@ export function App() {
   const channel = channels.find((item) => item.id === activeChannelId);
 
   return (
-    <div className="app" data-sidebar={sidebarOpen ? "open" : "closed"}>
+    <div
+      className="app"
+      data-sidebar={sidebarOpen ? "open" : "closed"}
+      data-members={membersOpen ? "open" : "closed"}
+    >
       {reconnecting && <div className="banner">Conexão perdida. Reconectando…</div>}
 
       <GuildRail />
       <ChannelSidebar />
+      {/* Um véu para as duas gavetas do celular: fecha a que estiver aberta. */}
       <button
         type="button"
         className="scrim"
         aria-label="Fechar menu"
-        onClick={() => setSidebarOpen(false)}
+        onClick={() => {
+          setSidebarOpen(false);
+          setMembersOpen(false);
+        }}
       />
 
       <main className="content">
@@ -139,11 +170,14 @@ export function App() {
         )}
       </main>
 
+      <MembersPanel />
+
       {/* Fora da área de conteúdo: o som não pode depender do que está na tela. */}
       <RemoteAudioSink />
 
       {settingsOpen && <SettingsModal />}
       {screenPickerOpen && <ScreenShareModal />}
+      {admin && <GuildAdminModal />}
 
       {mediaError && (
         <div className="toast" role="alert">

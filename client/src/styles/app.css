@@ -48,6 +48,7 @@
 
   --rail: 74px;
   --side: 252px;
+  --members: 232px;
   --header: 52px;
 
   --font: "Inter", "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -363,10 +364,18 @@ input[type="range"]:disabled {
 .app {
   position: relative;
   display: grid;
-  grid-template-columns: var(--rail) var(--side) minmax(0, 1fr);
+  /* Quarta coluna com largura zero: o painel de membros só ocupa espaço quando
+     está aberto, e a transição na própria coluna faz a conversa se ajustar em vez
+     de ser coberta. */
+  grid-template-columns: var(--rail) var(--side) minmax(0, 1fr) 0;
   height: 100%;
   background: var(--bg);
   isolation: isolate;
+  transition: grid-template-columns var(--t) var(--ease-out);
+}
+
+.app[data-members="open"] {
+  grid-template-columns: var(--rail) var(--side) minmax(0, 1fr) var(--members);
 }
 
 /* Luz ambiente. Fica no fundo, não recebe eventos e usa só `transform`. */
@@ -437,11 +446,14 @@ input[type="range"]:disabled {
   text-overflow: ellipsis;
 }
 
-.content-header-meta {
+/* O contador de pessoas é o gatilho do painel, e fica encostado na direita. Com
+   os modos do palco presentes, eles já ocupam o `auto`, e aqui basta o espaço. */
+.content-header .members-toggle {
   margin-left: auto;
-  font-size: 12px;
-  color: var(--text-faint);
-  white-space: nowrap;
+}
+
+.stage-modes + .members-toggle {
+  margin-left: 8px;
 }
 
 .header-menu {
@@ -586,6 +598,20 @@ button.guild:hover {
   background: var(--line);
 }
 
+/* O `+` é o único botão da barra que não representa um servidor, então ele se
+   distingue: tracejado e verde no hover, em vez do disco cheio dos outros. */
+.add-guild {
+  color: var(--good);
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--line);
+}
+
+button.add-guild:hover {
+  color: #fff;
+  background: var(--good);
+  box-shadow: none;
+}
+
 /* ---------------------------------------------------------------------------
    Barra lateral
    --------------------------------------------------------------------------- */
@@ -624,6 +650,27 @@ button.guild:hover {
   padding: 8px;
   border-radius: var(--radius-xs);
   color: var(--text-dim);
+}
+
+/* Engrenagem do servidor. `margin-left: auto` empurra o par de botões pra
+   direita; no celular o `sidebar-close` aparece e fica ao lado dela. */
+.sidebar-action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border-radius: var(--radius-xs);
+  color: var(--text-faint);
+}
+
+.sidebar-action:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.sidebar-action + .sidebar-close {
+  margin-left: 0;
 }
 
 .channel-scroll {
@@ -699,6 +746,62 @@ button.guild:hover {
   text-overflow: ellipsis;
 }
 
+/* Apagar canal: escondido até o ponteiro passar pela linha. Uma lixeira sempre
+   visível ao lado de cada canal transforma a navegação num campo minado. */
+.channel-slot {
+  position: relative;
+}
+
+.channel-delete {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-xs);
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.channel-slot:hover .channel-delete,
+.channel-delete:focus-visible {
+  opacity: 1;
+}
+
+.channel-delete:hover {
+  color: var(--bad);
+  background: var(--surface-3);
+}
+
+/* Fica com o canal aberto por baixo, então precisa do fundo pra não sobrepor o
+   nome do canal quando ele é comprido. */
+.channel-slot:hover .channel {
+  padding-right: 34px;
+}
+
+.add-channel {
+  color: var(--text-faint);
+}
+
+.add-channel:hover {
+  color: var(--good);
+}
+
+/* Toque não tem hover: no celular a ação fica sempre visível. */
+@media (hover: none) {
+  .channel-delete {
+    opacity: 1;
+  }
+
+  .channel-slot .channel {
+    padding-right: 34px;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Quem está na call, dentro da lista de canais
    --------------------------------------------------------------------------- */
@@ -765,15 +868,76 @@ button.guild:hover {
 }
 
 /* ---------------------------------------------------------------------------
-   Quem está online (fim da lista de canais)
+   Painel de membros (coluna da direita, recolhível)
    --------------------------------------------------------------------------- */
-.online-list {
+.members {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  /* A coluna fecha para zero, e sem isto o conteúdo escaparia por cima da
+     conversa durante a transição. */
+  overflow: hidden;
+  background: var(--surface);
+  border-left: 1px solid var(--line-soft);
+}
+
+.members-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: var(--header);
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.members-header strong {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.members-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-xs);
+  color: var(--text-faint);
+}
+
+.members-close:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.members-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 8px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.members-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.online-row {
+.members-empty {
+  padding: 16px 8px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.member-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -782,7 +946,13 @@ button.guild:hover {
   animation: slide-left var(--t) var(--ease-out) both;
 }
 
-.online-name {
+/* Offline aparece apagado, não escondido: saber quem faz parte do servidor é o
+   ponto de listar. */
+.member-row[data-offline="true"] {
+  opacity: 0.45;
+}
+
+.member-name {
   flex: 1;
   min-width: 0;
   font-size: 13.5px;
@@ -792,16 +962,16 @@ button.guild:hover {
   text-overflow: ellipsis;
 }
 
-.online-name[data-self="true"] {
+.member-name[data-self="true"] {
   font-weight: 650;
   color: var(--text);
 }
 
-.online-where {
+.member-where {
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 96px;
+  max-width: 88px;
   font-size: 11px;
   font-style: normal;
   color: var(--brand-2);
@@ -810,7 +980,38 @@ button.guild:hover {
   text-overflow: ellipsis;
 }
 
-.online-where svg {
+.member-where svg {
+  flex: none;
+}
+
+/* O contador do topo é o que abre e fecha o painel: virou botão, então tem
+   estado de foco e de hover como qualquer outro. */
+.members-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px transparent;
+  transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.members-toggle:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.members-toggle[data-on="true"] {
+  color: var(--text);
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.members-toggle svg {
   flex: none;
 }
 
@@ -1350,7 +1551,8 @@ button.guild:hover {
   display: flex;
   gap: 6px;
   flex: none;
-  margin-left: 10px;
+  /* Empurrado pra direita: o contador de membros vem depois, encostado na borda. */
+  margin-left: auto;
 }
 
 .stage-mode {
@@ -1458,41 +1660,115 @@ button.guild:hover {
   }
 }
 
-.stage-join {
+/* ---------------------------------------------------------------------------
+   Pré-call: escolher dispositivos e ver a prévia antes de entrar
+   --------------------------------------------------------------------------- */
+.precall {
   display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 20px;
   flex: 1;
-  padding: 24px;
-  text-align: center;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
   animation: rise var(--t-slow) var(--ease-out);
 }
 
-.stage-join-icon {
+.precall-preview {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 92px;
-  height: 92px;
-  margin-bottom: 10px;
-  border-radius: 50%;
-  color: var(--brand-2);
-  background: radial-gradient(circle at 50% 30%, var(--surface-3), var(--surface));
+  min-height: 240px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: radial-gradient(circle at 50% 20%, var(--surface-2), var(--bg-deep));
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+
+.precall-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Espelho de verdade: a prévia mostra o que a pessoa espera ver de si mesma, e
+   não é o que os outros recebem — daí ser preferência, não regra. */
+.precall-video[data-mirror="true"] {
+  transform: scaleX(-1);
+}
+
+.precall-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13.5px;
+}
+
+.precall-preview-actions {
+  position: absolute;
+  inset: auto 0 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.precall-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(7, 10, 20, 0.72);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+
+.precall-toggle[data-on="true"] {
+  color: #fff;
+  background: var(--brand);
   box-shadow: var(--glow);
 }
 
-.stage-join h2 {
-  font-size: 24px;
+.precall-form {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
 }
 
-.stage-join p {
-  max-width: 420px;
+.precall-head h2 {
+  font-size: 22px;
+}
+
+.precall-head p {
+  margin-top: 4px;
   color: var(--text-faint);
-  font-size: 14px;
+  font-size: 13.5px;
 }
 
-.stage-join-button {
-  margin-top: 14px;
+.precall-form .field select {
+  width: 100%;
+}
+
+.precall-form .link-button {
+  justify-self: start;
+  font-size: 12.5px;
+}
+
+.precall-mic-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.precall-join {
+  margin-top: 4px;
   padding: 13px 30px;
   border-radius: 999px;
   font-size: 15px;
@@ -1502,17 +1778,36 @@ button.guild:hover {
   background-size: 160% 160%;
   box-shadow: 0 10px 30px -12px rgba(91, 108, 255, 0.9);
   transition: transform var(--t) var(--spring), box-shadow var(--t) var(--ease),
-    background-position var(--t-slow) var(--ease);
+    background-position var(--t-slow) var(--ease), opacity var(--t-fast) var(--ease);
 }
 
-.stage-join-button:hover {
+.precall-join:hover:not(:disabled) {
   transform: translateY(-2px);
   background-position: 100% 0;
   box-shadow: 0 16px 40px -12px rgba(91, 108, 255, 1);
 }
 
-.stage-join-button:active {
+.precall-join:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
+}
+
+.precall-join:disabled {
+  opacity: 0.6;
+}
+
+/* Coluna única quando a largura aperta: a prévia primeiro, os controles embaixo.
+   Vale no celular e também na janela estreita do app de desktop. */
+@media (max-width: 900px) {
+  .precall {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding: 14px;
+  }
+
+  .precall-preview {
+    min-height: 200px;
+    aspect-ratio: 16 / 9;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2128,6 +2423,177 @@ button.guild:hover {
 
 .share-modal {
   max-width: 760px;
+}
+
+/* Criar servidor ou canal: um campo e um botão, então a janela larga só deixaria
+   espaço vazio dos dois lados. */
+.guild-modal {
+  max-width: 420px;
+}
+
+.admin-modal {
+  max-width: 520px;
+}
+
+/* Convite: validade, usos e o botão numa linha só, que quebra sozinha quando
+   não cabe. */
+.admin-invite-form {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.admin-invite-form label {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 120px;
+}
+
+.admin-invite-form label span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.admin-invite-form .primary-button {
+  flex: none;
+}
+
+.admin-invite-fresh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-tint);
+  box-shadow: inset 0 0 0 1px var(--brand-line);
+}
+
+.admin-invite-fresh code {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  /* O link é longo e não deve empurrar a janela: ele quebra onde couber. */
+  overflow-wrap: anywhere;
+}
+
+.admin-list {
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.admin-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.admin-list li > span:not(.admin-name):not(.admin-tag) {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.admin-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: var(--surface-4);
+}
+
+/* Ação destrutiva escrita como texto: vermelha só no hover, pra não pintar a
+   lista inteira de alerta. */
+.link-button.danger:hover {
+  color: var(--bad);
+}
+
+.secondary-button.danger {
+  color: var(--bad);
+}
+
+.secondary-button.danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--bad);
+  box-shadow: none;
+}
+
+/* Ação principal de um formulário: é o botão que a pessoa procura. */
+.primary-button {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 650;
+  color: #fff;
+  background: var(--brand);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--t-fast) var(--ease), filter var(--t-fast) var(--ease),
+    opacity var(--t-fast) var(--ease);
+}
+
+.primary-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.primary-button:disabled {
+  opacity: 0.45;
+}
+
+/* Escolha entre duas opções lado a lado (texto ou voz). */
+.choice-row {
+  display: flex;
+  gap: 8px;
+}
+
+.choice {
+  flex: 1;
+  padding: 11px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+
+.choice:hover {
+  color: var(--text);
+}
+
+.choice[data-on="true"] {
+  color: #fff;
+  background: var(--brand);
+  box-shadow: var(--glow);
 }
 
 .modal-header {
@@ -2815,7 +3281,7 @@ button.guild:hover {
 }
 
 /* Brilho diagonal que cruza os botões grandes uma vez ao passar o mouse. */
-.stage-join-button,
+.precall-join,
 .join-submit,
 .call-button.hangup {
   position: relative;
@@ -2823,7 +3289,7 @@ button.guild:hover {
   isolation: isolate;
 }
 
-.stage-join-button::after,
+.precall-join::after,
 .join-submit::after,
 .call-button.hangup::after {
   content: "";
@@ -2835,7 +3301,7 @@ button.guild:hover {
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
 }
 
-.stage-join-button:hover::after,
+.precall-join:hover::after,
 .join-submit:hover::after,
 .call-button.hangup:hover::after {
   animation: sweep 750ms var(--ease-out);
@@ -2964,6 +3430,27 @@ button.guild:active {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* No celular a coluna não cabe: o painel de membros vira gaveta da direita,
+     espelhando a dos canais à esquerda. A grade volta a ser de uma coluna, e
+     abrir o painel deixa de empurrar a conversa. */
+  .app[data-members="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .members {
+    position: fixed;
+    z-index: 50;
+    inset: 0 0 0 auto;
+    width: min(78vw, 300px);
+    transform: translateX(100%);
+    transition: transform var(--t) var(--ease-out);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .app[data-members="open"] .members {
+    transform: none;
+  }
+
   .guild-rail {
     position: fixed;
     z-index: 51;
@@ -3001,9 +3488,17 @@ button.guild:active {
     transition: opacity var(--t) var(--ease);
   }
 
-  .app[data-sidebar="open"] .scrim {
+  /* Um véu para as duas gavetas: qualquer uma aberta escurece o fundo, e tocar
+     nele fecha a que estiver aberta. */
+  .app[data-sidebar="open"] .scrim,
+  .app[data-members="open"] .scrim {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .members-close {
+    display: grid;
+    place-items: center;
   }
 
   .content {
@@ -3117,7 +3612,8 @@ button.guild:active {
     font-size: 26px;
   }
 
-  .content-header-meta {
+  /* Tela estreita: fica só o número, sem a palavra "pessoas". */
+  .members-toggle span {
     display: none;
   }
 }

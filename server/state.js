@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createStateRepository } from "./data/state-repository.js";
 
 /**
@@ -42,11 +42,33 @@ const DEFAULT_CHANNELS = [
 /** Cor do avatar, escolhida de forma estável a partir do nome. */
 const AVATAR_COLORS = ["#5b6cff", "#3ddc97", "#ffb457", "#ff5f7a", "#f45ec1", "#a06bff", "#4fd8ff"];
 
+/** Categorias dos canais criados pela interface, iguais às do catálogo padrão. */
+const TEXT_CATEGORY = "Canais de Texto";
+const VOICE_CATEGORY = "Canais de Voz";
+
 const repository = createStateRepository();
 repository.seedCatalog(DEFAULT_GUILDS, DEFAULT_CHANNELS);
 
-export const GUILDS = repository.listGuilds();
-export const CHANNELS = repository.listChannels();
+/**
+ * Os servidores do catálogo padrão são de todo mundo: quem entra pela primeira
+ * vez já os encontra. Servidor criado por alguém não entra nesta lista, e é isso
+ * que faz um servidor novo ser privado até que se convide alguém.
+ */
+const DEFAULT_GUILD_IDS = DEFAULT_GUILDS.map((guild) => guild.id);
+
+/**
+ * Catálogo em memória, relido do banco quando alguém cria ou apaga algo. É cache
+ * de leitura: `findChannel` e o snapshot são chamados a cada evento de socket, e
+ * consultar o banco em todos eles seria trabalho repetido para um dado que muda
+ * raramente. Quem escreve chama `reloadCatalog`, e a escrita já foi ao banco.
+ */
+let guilds = repository.listGuilds();
+let channels = repository.listChannels();
+
+function reloadCatalog() {
+  guilds = repository.listGuilds();
+  channels = repository.listChannels();
+}
 
 /** userId -> membro conectado */
 const members = new Map();
@@ -126,7 +148,7 @@ export function addMember(socketId, userId, username) {
   };
 
   const color = colorForName(username);
-  repository.saveProfile({ id: userId, username, color }, GUILDS.map((guild) => guild.id));
+  repository.saveProfile({ id: userId, username, color }, DEFAULT_GUILD_IDS);
 
   member.username = username;
   member.color = color;
@@ -222,7 +244,7 @@ export function setSfuTracks(userId, tracks) {
 }
 
 export function findChannel(channelId) {
-  return CHANNELS.find((c) => c.id === channelId) ?? null;
+  return channels.find((c) => c.id === channelId) ?? null;
 }
 
 export function addMessage(channelId, author, content) {
@@ -256,18 +278,175 @@ export function loadHistory(channelId, beforeId) {
 }
 
 /**
- * Snapshot completo mandado a cada cliente que entra ou reconecta. Simples de
- * raciocinar: em vez de aplicar deltas na ordem certa, o cliente rebobina tudo.
+ * Snapshot mandado a cada cliente que entra ou reconecta. Simples de raciocinar:
+ * em vez de aplicar deltas na ordem certa, o cliente rebobina tudo.
+ *
+ * É por pessoa, e não global: cada um recebe só os servidores de que é membro.
+ * Um servidor criado por alguém não aparece pra quem não foi convidado, e é isso
+ * que o torna privado sem precisar de nenhuma regra de permissão além da
+ * associação que já está no banco.
+ *
+ * `roster` é o elenco de cada servidor, esteja a pessoa conectada ou não — é dele
+ * que sai a parte offline da lista de membros. Presença continua vindo de
+ * `members`, que é memória.
  *
  * Só o fim de cada conversa vai aqui. `history` diz em quais canais ainda existe
  * passado, e é o que o cliente usa pra decidir se vale pedir mais ao rolar.
  */
-export function snapshot() {
+export function snapshot(userId) {
+  const mine = repository.listGuildsForUser(userId);
+  const visible = new Set(mine.map((guild) => guild.id));
+  const myChannels = channels.filter((channel) => visible.has(channel.guildId));
+  const channelIds = new Set(myChannels.map((channel) => channel.id));
+
   return {
-    guilds: GUILDS,
-    channels: CHANNELS,
+    guilds: mine,
+    channels: myChannels,
     members: listMembers(),
-    messages: Object.fromEntries(messages),
-    history: Object.fromEntries([...hasOlder].filter(([, more]) => more)),
+    roster: Object.fromEntries(mine.map((guild) => [guild.id, repository.listGuildRoster(guild.id)])),
+    // Só a conversa dos canais que esta pessoa vê: mandar o resto seria vazar o
+    // chat de um servidor de que ela não faz parte.
+    messages: Object.fromEntries([...messages].filter(([channelId]) => channelIds.has(channelId))),
+    history: Object.fromEntries(
+      [...hasOlder].filter(([channelId, more]) => more && channelIds.has(channelId)),
+    ),
   };
 }
+
+// --- servidores, canais, convites e banimentos --------------------------------
+
+/**
+ * Iniciais a partir do nome, como o avatar do servidor mostra. Duas letras de
+ * palavras diferentes quando dá ("Sala de Jogo" → "SJ"), senão as duas primeiras.
+ */
+function initialsFor(name) {
+  const words = name.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+/** Servidores de que a pessoa é membro. É o que a barra da esquerda desenha. */
+export const guildsOf = (userId) => repository.listGuildsForUser(userId);
+
+export const guildRoster = (guildId) => repository.listGuildRoster(guildId);
+
+export const isGuildMember = (guildId, userId) => repository.isMember(guildId, userId);
+
+export const isGuildOwner = (guildId, userId) => repository.isOwner(guildId, userId);
+
+/** Servidor do catálogo padrão: ninguém é dono, e ninguém pode administrá-lo. */
+export const isDefaultGuild = (guildId) => DEFAULT_GUILD_IDS.includes(guildId);
+
+/**
+ * Cria um servidor com o primeiro canal de texto e o primeiro de voz. Os dois
+ * canais não são enfeite: um servidor sem canal nenhum abre numa tela vazia sem
+ * nada pra clicar.
+ */
+export function createGuild(ownerId, name) {
+  const id = `g-${randomUUID().slice(0, 8)}`;
+  repository.createGuild(
+    { id, ownerId, name, initials: initialsFor(name), color: colorForName(name) },
+    [
+      { id: `t-${randomUUID().slice(0, 8)}`, type: "text", name: "geral", category: TEXT_CATEGORY },
+      { id: `v-${randomUUID().slice(0, 8)}`, type: "voice", name: "Geral", category: VOICE_CATEGORY },
+    ],
+  );
+  reloadCatalog();
+  return guilds.find((guild) => guild.id === id) ?? null;
+}
+
+export function createChannel(guildId, type, name) {
+  const id = `${type === "voice" ? "v" : "t"}-${randomUUID().slice(0, 8)}`;
+  repository.createChannel({
+    id,
+    guildId,
+    type,
+    name,
+    category: type === "voice" ? VOICE_CATEGORY : TEXT_CATEGORY,
+  });
+  reloadCatalog();
+  return channels.find((channel) => channel.id === id) ?? null;
+}
+
+/**
+ * Apaga um canal. Recusa o último do tipo: sem canal de texto não há onde
+ * conversar, e sem canal de voz o servidor deixa de servir ao que existe pra
+ * fazer. As mensagens vão junto, por cascata do schema.
+ */
+export function deleteChannel(channelId) {
+  const channel = findChannel(channelId);
+  if (!channel) return { ok: false, error: "no-channel" };
+  if (repository.countChannelsOfType(channel.guildId, channel.type) <= 1) {
+    return { ok: false, error: "last-channel" };
+  }
+
+  repository.deleteChannel(channelId);
+  reloadCatalog();
+  messages.delete(channelId);
+  hasOlder.delete(channelId);
+  // Quem estava na call deste canal não está mais em canal nenhum.
+  for (const member of members.values()) {
+    if (member.voiceChannelId === channelId) setVoiceChannel(member.id, null);
+  }
+  return { ok: true, channel };
+}
+
+/** Sair do servidor. O dono não sai do próprio: não haveria quem administrasse. */
+export function leaveGuild(guildId, userId) {
+  if (isDefaultGuild(guildId)) return { ok: false, error: "default-guild" };
+  if (repository.isOwner(guildId, userId)) return { ok: false, error: "is-owner" };
+  if (!repository.isMember(guildId, userId)) return { ok: false, error: "not-member" };
+  repository.leaveGuild(guildId, userId);
+  return { ok: true };
+}
+
+/**
+ * Código de convite. Base32 sem vogais e sem os caracteres que se confundem lidos
+ * em voz alta ou copiados à mão: `0`/`O`, `1`/`I`. Dez caracteres de um alfabeto
+ * de 26 dão espaço de sobra pra que adivinhar um código não seja um caminho.
+ */
+const INVITE_ALPHABET = "BCDFGHJKLMNPQRSTVWXYZ23456789";
+
+function inviteCode() {
+  const bytes = randomBytes(10);
+  let code = "";
+  for (const byte of bytes) code += INVITE_ALPHABET[byte % INVITE_ALPHABET.length];
+  return code;
+}
+
+export function createInvite(guildId, inviterId, { maxUses = null, expiresInHours = null } = {}) {
+  const code = inviteCode();
+  repository.createInvite({
+    code,
+    guildId,
+    channelId: null,
+    inviterId,
+    maxUses,
+    expiresAt: expiresInHours ? Date.now() + expiresInHours * 3600_000 : null,
+  });
+  return code;
+}
+
+export const acceptInvite = (code, userId) => repository.acceptInvite(code, userId);
+
+export const revokeInvite = (guildId, code) => repository.revokeInvite(guildId, code);
+
+export const listInvites = (guildId) => repository.listInvites(guildId);
+
+/**
+ * Bane e tira do servidor. Devolve o membro conectado, se houver: quem chamou
+ * precisa dele pra derrubar a conexão e avisar os outros.
+ */
+export function banMember(guildId, userId, moderatorId, reason) {
+  repository.ban({ guildId, userId, moderatorId, reason: reason ?? null });
+  const member = members.get(userId);
+  if (member?.voiceChannelId) {
+    const channel = findChannel(member.voiceChannelId);
+    if (channel?.guildId === guildId) setVoiceChannel(userId, null);
+  }
+  return member ?? null;
+}
+
+export const unban = (guildId, userId) => repository.unban(guildId, userId);
+
+export const listBans = (guildId) => repository.listBans(guildId);
