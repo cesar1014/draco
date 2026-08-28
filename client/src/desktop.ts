@@ -3,8 +3,8 @@
  *
  * No navegador `window.desktop` simplesmente não existe: `isDesktopApp()` dá
  * falso, `listDesktopSources()` devolve lista vazia e `claimDesktopSource()`
- * responde que não há nada a reservar. É assim que a mesma build serve pros dois
- * — o app ganha o seletor de miniaturas com as janelas abertas, e o link que você
+ * responde que não há nada a reservar. É assim que a mesma build serve pros dois:
+ * o app ganha o seletor de miniaturas com as janelas abertas, e o link que você
  * manda pros amigos continua funcionando sem uma linha de diferença.
  *
  * Quem preenche isso é `desktop/preload.js`, via `contextBridge`.
@@ -29,7 +29,7 @@ export type ClaimFailure = "gone" | "denied" | "invalid" | "failed" | "unavailab
 
 export type ClaimResult = { ok: true } | { ok: false; reason: ClaimFailure };
 
-/** Contexto de uma falha de captura, pro console do app — nunca pra interface. */
+/** Contexto de uma falha de captura, pro console do app, nunca pra interface. */
 export interface CaptureFailure {
   stage: "claim" | "getDisplayMedia" | "systemAudio";
   name: string;
@@ -81,13 +81,13 @@ export const listDesktopSources = async (): Promise<DesktopSource[]> =>
 /**
  * Reserva no processo principal a fonte que o próximo `getDisplayMedia` deve
  * devolver. Precisa ser em dois passos porque o `getDisplayMedia` não aceita
- * "quero esta janela" como argumento — quem escolhe é sempre o lado privilegiado,
+ * "quero esta janela" como argumento: quem escolhe é sempre o lado privilegiado,
  * e o Electron é o único que tem esse lado.
  *
- * O id vale mais que o objeto que veio na listagem: entre escolher a miniatura e
+ * Guarda o id, não o objeto que veio na listagem: entre escolher a miniatura e
  * clicar em compartilhar a janela pode ter sido fechada, e é por isso que o
  * processo principal reconfere e responde `gone` em vez de conceder um handle
- * morto — que capturaria nada, sem erro que explique o porquê.
+ * morto, que capturaria nada, sem erro que explique o porquê.
  */
 export async function claimDesktopSource(
   sourceId: string,
@@ -98,7 +98,7 @@ export async function claimDesktopSource(
   try {
     // Os campos antigos vão junto porque o app até a 1.0.0 exigia `{ id, name }`
     // e ignora `sourceId`: sem eles, ele não reserva nada e a captura devolve a
-    // tela errada ou nenhuma. Quem escolhe é sempre o id — o nome só precisa ser
+    // tela errada ou nenhuma. Quem escolhe é sempre o id, o nome só precisa ser
     // texto pra passar pela validação de lá.
     const claim = await bridge.selectSource({
       sourceId,
@@ -116,7 +116,7 @@ export async function claimDesktopSource(
 
 export function reportCaptureFailure(report: CaptureFailure): void {
   // O `?.` no método, e não só na ponte: até a 1.0.0 esta função não existia, e
-  // chamar o que não existe estouraria aqui — em cima da falha de captura que
+  // chamar o que não existe estouraria aqui, em cima da falha de captura que
   // esta linha deveria estar registrando, escondendo justamente o erro que
   // importa.
   void window.desktop?.logCaptureFailure?.(report)?.catch(() => {});

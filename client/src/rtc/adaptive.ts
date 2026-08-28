@@ -5,7 +5,7 @@ import type { PeerStats } from "@/rtc/stats";
  * Qualidade adaptativa do lado de quem envia.
  *
  * O navegador já reduz sozinho quando a rede aperta, mas ele reage devagar e
- * dentro do teto que a gente deu — se o teto for 4 Mbps numa linha que só
+ * dentro do teto que a gente deu. Se o teto for 4 Mbps numa linha que só
  * entrega 1,5, o resultado é uma transmissão travando aos poucos em vez de uma
  * transmissão menor e fluida. Aqui a gente mexe no teto.
  *
@@ -22,7 +22,7 @@ const SCALE = [1, 1, 1.5, 2, 2] as const;
 
 /** Perda relatada pelo outro lado a partir da qual a rede está claramente saturada. */
 const LOSS_DOWN = 4;
-/** Abaixo disso a rede está confortável — e só então vale tentar subir. */
+/** Abaixo disso a rede está confortável, e só então vale tentar subir. */
 const LOSS_UP = 1;
 const RTT_DOWN = 300;
 
@@ -44,7 +44,7 @@ export interface AdaptiveDecision {
 /**
  * Uma instância por transmissão. Recebe as amostras de todos os destinos e
  * decide por um degrau só: em malha o teto é compartilhado, então quem manda é
- * a pior conexão — não dá pra mandar 1080p pra um e 480p pra outro na mesma
+ * a pior conexão: não dá pra mandar 1080p pra um e 480p pra outro na mesma
  * trilha.
  */
 export class AdaptiveController {

@@ -4,7 +4,7 @@
 
 # Draco
 
-### Call em grupo com voz, câmera e compartilhamento de tela — simples, rápido e direto.
+### Call em grupo com voz, câmera e compartilhamento de tela. Simples, rápido e direto.
 
 **Web · Mobile/PWA · Windows Desktop**
 
@@ -132,7 +132,7 @@ O Draco tem dois caminhos para a mídia. A sinalização, a presença e o chat p
 
 ### Malha direta
 
-Cada pessoa conecta com cada pessoa. A mídia não passa por servidor nenhum — é o caminho mais direto e o mais barato de hospedar.
+Cada pessoa conecta com cada pessoa. A mídia não passa por servidor nenhum, que é o caminho mais direto e o mais barato de hospedar.
 
 ```mermaid
 flowchart TB
@@ -181,7 +181,7 @@ Alguns detalhes do desenho:
 
 - **Duas conexões por pessoa**, uma só de envio e outra só de recepção. Quem entra na call renegocia apenas a de recepção, então a conexão que está carregando a sua tela não é interrompida porque alguém chegou.
 - **O navegador nunca fala com a Cloudflare.** O segredo do app fica no servidor: a página pede pelo socket, o servidor assina a chamada, e a resposta volta pelo mesmo caminho.
-- **O servidor confere de quem é cada trilha.** Só é possível assinar a câmera de alguém que está no mesmo canal de voz — e da sessão que está no ar, não de uma que já foi descartada.
+- **O servidor confere de quem é cada trilha.** Só é possível assinar a câmera de alguém que está no mesmo canal de voz, e da sessão que está no ar, não de uma que já foi descartada.
 
 ### Quem escolhe o caminho
 
@@ -193,7 +193,7 @@ O servidor. A escolha vale para todos na sala: se um cliente decidisse sozinho i
 
 O navegador já reduz a qualidade sozinho quando a rede aperta, mas reage devagar e sempre dentro do teto que a gente deu. Se o teto for 4 Mbps numa linha que entrega 1,5, o resultado é uma transmissão travando aos poucos em vez de uma transmissão menor e fluida.
 
-O Draco mexe no teto. Ele observa a perda que o outro lado relata, o tempo de ida e volta e a banda que o navegador estima, e desce em degraus quando a rede não está dando conta. Para **subir** de volta, exige uns 16 segundos de rede calma — teto que oscila a cada amostra produz vídeo que respira, o que incomoda mais que vídeo consistentemente menor.
+O Draco mexe no teto. Ele observa a perda que o outro lado relata, o tempo de ida e volta e a banda que o navegador estima, e desce em degraus quando a rede não está dando conta. Para **subir** de volta, exige uns 16 segundos de rede calma. Teto que oscila a cada amostra produz vídeo que respira, e isso incomoda mais que vídeo menor e estável.
 
 A barra de voz avisa quando a qualidade está reduzida.
 
@@ -254,7 +254,7 @@ Alguns exemplos:
 
 > **Importante:** atualmente o projeto não possui um auto-updater nativo para substituir o `.exe`/instalação do Electron. Se uma atualização exigir mudança na parte desktop, será necessário distribuir uma nova versão do instalador.
 
-A **1.1.0** é um desses casos: a ponte entre o app e a página cresceu — a escolha da fonte passou a responder se a janela ainda existe, e o app passou a informar a plataforma. Quem continuar na 1.0.0 não fica de fora: a escolha de tela é enviada nos dois formatos e o que a versão antiga não expõe é tratado como ausente, não como erro. O que só chega com o instalador novo é o aviso de janela fechada e a checagem de som do sistema por plataforma.
+A **1.1.0** é um desses casos. A ponte entre o app e a página cresceu: a escolha da fonte passou a responder se a janela ainda existe, e o app passou a informar a plataforma. Quem continuar na 1.0.0 segue funcionando, porque a escolha de tela é enviada nos dois formatos e o que a versão antiga não expõe é tratado como ausente. O que só chega com o instalador novo é o aviso de janela fechada e a checagem de som do sistema por plataforma.
 
 ---
 
@@ -393,7 +393,7 @@ O app tem o próprio seletor de telas e janelas, com miniaturas. Funciona em doi
 Duas consequências práticas:
 
 - **Janela fechada entre escolher e compartilhar** dá uma mensagem que explica isso, em vez de uma captura de nada. O processo principal guarda o id da fonte e reconfere se ela ainda existe na hora de conceder.
-- **O áudio do sistema depende do loopback do Windows.** No app para Mac ou Linux a opção aparece desligada, dizendo o porquê — prometer o som ali resultaria numa transmissão muda. Se o loopback falhar no Windows, a transmissão começa sem som e avisa, em vez de não começar.
+- **O áudio do sistema depende do loopback do Windows.** No app para Mac ou Linux a opção aparece desligada, dizendo o porquê, já que prometer o som ali resultaria numa transmissão muda. Se o loopback falhar no Windows, a transmissão começa sem som e avisa, em vez de não começar.
 
 ---
 
@@ -451,7 +451,7 @@ Nunca publique credenciais reais no repositório. O `.env.example` explica cada 
 2. Copie o **App ID** e o **App Secret**.
 3. Preencha as duas variáveis no `.env` do servidor e reinicie.
 
-Pronto. As próximas calls entram pelo SFU, e a barra de voz passa a indicar que a mídia está passando por servidor. Para voltar à malha direta, apague as variáveis e reinicie — nenhum cliente precisa ser atualizado.
+Pronto. As próximas calls entram pelo SFU, e a barra de voz passa a indicar que a mídia está passando por servidor. Para voltar à malha direta, apague as variáveis e reinicie. Nenhum cliente precisa ser atualizado.
 
 ---
 
@@ -500,7 +500,7 @@ Com o ambiente de desenvolvimento rodando:
 http://localhost:5173/?selftest=1
 ```
 
-Abre duas conexões WebRTC na mesma aba, com microfone e câmera falsos — oscilador no lugar do microfone, canvas no lugar da câmera. Verifica conexão, áudio nos dois sentidos, mute, câmera e tela caindo em trilhas separadas (lendo o pixel do vídeo recebido) e recuperação depois de um reinício de ICE. Não depende de webcam, de permissão nem de uma segunda pessoa. **18 testes**, cerca de 40 segundos.
+Abre duas conexões WebRTC na mesma aba, com microfone e câmera falsos: oscilador no lugar do microfone, canvas no lugar da câmera. Verifica conexão, áudio nos dois sentidos, mute, câmera e tela caindo em trilhas separadas (lendo o pixel do vídeo recebido) e recuperação depois de um reinício de ICE. Não depende de webcam, de permissão nem de uma segunda pessoa. **18 testes**, cerca de 40 segundos.
 
 ---
 
@@ -547,7 +547,7 @@ O Draco está em desenvolvimento ativo. Alguns caminhos naturais para as próxim
 
 Desenvolvido por **Cesar**.
 
-O Draco nasceu como um projeto pessoal para transformar uma necessidade real de call em um aplicativo próprio — e continua evoluindo a cada versão.
+O Draco nasceu como um projeto pessoal para transformar uma necessidade real de call em um aplicativo próprio, e continua evoluindo a cada versão.
 
 <div align="center">
 

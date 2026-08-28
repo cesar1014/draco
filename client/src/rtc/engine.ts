@@ -6,7 +6,7 @@ import type { MediaSlot } from "@/types";
  *
  * `VoiceEngine` liga cada pessoa a cada pessoa: o vídeo sobe uma vez por
  * ouvinte, e a partir de umas quatro pessoas o upload de casa não dá conta.
- * `SfuEngine` sobe uma vez pro servidor da Cloudflare, que replica — o custo de
+ * `SfuEngine` sobe uma vez pro servidor da Cloudflare, que replica, e o custo de
  * quem transmite deixa de crescer com o tamanho da call.
  *
  * O que decide qual dos dois roda é o servidor: com credenciais do SFU
@@ -38,7 +38,7 @@ export interface RemoteTrackRef {
 export interface EngineSample {
   /** Por pessoa, na chave que a interface usa pra achar o rótulo do tile. */
   peers: Array<readonly [string, PeerStats]>;
-  /** Leituras do que está subindo daqui — é o que a adaptação observa. */
+  /** Leituras do que está subindo daqui, que é o que a adaptação observa. */
   uplink: PeerStats[];
 }
 
@@ -69,7 +69,7 @@ export async function applyProfile(
     if (!params.encodings?.length) params.encodings = [{}];
     params.encodings[0].maxBitrate = profile.maxBitrate;
     // Resolução e degradação não existem em áudio, e alguns navegadores recusam o
-    // `setParameters` inteiro quando aparecem ali — inclusive o teto de banda.
+    // `setParameters` inteiro quando aparecem ali, inclusive o teto de banda.
     if (track.kind === "video") {
       params.encodings[0].scaleResolutionDownBy = profile.scaleResolutionDownBy ?? 1;
       if (profile.degradationPreference) {

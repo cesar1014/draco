@@ -17,7 +17,7 @@ export interface Channel {
 
 export interface Member {
   /**
-   * Identidade da pessoa, estável entre reconexões — não é o id do socket. É por
+   * Identidade da pessoa, estável entre reconexões. Não é o id do socket. É por
    * isso que o volume ajustado e o tile fixado sobrevivem a uma queda de Wi-Fi.
    */
   id: string;

@@ -10,8 +10,8 @@ export interface PeerStats {
   /** Perda de pacotes recebidos, em porcentagem. */
   loss: number;
   /**
-   * Perda que o outro lado relatou do que saiu daqui, em porcentagem. É esta —
-   * não a de recepção — que diz que o seu upload está estourando.
+   * Perda que o outro lado relatou do que saiu daqui, em porcentagem. É esta, e
+   * não a de recepção, que diz que o seu upload está estourando.
    */
   sendLoss: number;
   /** Banda de subida que o navegador estima disponível, em kbit/s. `null` se não informa. */

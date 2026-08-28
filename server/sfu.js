@@ -10,7 +10,7 @@
 const BASE = "https://rtc.live.cloudflare.com/v1";
 const TIMEOUT_MS = 10_000;
 
-/** `null` quando não há credenciais — é o sinal de "siga em malha". */
+/** `null` quando não há credenciais, o sinal de "siga em malha". */
 export function sfuConfig(env = process.env) {
   const appId = env.CLOUDFLARE_REALTIME_APP_ID?.trim();
   const secret = env.CLOUDFLARE_REALTIME_APP_SECRET?.trim();

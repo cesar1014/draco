@@ -126,7 +126,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showStats: false,
 };
 
-/** Preferência de volume/mute por pessoa — microfone e transmissão em separado. */
+/** Preferência de volume/mute por pessoa, microfone e transmissão em separado. */
 export interface PersonPrefs {
   volume: number;
   muted: boolean;
@@ -280,7 +280,7 @@ interface Store {
    */
   focusedTiles: string[];
   /**
-   * Telas que a pessoa mandou tocar. Transmissão de tela não abre sozinha — é o
+   * Telas que a pessoa mandou tocar. Transmissão de tela não abre sozinha, é o
    * clique que liga, como no que já era costume em app de call, e assim ninguém
    * paga decodificação de 1440p que não pediu.
    */
@@ -292,7 +292,7 @@ interface Store {
   settings: Settings;
   devices: DeviceList;
   mediaError: string | null;
-  /** Aviso discreto que não interrompe nada — some sozinho na interface. */
+  /** Aviso discreto que não interrompe nada, some sozinho na interface. */
   notice: string | null;
   ice: IceConfigResponse | null;
   /** A mídia está passando por servidor (SFU) em vez de malha direta. */
@@ -562,11 +562,11 @@ export const useStore = create<Store>()((set, get) => {
   /**
    * Entra na call. Quem escolhe o caminho da mídia é o servidor, e a escolha vale
    * pra todos: com credenciais do SFU a mídia sobe uma vez e ele replica; sem
-   * elas, cada pessoa liga em cada pessoa. Não há meio caminho — um cliente que
+   * elas, cada pessoa liga em cada pessoa. Não há meio caminho: um cliente que
    * decidisse sozinho ir de malha tentaria falar com quem está esperando pelo SFU,
    * e o resultado seria uma call muda sem erro que explique o porquê.
    *
-   * Reconexão passa por aqui também — as conexões de mídia não sobrevivem à queda
+   * Reconexão passa por aqui também, porque as conexões de mídia não sobrevivem à queda
    * do socket, e refazê-las é o que devolve som e imagem.
    */
   const enterVoice = async (s: AppSocket, channelId: string) => {
@@ -881,7 +881,7 @@ export const useStore = create<Store>()((set, get) => {
 
       if (get().status !== "ready") {
         socket.disconnect();
-        // "timeout" é o Socket.IO desistindo — serviço acordando, não recusa.
+        // "timeout" é o Socket.IO desistindo: serviço acordando, não recusa.
         const failure =
           !lastConnectError || lastConnectError === "timeout"
             ? describeSocketError("timeout")
@@ -1056,7 +1056,7 @@ export const useStore = create<Store>()((set, get) => {
       if (!screenShareSupported()) {
         set({
           mediaError:
-            "Compartilhar tela só funciona no computador. Nenhum navegador de celular deixa uma página capturar a tela — nem o Chrome no Android, nem o Safari no iPhone.",
+            "Compartilhar tela só funciona no computador. Nenhum navegador de celular deixa uma página capturar a tela: nem o Chrome no Android, nem o Safari no iPhone.",
         });
         return;
       }

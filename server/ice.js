@@ -6,7 +6,7 @@ import { createHmac } from "node:crypto";
  * ser mexer no `.env` em vez de rebuildar o front.
  */
 
-/** STUN só descobre seu IP público — resolve rede local e NAT simples, de graça. */
+/** STUN só descobre seu IP público: resolve rede local e NAT simples, de graça. */
 const DEFAULT_STUN = [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
   { urls: "stun:stun.cloudflare.com:3478" },
@@ -28,7 +28,7 @@ function hasTurnServer(iceServers) {
 
 /**
  * Modo coturn `use-auth-secret`: o usuário é um timestamp de expiração e a senha
- * é o HMAC dele. Não existe cadastro de usuário no TURN — quem sabe o segredo
+ * é o HMAC dele. Não existe cadastro de usuário no TURN: quem sabe o segredo
  * consegue emitir credencial temporária.
  */
 function hmacCredentials(host, secret) {
@@ -75,7 +75,7 @@ export async function resolveIceConfig(env = process.env) {
         turnServers = await fetchCredentials(env.TURN_CREDENTIALS_URL);
         cache = { at: Date.now(), servers: turnServers };
       } catch (error) {
-        // Degradar pra STUN é melhor que não conectar ninguém: quem estiver na
+        // Degradar pra STUN mantém a maioria conectada: quem estiver na
         // mesma rede continua funcionando, e a UI avisa que o TURN caiu.
         warning = `Falha ao buscar credenciais de TURN (${error.message}). Usando apenas STUN.`;
         source = "stun";
@@ -95,7 +95,7 @@ export async function resolveIceConfig(env = process.env) {
       "Veja a seção TURN do .env.example.";
   }
   if (iceTransportPolicy === "relay" && !turnPresent) {
-    warning = "TURN_ONLY=1 sem TURN configurado — nenhuma conexão vai fechar. Corrija o .env.";
+    warning = "TURN_ONLY=1 sem TURN configurado: nenhuma conexão vai fechar. Corrija o .env.";
   }
 
   return { iceServers, iceTransportPolicy, hasTurn: turnPresent, source, warning };

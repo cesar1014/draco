@@ -11,7 +11,7 @@ import { SLOT_KIND, SLOT_ORDER, type MediaSlot, type SignalPayload } from "@/typ
 
 /**
  * Uma conexão direta por par de pessoas na call. Cada conexão carrega quatro
- * trilhas em ordem fixa — microfone, câmera, tela, áudio da tela.
+ * trilhas em ordem fixa: microfone, câmera, tela, áudio da tela.
  *
  * É o caminho usado quando não há SFU configurado. Com SFU, quem manda é o
  * `SfuEngine`: sobe uma vez pro servidor em vez de uma vez por pessoa.
@@ -79,7 +79,7 @@ export class VoiceEngine implements CallEngine {
 
   /**
    * Uma leitura por par. Em malha o que sobe é o mesmo pra todos, então cada
-   * conexão é também uma medida do próprio upload — e a adaptação decide pela
+   * conexão é também uma medida do próprio upload, e a adaptação decide pela
    * pior delas.
    */
   async sample(): Promise<EngineSample> {
@@ -327,7 +327,7 @@ export class VoiceEngine implements CallEngine {
 
   /**
    * Só o lado impolido cria transceivers. Transceiver criado com `addTransceiver`
-   * não é reaproveitado pra responder a uma oferta que chega — se os dois lados
+   * não é reaproveitado pra responder a uma oferta que chega. Se os dois lados
    * criassem os seus, quem responde ficaria com oito e a posição deixaria de
    * identificar a trilha.
    */

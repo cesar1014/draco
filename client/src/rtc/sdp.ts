@@ -1,7 +1,7 @@
 /**
  * Ajuste do Opus no SDP. O padrão do Chrome é ~32 kb/s mono com FEC desligado:
  * serve pra chamada de telefone, não pra passar a tarde na call. A primeira
- * m-line de áudio é o microfone e a segunda é o som da tela — a ordem é o
+ * m-line de áudio é o microfone e a segunda é o som da tela. A ordem é o
  * contrato de slots do motor.
  *
  * Só a linha `a=fmtp` do Opus é reescrita. Mexer em m-line ou payload é o que

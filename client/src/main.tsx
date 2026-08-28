@@ -6,7 +6,7 @@ import { SelfTestPage } from "@/dev/SelfTestPage";
 /**
  * `?selftest=1` abre o autoteste do WebRTC em vez da interface. Fica numa rota
  * separada, e não dentro do app, porque o teste sobe duas conexões e vários
- * contextos de áudio na mesma aba — atrapalharia uma call de verdade.
+ * contextos de áudio na mesma aba, o que atrapalharia uma call de verdade.
  */
 const selfTest = new URLSearchParams(window.location.search).has("selftest");
 

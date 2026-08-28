@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 /**
  * Todo o estado vive em memória: reiniciar o processo zera canais e mensagens.
- * É deliberado — o objetivo era funcionar sem instalar banco de dados. Trocar
+ * É deliberado: o objetivo era funcionar sem instalar banco de dados. Trocar
  * por SQLite depois é local: só estas funções tocam o estado.
  *
  * Quem identifica uma pessoa é o `userId`, não o socket. O socket muda a cada
@@ -48,7 +48,7 @@ export const newUserId = () => randomUUID();
 
 /**
  * Entra ou reassume uma identidade. Quando o mesmo `userId` volta com um socket
- * novo — reconexão, ou a mesma pessoa recarregando a página — o membro é o mesmo
+ * novo (reconexão, ou a mesma pessoa recarregando a página), o membro é o mesmo
  * objeto: preferências e estado de voz seguem de pé. O socket antigo é devolvido
  * pra quem chamou, que precisa derrubá-lo pra não ficarem dois donos do mesmo id.
  */
@@ -71,14 +71,14 @@ export function addMember(socketId, userId, username) {
     /**
      * Sessões no SFU. Duas de propósito: numa a pessoa só envia, na outra só
      * recebe. Assim uma renegociação de quem entrou na call não passa pela mesma
-     * conexão que está carregando a câmera de quem já estava — e o SDP de
+     * conexão que está carregando a câmera de quem já estava, e o SDP de
      * publicação nunca precisa ser reescrito porque alguém apareceu.
      *
      * Só a de envio é anunciada aos outros: é dela que saem as trilhas.
      */
     sfuSessionId: null,
     sfuRecvSessionId: null,
-    /** Nome das trilhas publicadas, por slot — é o que os outros assinam. */
+    /** Nome das trilhas publicadas, por slot, que é o que os outros assinam. */
     sfuTracks: {},
     since: Date.now(),
   };
@@ -126,7 +126,7 @@ export function listMembers() {
   return [...members.values()];
 }
 
-/** Quem mais está no mesmo canal de voz — a lista com quem abrir peer connection. */
+/** Quem mais está no mesmo canal de voz: com quem abrir peer connection. */
 export function peersInVoiceChannel(channelId, exceptUserId) {
   if (!channelId) return [];
   return [...members.values()].filter((m) => m.voiceChannelId === channelId && m.id !== exceptUserId);

@@ -6,7 +6,7 @@ import { DEV_API_PORT, DEV_WEB_PORT } from "./shared/ports.js";
 /**
  * O cliente vive em `client/` e o servidor de sinalização num processo separado.
  * Em dev o Vite faz proxy de `/api` e `/socket.io` pra lá, então o navegador
- * sempre fala com uma única origem — o que evita dor de cabeça com CORS e faz o
+ * sempre fala com uma única origem, o que evita dor de cabeça com CORS e faz o
  * caminho de produção (onde o próprio Express serve o `dist/`) ser idêntico.
  */
 export default defineConfig({

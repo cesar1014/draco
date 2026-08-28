@@ -4,8 +4,8 @@ import type { MediaSlot, Member, Message, ServerSnapshot, SignalPayload } from "
 /**
  * Contrato de eventos com `server/signaling.js`, escrito como tipo pra o
  * compilador reclamar quando um lado mudar sem o outro. Sinalização errada não
- * dá erro em tempo de execução — só uma call que não conecta e ninguém sabe por
- * quê —, então é o tipo de descuido que vale caro deixar passar.
+ * dá erro em tempo de execução, só uma call que não conecta e ninguém sabe por
+ * quê, então é o tipo de descuido que vale caro deixar passar.
  */
 interface ServerEvents {
   "member:joined": (member: Member) => void;
@@ -91,7 +91,7 @@ interface ClientEvents {
 export type AppSocket = Socket<ServerEvents, ClientEvents>;
 
 /**
- * Conecta na mesma origem da página — em desenvolvimento o Vite faz proxy pro
+ * Conecta na mesma origem da página. Em desenvolvimento o Vite faz proxy pro
  * servidor de sinalização, em produção é o mesmo processo. Um endereço só
  * significa que o link do túnel serve a página e o websocket juntos.
  */
@@ -103,7 +103,7 @@ export function createSocket(): AppSocket {
     reconnectionDelay: 500,
     reconnectionDelayMax: 4000,
     // Generoso porque hospedagem de plano grátis desliga o serviço quando ninguém
-    // acessa, e a primeira conexão é ela acordando — leva bem mais de 8 segundos.
+    // acessa, e a primeira conexão é ela acordando, o que leva bem mais que isso.
     // Um teto curto aqui transforma "está acordando" em "não foi possível falar
     // com o servidor", que manda a pessoa procurar o problema no lugar errado.
     timeout: 45000,
@@ -175,7 +175,7 @@ export function describeSocketError(code: string | undefined): string {
     // grátis quase sempre é o serviço acordando, então a mensagem sugere esperar
     // em vez de mandar a pessoa investigar se o servidor caiu.
     case "timeout":
-      return "O servidor não respondeu. Se ele está num plano grátis, pode estar acordando — espere uns 30 segundos e clique em Entrar de novo.";
+      return "O servidor não respondeu. Se ele está num plano grátis, pode estar acordando. Espere uns 30 segundos e clique em Entrar de novo.";
     default:
       return "Não foi possível falar com o servidor. Ele está rodando?";
   }

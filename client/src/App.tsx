@@ -45,7 +45,7 @@ export function App() {
   /**
    * Qualquer gesto na página destranca o áudio. O navegador nasce com o
    * `AudioContext` suspenso, e o sintoma clássico disso é entrar na call e não
-   * ouvir ninguém — então vale ficar escutando o primeiro clique de todos.
+   * ouvir ninguém, então vale ficar escutando o primeiro clique de todos.
    */
   useEffect(() => {
     const unlock = () => resumeAudio();

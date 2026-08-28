@@ -3,7 +3,7 @@
 #
 # Por que Render e não Vercel: aqui o processo fica de pé o tempo todo, o que é
 # requisito de WebSocket. Em plataforma serverless a função morre entre requisições
-# e a conexão do Socket.IO cai junto — a sinalização do WebRTC não sobrevive a isso.
+# e a conexão do Socket.IO cai junto, e a sinalização do WebRTC não sobrevive a isso.
 services:
   - type: web
     name: draco

@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
  * Cartão ancorado num elemento, montado no `body`.
  *
  * Dentro da lista de canais ele ficava enterrado: a linha de cada pessoa tem
- * animação de entrada, e animação de transform cria contexto de empilhamento —
+ * animação de entrada, e animação de transform cria contexto de empilhamento, e
  * `z-index` nenhum escapa dali. A rolagem da lista ainda o cortava por cima.
  * Fora da árvore, com posição fixa, ele passa por cima de tudo.
  */

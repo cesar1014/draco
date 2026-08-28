@@ -7,7 +7,7 @@ const { contextBridge, ipcRenderer } = require("electron");
  *
  * São três funções, e de propósito: listar fontes, registrar a escolhida (que já
  * volta dizendo se ela ainda existe) e anotar uma falha de captura no console do
- * app. A página não recebe `ipcRenderer`, nem `require`, nem nada do Node — se
+ * app. A página não recebe `ipcRenderer`, nem `require`, nem nada do Node, e se
  * ela for comprometida um dia, o máximo que consegue é pedir a lista de janelas e
  * marcar uma. Conceder a captura em si continua sendo decisão do processo
  * principal.

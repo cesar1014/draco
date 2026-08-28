@@ -2,7 +2,7 @@
  * Redução de ruído espectral, na thread de áudio.
  *
  * Ganho de Wiener com SNR a priori dirigido pela decisão (Ephraim-Malah). Janela
- * de 512 com salto de 128 — o mesmo bloco que o worklet entrega por chamada,
+ * de 512 com salto de 128, o mesmo bloco que o worklet entrega por chamada,
  * então cada `process` é exatamente um quadro de STFT. Atraso: 384 amostras.
  */
 
@@ -133,7 +133,7 @@ class Denoise extends AudioWorkletProcessor {
 
       const post = this.power[k] / this.noise[k];
       /**
-       * O piso aprende a média do ruído e congela onde há voz — congelar por
+       * O piso aprende a média do ruído e congela onde há voz: congelar por
        * limiar só funciona sobre o valor suavizado, senão o piso vira a média
        * dos quadros mais fracos, sai menor que o ruído e o ganho nunca fecha.
        * Congelado ainda sobe um fio (ventilador que liga no meio da frase) e
