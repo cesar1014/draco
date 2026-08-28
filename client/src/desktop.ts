@@ -39,13 +39,28 @@ export interface CaptureFailure {
   systemAudio: boolean;
 }
 
+/**
+ * O que o app oferece à página.
+ *
+ * `platform` e `logCaptureFailure` só existem a partir da 1.1.0, e não há
+ * auto-update: um app instalado antes dela continua abrindo esta mesma página,
+ * porque é a publicada. Declarar os dois como opcionais é o que faz o compilador
+ * cobrar a checagem em cada uso, em vez de deixar a falha pra alguém descobrir
+ * compartilhando a tela.
+ */
 interface DesktopBridge {
   /** Versão do Electron, só pra aparecer nas configurações. */
   version: string;
-  platform: string;
+  platform?: string;
   listSources: () => Promise<DesktopSource[]>;
-  selectSource: (request: { sourceId: string; systemAudio: boolean }) => Promise<ClaimResult>;
-  logCaptureFailure: (report: CaptureFailure) => Promise<void>;
+  /** `id` e `name` são o formato que a 1.0.0 exigia; `undefined` é a resposta dela. */
+  selectSource: (request: {
+    sourceId: string;
+    systemAudio: boolean;
+    id: string;
+    name: string;
+  }) => Promise<ClaimResult | undefined>;
+  logCaptureFailure?: (report: CaptureFailure) => Promise<void>;
 }
 
 declare global {
@@ -81,12 +96,28 @@ export async function claimDesktopSource(
   const bridge = window.desktop;
   if (!bridge) return { ok: false, reason: "unavailable" };
   try {
-    return await bridge.selectSource({ sourceId, systemAudio });
+    // Os campos antigos vão junto porque o app até a 1.0.0 exigia `{ id, name }`
+    // e ignora `sourceId`: sem eles, ele não reserva nada e a captura devolve a
+    // tela errada ou nenhuma. Quem escolhe é sempre o id — o nome só precisa ser
+    // texto pra passar pela validação de lá.
+    const claim = await bridge.selectSource({
+      sourceId,
+      systemAudio,
+      id: sourceId,
+      name: sourceId,
+    });
+    // E aquele app reservava a fonte sem responder nada. Ler o silêncio como
+    // falha tiraria dele o compartilhamento de tela inteiro.
+    return claim ?? { ok: true };
   } catch {
     return { ok: false, reason: "failed" };
   }
 }
 
 export function reportCaptureFailure(report: CaptureFailure): void {
-  void window.desktop?.logCaptureFailure(report).catch(() => {});
+  // O `?.` no método, e não só na ponte: até a 1.0.0 esta função não existia, e
+  // chamar o que não existe estouraria aqui — em cima da falha de captura que
+  // esta linha deveria estar registrando, escondendo justamente o erro que
+  // importa.
+  void window.desktop?.logCaptureFailure?.(report)?.catch(() => {});
 }
