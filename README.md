@@ -12,7 +12,7 @@
 [![Desktop](https://img.shields.io/badge/desktop-v1.0.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=111827)](#)
 [![Electron](https://img.shields.io/badge/Electron-Windows-47848F?style=for-the-badge&logo=electron&logoColor=white)](#)
-[![WebRTC](https://img.shields.io/badge/WebRTC-P2P-22C55E?style=for-the-badge)](#)
+[![WebRTC](https://img.shields.io/badge/WebRTC-malha%20%C2%B7%20SFU-22C55E?style=for-the-badge)](#)
 
 **Servidor oficial:** [dracocall.duckdns.org](https://dracocall.duckdns.org)
 
@@ -26,7 +26,7 @@ O **Draco** é um app de comunicação em tempo real criado com foco no que mais
 
 A mesma experiência funciona pelo navegador, no celular e no aplicativo para Windows. No desktop, o Electron adiciona recursos que o navegador sozinho não consegue oferecer da mesma forma, como um seletor próprio de telas e janelas com miniaturas e captura de áudio do sistema no Windows.
 
-O projeto usa **WebRTC** para transportar áudio, câmera e tela diretamente entre os participantes sempre que possível. O servidor cuida da sinalização, presença, canais, chat e configuração de conexão.
+O projeto usa **WebRTC** para transportar áudio, câmera e tela. Existem dois caminhos possíveis para a mídia, e quem escolhe é o servidor: **malha direta** entre os participantes, ou **por servidor (SFU)** quando a call é grande. O servidor cuida da sinalização, presença, canais, chat e configuração de conexão.
 
 > O objetivo do Draco não é ser uma cópia de outro app. Ele nasceu para ser uma solução própria, leve e focada em calls.
 
@@ -79,8 +79,24 @@ O projeto usa **WebRTC** para transportar áudio, câmera e tela diretamente ent
 - Áudio do sistema no app para Windows
 - Seletor próprio com miniaturas no Electron
 - Ajustes sem precisar sair da transmissão
+- Transmissão começa mesmo se o áudio do sistema falhar
 
 </td>
+<td width="50%" valign="top">
+
+### 🌐 Rede e qualidade
+
+- Mídia por servidor (SFU) para calls maiores
+- Qualidade adaptativa conforme a banda disponível
+- Identidade estável: reconectar volta como a mesma pessoa
+- Câmera e tela são reanexadas depois de uma queda
+- Diagnóstico de conexão WebRTC
+- Estatísticas de latência, perda de pacotes e tráfego
+- TURN para redes que bloqueiam conexão direta
+
+</td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### 💬 Experiência
@@ -91,12 +107,99 @@ O projeto usa **WebRTC** para transportar áudio, câmera e tela diretamente ent
 - PWA para adicionar à tela inicial
 - Sons de entrada/saída configuráveis
 - Modo leve para PCs mais antigos
-- Diagnóstico de conexão WebRTC
-- Estatísticas de latência, perda de pacotes e tráfego
+- Lista de online em ordem de chegada
+
+</td>
+<td width="50%" valign="top">
+
+### 🔒 Segurança
+
+- Senha opcional para entrar na sala
+- Origem do Socket.IO restringível
+- Limite de tamanho e frequência de eventos
+- Credenciais de TURN e SFU nunca chegam ao cliente
+- Renderer do Electron isolado e em sandbox
 
 </td>
 </tr>
 </table>
+
+---
+
+## Como funciona
+
+O Draco tem dois caminhos para a mídia. A sinalização, a presença e o chat passam pelo servidor nos dois casos.
+
+### Malha direta
+
+Cada pessoa conecta com cada pessoa. A mídia não passa por servidor nenhum — é o caminho mais direto e o mais barato de hospedar.
+
+```mermaid
+flowchart TB
+    SERVER["Draco Server<br/>Node · Express · Socket.IO"]
+    A["Usuário A"]
+    B["Usuário B"]
+    C["Usuário C"]
+
+    A -. "sinalização / presença / chat" .-> SERVER
+    B -. "sinalização / presença / chat" .-> SERVER
+    C -. "sinalização / presença / chat" .-> SERVER
+
+    A <== "mídia" ==> B
+    A <== "mídia" ==> C
+    B <== "mídia" ==> C
+```
+
+O custo é o upload de quem transmite: **cada câmera sobe uma vez por ouvinte**. Numa call de seis pessoas, quem liga a câmera está enviando cinco cópias dela. É por isso que, a partir de umas quatro pessoas com vídeo, a internet de casa começa a não dar conta.
+
+### Por servidor (SFU)
+
+Com credenciais do **Cloudflare Realtime** configuradas, a mídia sobe **uma vez** e o servidor replica para todos.
+
+```mermaid
+flowchart TB
+    SERVER["Draco Server<br/>Node · Express · Socket.IO"]
+    SFU["Cloudflare Realtime SFU"]
+    A["Usuário A"]
+    B["Usuário B"]
+    C["Usuário C"]
+
+    A -. "sinalização / presença / chat" .-> SERVER
+    B -. "sinalização / presença / chat" .-> SERVER
+    C -. "sinalização / presença / chat" .-> SERVER
+
+    SERVER -- "assina a API do SFU" --> SFU
+
+    A <== "mídia" ==> SFU
+    B <== "mídia" ==> SFU
+    C <== "mídia" ==> SFU
+```
+
+O upload de quem transmite deixa de crescer com o tamanho da call: **1080p para oito pessoas custa a mesma banda que para uma**.
+
+Alguns detalhes do desenho:
+
+- **Duas conexões por pessoa**, uma só de envio e outra só de recepção. Quem entra na call renegocia apenas a de recepção, então a conexão que está carregando a sua tela não é interrompida porque alguém chegou.
+- **O navegador nunca fala com a Cloudflare.** O segredo do app fica no servidor: a página pede pelo socket, o servidor assina a chamada, e a resposta volta pelo mesmo caminho.
+- **O servidor confere de quem é cada trilha.** Só é possível assinar a câmera de alguém que está no mesmo canal de voz — e da sessão que está no ar, não de uma que já foi descartada.
+
+### Quem escolhe o caminho
+
+O servidor. A escolha vale para todos na sala: se um cliente decidisse sozinho ir de malha, tentaria falar com quem está esperando pelo SFU, e o resultado seria uma call muda sem erro que explicasse o porquê.
+
+**Sem credenciais configuradas, nada muda.** O servidor responde `sfu: false` e as calls seguem em malha direta, exatamente como sempre funcionaram.
+
+### Qualidade adaptativa
+
+O navegador já reduz a qualidade sozinho quando a rede aperta, mas reage devagar e sempre dentro do teto que a gente deu. Se o teto for 4 Mbps numa linha que entrega 1,5, o resultado é uma transmissão travando aos poucos em vez de uma transmissão menor e fluida.
+
+O Draco mexe no teto. Ele observa a perda que o outro lado relata, o tempo de ida e volta e a banda que o navegador estima, e desce em degraus quando a rede não está dando conta. Para **subir** de volta, exige uns 16 segundos de rede calma — teto que oscila a cada amostra produz vídeo que respira, o que incomoda mais que vídeo consistentemente menor.
+
+A barra de voz avisa quando a qualidade está reduzida.
+
+### TURN
+
+Quando uma conexão direta não é possível por causa da rede, NAT ou firewall, o Draco pode usar um servidor TURN como relay. Vale para os dois caminhos de mídia.
 
 ---
 
@@ -127,6 +230,8 @@ Normalmente não é necessário reinstalar quando a atualização altera apenas:
 
 Basta publicar a nova versão no servidor. Na próxima abertura, o app carrega o código atualizado.
 
+> Ligar o SFU é uma mudança **só de servidor**: são duas variáveis no `.env`. Ninguém precisa baixar nada.
+
 ### Quando precisa de uma nova versão do app
 
 É necessário gerar e distribuir um novo instalador quando houver alteração em arquivos ou recursos nativos do desktop, por exemplo:
@@ -151,38 +256,6 @@ Alguns exemplos:
 
 ---
 
-## Como funciona
-
-```mermaid
-flowchart TB
-    SERVER["Draco Server<br/>Node · Express · Socket.IO"]
-    A["Usuário A"]
-    B["Usuário B"]
-    C["Usuário C"]
-
-    A -. "sinalização / presença / chat" .-> SERVER
-    B -. "sinalização / presença / chat" .-> SERVER
-    C -. "sinalização / presença / chat" .-> SERVER
-
-    A <== "WebRTC" ==> B
-    A <== "WebRTC" ==> C
-    B <== "WebRTC" ==> C
-```
-
-### Mídia
-
-Microfone, câmera e compartilhamento de tela usam WebRTC. Quando a rede permite, a mídia segue diretamente entre os participantes.
-
-### Sinalização
-
-O servidor usa Socket.IO para coordenar entrada e saída de usuários, canais, ofertas/respostas SDP, candidatos ICE e mensagens do chat.
-
-### TURN
-
-Quando uma conexão direta não é possível por causa da rede/NAT/firewall, o Draco pode utilizar um servidor TURN como relay.
-
----
-
 ## Tecnologias
 
 | Camada | Tecnologia |
@@ -192,6 +265,7 @@ Quando uma conexão direta não é possível por causa da rede/NAT/firewall, o D
 | Estado | Zustand |
 | Comunicação em tempo real | Socket.IO |
 | Voz, câmera e tela | WebRTC |
+| Mídia por servidor | Cloudflare Realtime SFU |
 | Processamento de áudio | Web Audio API + Media Capture APIs |
 | Servidor | Node.js + Express |
 | Desktop | Electron |
@@ -211,7 +285,13 @@ Draco/
 │   │   └── icons/          # ícones/PWA
 │   └── src/
 │       ├── components/     # interface
-│       ├── rtc/            # engine WebRTC e mídia
+│       ├── rtc/            # engines de mídia
+│       │   ├── engine.ts        # contrato comum aos dois caminhos
+│       │   ├── VoiceEngine.ts   # malha direta entre navegadores
+│       │   ├── SfuEngine.ts     # mídia por servidor
+│       │   ├── adaptive.ts      # qualidade adaptativa
+│       │   ├── MediaManager.ts  # microfone, câmera e captura de tela
+│       │   └── stats.ts         # leitura de getStats
 │       ├── state/          # estado global
 │       └── dev/            # autotestes
 │
@@ -223,7 +303,8 @@ Draco/
 │
 ├── server/                 # Express + Socket.IO
 │   ├── index.js
-│   ├── signaling.js
+│   ├── signaling.js        # sinalização, presença e eventos sfu:*
+│   ├── sfu.js              # cliente da API do Cloudflare Realtime
 │   ├── ice.js
 │   ├── security.js
 │   └── state.js
@@ -303,6 +384,15 @@ desktop/out/draco-setup-1.0.0.exe
 
 A versão vem de `desktop/package.json`.
 
+### Compartilhamento de tela no desktop
+
+O app tem o próprio seletor de telas e janelas, com miniaturas. Funciona em dois passos porque o `getDisplayMedia` não aceita "quero esta janela" como argumento: quem escolhe é sempre o processo principal.
+
+Duas consequências práticas:
+
+- **Janela fechada entre escolher e compartilhar** dá uma mensagem que explica isso, em vez de uma captura de nada. O processo principal guarda o id da fonte e reconfere se ela ainda existe na hora de conceder.
+- **O áudio do sistema depende do loopback do Windows.** No app para Mac ou Linux a opção aparece desligada, dizendo o porquê — prometer o som ali resultaria numa transmissão muda. Se o loopback falhar no Windows, a transmissão começa sem som e avisa, em vez de não começar.
+
 ---
 
 ## Scripts úteis
@@ -346,9 +436,20 @@ TURN_CREDENTIALS_URL=
 TURN_HOST=
 TURN_SECRET=
 TURN_ONLY=0
+
+CLOUDFLARE_REALTIME_APP_ID=
+CLOUDFLARE_REALTIME_APP_SECRET=
 ```
 
-Nunca publique credenciais reais no repositório.
+Nunca publique credenciais reais no repositório. O `.env.example` explica cada opção em detalhe.
+
+### Ligando a mídia por servidor
+
+1. No painel da Cloudflare, vá em **Realtime → SFU** e crie uma aplicação.
+2. Copie o **App ID** e o **App Secret**.
+3. Preencha as duas variáveis no `.env` do servidor e reinicie.
+
+Pronto. As próximas calls entram pelo SFU, e a barra de voz passa a indicar que a mídia está passando por servidor. Para voltar à malha direta, apague as variáveis e reinicie — nenhum cliente precisa ser atualizado.
 
 ---
 
@@ -361,10 +462,15 @@ O desktop aplica algumas proteções importantes:
 - sandbox do renderer habilitado;
 - permissões liberadas apenas para a origem oficial do Draco;
 - links externos são enviados ao navegador do sistema;
-- o preload expõe somente as funções necessárias para seleção de tela;
-- credenciais TURN podem ser geradas/obtidas pelo servidor sem expor chaves permanentes no cliente.
+- o preload expõe só três funções: listar fontes de captura, registrar a escolhida e anotar uma falha no console do app;
+- toda mensagem vinda da página é validada por origem e por tipo antes de virar chamada do Electron.
 
-O servidor também limita tamanho e frequência de eventos para reduzir abuso básico na sinalização e no chat.
+No servidor:
+
+- credenciais TURN podem ser geradas/obtidas pelo servidor sem expor chaves permanentes no cliente;
+- o segredo do SFU nunca chega ao navegador: quem assina as chamadas à Cloudflare é o servidor;
+- só é possível assinar a trilha de quem está no mesmo canal de voz, e da sessão que está no ar;
+- tamanho e frequência de eventos são limitados, para reduzir abuso básico na sinalização e no chat.
 
 ---
 
@@ -375,6 +481,8 @@ O servidor também limita tamanho e frequência de eventos para reduzir abuso b�
 ```bash
 npm run test:server
 ```
+
+Sobe o servidor num socket real e verifica entrada com senha, presença, chat, repasse de sinalização, as guardas dos eventos `sfu:*`, limite de frequência e reconexão sem duplicar ninguém na lista. **29 testes.**
 
 ### TypeScript
 
@@ -390,7 +498,7 @@ Com o ambiente de desenvolvimento rodando:
 http://localhost:5173/?selftest=1
 ```
 
-O autoteste cria conexões WebRTC locais para verificar fluxo de áudio/vídeo e comportamento das trilhas sem depender de outra pessoa na call.
+Abre duas conexões WebRTC na mesma aba, com microfone e câmera falsos — oscilador no lugar do microfone, canvas no lugar da câmera. Verifica conexão, áudio nos dois sentidos, mute, câmera e tela caindo em trilhas separadas (lendo o pixel do vídeo recebido) e recuperação depois de um reinício de ICE. Não depende de webcam, de permissão nem de uma segunda pessoa. **18 testes**, cerca de 40 segundos.
 
 ---
 
@@ -410,25 +518,26 @@ Para produção, o ideal é usar:
 - servidor sempre disponível;
 - TURN configurado;
 - `ROOM_PASSWORD` quando a instância não for pública;
-- `ORIGIN` restringindo a origem aceita pelo Socket.IO.
+- `ORIGIN` restringindo a origem aceita pelo Socket.IO;
+- credenciais do SFU quando as calls passarem de umas quatro pessoas com vídeo.
 
 O guia detalhado está em [`docs/GUIA.md`](docs/GUIA.md).
 
 ---
 
-
 ## Roadmap
 
 O Draco está em desenvolvimento ativo. Alguns caminhos naturais para as próximas versões:
 
+- [x] arquitetura SFU para salas maiores;
+- [x] qualidade adaptativa conforme a banda;
+- [x] reconexão que devolve som e imagem sem sair e voltar do canal;
 - [ ] auto-update do aplicativo Windows;
 - [ ] sistema de versões e releases;
 - [ ] persistência opcional do chat;
-- [ ] melhorias de reconexão e recuperação de rede;
-- [ ] otimizações para chamadas com mais participantes;
+- [ ] camadas simultâneas de qualidade (simulcast), para quem tem banda ver melhor que quem não tem;
 - [ ] evolução da experiência mobile;
-- [ ] mais controles de áudio e vídeo;
-- [ ] futura arquitetura SFU para salas maiores.
+- [ ] mais controles de áudio e vídeo.
 
 ---
 
