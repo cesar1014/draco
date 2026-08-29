@@ -2,7 +2,6 @@ import { useCallback, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import {
   ExitFullscreenIcon,
-  ExpandIcon,
   FlipIcon,
   FullscreenIcon,
   MicOffIcon,
@@ -223,7 +222,10 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
           onClick={onToggleFocus}
           title={focused ? "Tirar do destaque" : "Fixar em destaque (cabem 2)"}
         >
-          {focused ? <PinIcon size={16} /> : <ExpandIcon size={16} />}
+          {/* Sempre o alfinete: o desenho de expandir parecia o botão de tela
+              cheia que vem a seguir, e eram dois ícones pra uma função só. Ligado
+              ou desligado é o `data-pin`, que o CSS pinta. */}
+          <PinIcon size={16} />
         </button>
         {hasVideo && (
           <button

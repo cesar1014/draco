@@ -107,7 +107,12 @@ try {
 
   const joinA = await emit(a, "identify", { username: "Ana", password: PASSWORD });
   check("entrada com senha certa", joinA.ok, true);
-  check("snapshot traz os canais", joinA.state.channels.length > 0, true);
+  // Não há servidor de demonstração: quem chega não é membro de nada, e o
+  // snapshot dessa pessoa vem vazio até ela criar um servidor ou aceitar convite.
+  check("quem acaba de chegar não tem servidor nenhum", [joinA.state.guilds, joinA.state.channels], [
+    [],
+    [],
+  ]);
   // O id da pessoa não é o do socket: é ele que sobrevive a uma reconexão.
   check("selfId é uma identidade própria", /^[0-9a-f-]{36}$/.test(joinA.selfId ?? ""), true);
   check("a entrada devolve um token de sessão assinado", /^v1\.[\w-]+\.[\w-]+$/.test(joinA.token ?? ""), true);
@@ -124,16 +129,32 @@ try {
   check("identificar duas vezes é recusado", (await emit(b, "identify", { username: "Bruno2", password: PASSWORD })).error, "already-identified");
   void memberJoined;
 
+  // --- um servidor pra conversar --------------------------------------------
+  // Sem catálogo padrão, o resto do teste precisa de um servidor de verdade: Ana
+  // cria o dela e chama Bruno e Carla por convite, que é o único caminho de
+  // entrada que existe.
+  const home = await emit(a, "guild:create", { name: "Casa da Ana" });
+  check("o primeiro servidor é criado por quem chegou", home.ok, true);
+  const homeId = home.guild.id;
+  const text = home.state.channels.find((ch) => ch.guildId === homeId && ch.type === "text").id;
+  const voice = home.state.channels.find((ch) => ch.guildId === homeId && ch.type === "voice").id;
+  const extra = (await emit(a, "channel:create", { guildId: homeId, type: "text", name: "avisos" }))
+    .channel.id;
+
+  const homeInvite = await emit(a, "invite:create", { guildId: homeId });
+  await emit(b, "invite:accept", { code: homeInvite.code });
+  await emit(c, "invite:accept", { code: homeInvite.code });
+
   // --- chat ----------------------------------------------------------------
   const chatOnB = waitFor(b, "chat:message");
-  a.emit("chat:send", { channelId: "t-geral", content: "  olá mundo  " });
+  a.emit("chat:send", { channelId: text, content: "  olá mundo  " });
   const message = await chatOnB;
   check("mensagem chega nos outros", message?.content, "olá mundo");
   check("mensagem traz o autor", message?.username, "Ana");
 
   const chatInVoice = collect(b, "chat:message");
-  a.emit("chat:send", { channelId: "v-geral", content: "isso é canal de voz" });
-  a.emit("chat:send", { channelId: "t-geral", content: "" });
+  a.emit("chat:send", { channelId: voice, content: "isso é canal de voz" });
+  a.emit("chat:send", { channelId: text, content: "" });
   a.emit("chat:send", { channelId: "inexistente", content: "oi" });
   await sleep(250);
   check("canal de voz e mensagem vazia não geram chat", chatInVoice.length, 0);
@@ -141,7 +162,7 @@ try {
   // --- histórico -----------------------------------------------------------
   // Uma mensagem só no canal: não há passado antes dela, e o servidor precisa
   // dizer isso em vez de devolver uma página vazia como se fosse conteúdo.
-  const history = await emit(b, "chat:history", { channelId: "t-geral", beforeId: message.id });
+  const history = await emit(b, "chat:history", { channelId: text, beforeId: message.id });
   check("histórico responde com a página anterior", [history.ok, history.messages, history.more], [
     true,
     [],
@@ -149,36 +170,36 @@ try {
   ]);
   check(
     "histórico recusa id que não é do canal",
-    (await emit(b, "chat:history", { channelId: "t-avisos", beforeId: message.id })).error,
+    (await emit(b, "chat:history", { channelId: extra, beforeId: message.id })).error,
     "no-message",
   );
   check(
     "histórico recusa canal de voz",
-    (await emit(b, "chat:history", { channelId: "v-geral", beforeId: message.id })).error,
+    (await emit(b, "chat:history", { channelId: voice, beforeId: message.id })).error,
     "no-channel",
   );
   check(
     "histórico recusa pedido sem âncora",
-    (await emit(b, "chat:history", { channelId: "t-geral" })).error,
+    (await emit(b, "chat:history", { channelId: text })).error,
     "bad-request",
   );
 
   // --- entrar em voz -------------------------------------------------------
-  const joinVoiceA = await emit(a, "voice:join", { channelId: "v-geral" });
+  const joinVoiceA = await emit(a, "voice:join", { channelId: voice });
   check("primeiro a entrar não vê ninguém", [joinVoiceA.ok, joinVoiceA.channelId, joinVoiceA.peers], [
     true,
-    "v-geral",
+    voice,
     [],
   ]);
   // Sem credenciais da Cloudflare no ambiente, o servidor manda seguir em malha.
   check("sem SFU configurado o servidor avisa", joinVoiceA.sfu, false);
 
   const peerJoinedOnA = waitFor(a, "voice:peer-joined");
-  const joinVoiceB = await emit(b, "voice:join", { channelId: "v-geral" });
+  const joinVoiceB = await emit(b, "voice:join", { channelId: voice });
   check("segundo a entrar já recebe a lista", joinVoiceB.peers.map((p) => p.username), ["Ana"]);
   check("a lista traz a identidade estável", joinVoiceB.peers.map((p) => p.id), [idA]);
   check("quem estava é avisado do novo", (await peerJoinedOnA)?.member?.username, "Bruno");
-  check("canal de texto não serve pra voz", (await emit(a, "voice:join", { channelId: "t-geral" })).error, "no-channel");
+  check("canal de texto não serve pra voz", (await emit(a, "voice:join", { channelId: text })).error, "no-channel");
 
   // --- relay de sinalização ------------------------------------------------
   const signalOnB = waitFor(b, "rtc:signal");
@@ -252,7 +273,7 @@ try {
 
   // --- rate limit ----------------------------------------------------------
   const flood = collect(c, "chat:message");
-  for (let i = 0; i < 30; i += 1) a.emit("chat:send", { channelId: "t-geral", content: `spam ${i}` });
+  for (let i = 0; i < 30; i += 1) a.emit("chat:send", { channelId: text, content: `spam ${i}` });
   await sleep(400);
   check("rate limit corta enxurrada de chat", flood.length <= 8, true);
 
@@ -267,11 +288,10 @@ try {
   await emit(h, "identify", { username: "Elena", password: PASSWORD });
   const idG = joinG.selfId;
 
-  const defaultChannels = joinA.state.channels.length;
   check(
-    "servidor do catálogo padrão não aceita canal novo",
-    (await emit(a, "channel:create", { guildId: "g-main", type: "text", name: "x" })).error,
-    "default-guild",
+    "quem não é membro não cria canal em servidor alheio",
+    (await emit(h, "channel:create", { guildId: homeId, type: "text", name: "x" })).error,
+    "not-member",
   );
 
   const created = await emit(a, "guild:create", { name: "Servidor de Teste" });
@@ -281,6 +301,12 @@ try {
   ]);
   const guildId = created.guild.id;
   check("quem cria é o dono", created.guild.ownerId, idA);
+  // Criar o segundo não solta o primeiro: quem tem dois servidores continua nos dois.
+  check(
+    "o servidor anterior continua no estado de quem criou outro",
+    created.state.guilds.map((guild) => guild.id).includes(homeId),
+    true,
+  );
   // Dois canais de largada: um servidor sem canal nenhum abre numa tela vazia.
   const mine = created.state.channels.filter((channel) => channel.guildId === guildId);
   check("o servidor novo nasce com um canal de texto e um de voz", mine.map((ch) => ch.type).sort(), [
@@ -367,8 +393,6 @@ try {
 
   const panel = await emit(a, "guild:admin", { guildId });
   check("o painel do dono traz elenco e convites", [panel.ok, panel.owner], [true, true]);
-  // O catálogo padrão continua de todo mundo: nada disso mexeu nele.
-  check("o servidor padrão segue intacto", joinA.state.channels.length, defaultChannels);
 
   a.close();
   g.close();

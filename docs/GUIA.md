@@ -69,7 +69,8 @@ só ele tem é privilégio de sistema, e isso muda duas coisas na prática:
 - **Seletor de tela com miniaturas dentro do app.** No navegador quem escolhe a janela é o
   diálogo do próprio Chrome, e não há como mudar isso, por segurança.
 - **Áudio do sistema junto com a tela** (só no Windows). O som do jogo ou do vídeo vai com a
-  imagem.
+  imagem. Se ele não vier — a tela inteira é recusada em algumas configurações do Windows —,
+  compartilhe a janela do programa: dela o som sai.
 
 ### Rodar sem instalar
 

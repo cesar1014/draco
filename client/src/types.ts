@@ -5,7 +5,7 @@ export interface Guild {
   name: string;
   initials: string;
   color: string;
-  /** Quem criou. `null` nos servidores do catálogo padrão, que não têm dono. */
+  /** Quem criou. `null` só num servidor cujo dono deixou de existir. */
   ownerId: string | null;
 }
 

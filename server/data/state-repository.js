@@ -13,17 +13,14 @@ import { openDatabase } from "./database.js";
 
 const DEFAULT_PERMISSIONS = ["view_channels", "send_messages", "connect", "speak"];
 
-/** Marca que o catálogo padrão já foi criado neste banco. */
-const CATALOG_SEEDED = "catalog:seeded_at";
-
 function mapGuild(row) {
   return {
     id: row.id,
     name: row.name,
     initials: row.initials,
     color: row.color,
-    // `null` nos servidores do catálogo padrão: eles não têm dono, e é isso que
-    // impede alguém de apagá-los como se fossem seus.
+    // `null` só num servidor que ficou sem ninguém: o dono é apagado por
+    // `ON DELETE SET NULL`, e daí ninguém mais o administra.
     ownerId: row.owner_id ?? null,
   };
 }
@@ -116,11 +113,6 @@ export class StateRepository {
         WHERE channel_id = ? AND deleted_at IS NULL AND sequence < ?
         ORDER BY sequence DESC
         LIMIT ?
-      `),
-      insertGuild: database.prepare(`
-        INSERT INTO guilds (id, name, initials, color, position, created_at, updated_at)
-        VALUES (@id, @name, @initials, @color, @position, @now, @now)
-        ON CONFLICT(id) DO NOTHING
       `),
       insertDefaultRole: database.prepare(`
         INSERT INTO roles (
@@ -287,33 +279,9 @@ export class StateRepository {
       `),
     };
 
-    this.seedCatalogTransaction = database.transaction((guilds, channels, now) => {
-      // A marca é o que faz o seed acontecer uma vez na vida do banco. Sem ela,
-      // apagar um canal seria inútil: o próximo boot o inseriria de novo.
-      if (this.statements.readSetting.get(CATALOG_SEEDED)) return;
-
-      for (const [position, guild] of guilds.entries()) {
-        this.statements.insertGuild.run({ ...guild, position, now });
-        this.statements.insertDefaultRole.run({
-          id: `${guild.id}:everyone`,
-          guildId: guild.id,
-          permissions: JSON.stringify(DEFAULT_PERMISSIONS),
-          now,
-        });
-      }
-      for (const [position, channel] of channels.entries()) {
-        this.statements.insertChannel.run({ ...channel, position, now });
-      }
-      this.statements.writeSetting.run({ key: CATALOG_SEEDED, value: JSON.stringify(now), now });
-    });
-
-    this.saveProfileTransaction = database.transaction((profile, guildIds, now) => {
+    this.saveProfileTransaction = database.transaction((profile, now) => {
       this.statements.upsertUser.run({ id: profile.id, now });
       this.statements.upsertProfile.run({ ...profile, now });
-      for (const guildId of guildIds) {
-        this.statements.upsertGuildMember.run({ guildId, userId: profile.id, now });
-        this.statements.assignDefaultRole.run({ guildId, userId: profile.id, now });
-      }
     });
 
     this.addMessageTransaction = database.transaction((message, retention) => {
@@ -384,10 +352,6 @@ export class StateRepository {
     });
   }
 
-  seedCatalog(guilds, channels) {
-    this.seedCatalogTransaction(guilds, channels, Date.now());
-  }
-
   listGuilds() {
     return this.statements.listGuilds.all().map(mapGuild);
   }
@@ -419,8 +383,8 @@ export class StateRepository {
     };
   }
 
-  saveProfile(profile, guildIds) {
-    this.saveProfileTransaction(profile, guildIds, Date.now());
+  saveProfile(profile) {
+    this.saveProfileTransaction(profile, Date.now());
   }
 
   /**

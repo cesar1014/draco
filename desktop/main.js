@@ -147,10 +147,20 @@ function configureSession(ses) {
       const loopback =
         request.audioRequested && capture.systemAudio && process.platform === "win32";
 
+      const kind = capture.sourceId.startsWith("screen:") ? "tela" : "janela";
       log.info("captura concedida", {
-        tipo: capture.sourceId.startsWith("screen:") ? "tela" : "janela",
+        tipo: kind,
         audioSistema: loopback,
+        // Registrado à parte porque é a assimetria que a gente persegue: com
+        // fonte `screen:` o WASAPI recusa o loopback em algumas configurações, e
+        // com `window:` passa. Sem isto, o log não diz se a concessão que a
+        // página recebeu era a que pedia som ou a que já vinha muda.
+        audioPedido: request.audioRequested === true,
+        audioEscolhido: capture.systemAudio === true,
       });
+      if (request.audioRequested && capture.systemAudio && !loopback) {
+        log.warn("som do sistema não concedido", { tipo: kind, plataforma: process.platform });
+      }
       callback({ video: source, ...(loopback ? { audio: "loopback" } : {}) });
     },
     // O seletor de miniaturas é o nosso; o do sistema abriria em cima dele.

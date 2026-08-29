@@ -1,14 +1,20 @@
 /**
- * Ciclo de vida das trilhas publicadas no SFU.
+ * Ciclo de vida das trilhas publicadas no SFU, e o som do sistema junto com a tela.
  *
  * O defeito que este teste existe pra impedir é específico e chato de achar à
  * mão: ligar a câmera, desligar, esperar, ligar de novo, e a imagem não chegar do
  * outro lado — sem erro nenhum, porque o `replaceTrack` "deu certo" numa
  * publicação que o SFU já tinha descartado.
  *
- * O `SfuEngine` é código de navegador, então aqui ele é compilado pelo esbuild e
- * roda contra um `RTCPeerConnection` de mentira que registra o que foi pedido. O
- * que se afirma não é o SDP: é quantas publicações foram feitas, e quando.
+ * A segunda metade cobre o outro defeito da mesma família: compartilhar a tela
+ * inteira com o som marcado e a transmissão começar muda, porque o Windows recusa
+ * o loopback junto de uma fonte `screen:` em algumas configurações.
+ *
+ * `SfuEngine` e `MediaManager` são código de navegador, então aqui eles são
+ * compilados pelo esbuild e rodam contra um `RTCPeerConnection` e um
+ * `navigator.mediaDevices` de mentira que registram o que foi pedido. O que se
+ * afirma não é o SDP: é quantas publicações e quantas capturas foram feitas, e
+ * quando.
  *
  *   node tools/test-media.mjs
  */
@@ -54,18 +60,38 @@ async function quiet(run) {
 
 /** Compila o motor com as dependências dele, resolvendo o alias `@` do Vite. */
 async function loadEngine() {
+  return (await bundle(join(root, "client", "src", "rtc", "SfuEngine.ts"))).SfuEngine;
+}
+
+/**
+ * Compila um módulo do cliente e o importa. O `?url` do worklet de denoise vira
+ * texto vazio: aqui ninguém abre `AudioContext`, e o esbuild não sabe resolver o
+ * sufixo que é do Vite.
+ */
+async function bundle(entry) {
   const result = await build({
-    entryPoints: [join(root, "client", "src", "rtc", "SfuEngine.ts")],
+    entryPoints: [entry],
     bundle: true,
     format: "esm",
     platform: "neutral",
     write: false,
     logLevel: "silent",
     alias: { "@": join(root, "client", "src") },
+    plugins: [
+      {
+        name: "vite-url-suffix",
+        setup(builder) {
+          builder.onResolve({ filter: /\?url$/ }, (args) => ({ path: args.path, namespace: "url" }));
+          builder.onLoad({ filter: /.*/, namespace: "url" }, () => ({
+            contents: 'export default "";',
+            loader: "js",
+          }));
+        },
+      },
+    ],
   });
   const code = result.outputFiles[0].text;
-  const module = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
-  return module.SfuEngine;
+  return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 
 // --- WebRTC de mentira -------------------------------------------------------
@@ -205,6 +231,18 @@ globalThis.MediaStream = class {
   }
   getTracks() {
     return this.tracks;
+  }
+  getAudioTracks() {
+    return this.tracks.filter((track) => track.kind === "audio");
+  }
+  getVideoTracks() {
+    return this.tracks.filter((track) => track.kind === "video");
+  }
+  addTrack(track) {
+    this.tracks.push(track);
+  }
+  removeTrack(track) {
+    this.tracks = this.tracks.filter((item) => item !== track);
   }
 };
 
@@ -362,6 +400,198 @@ await test("fechar o motor solta os temporizadores e as conexões", async () => 
   assert.equal(send.iceRestarts, 0, "temporizador pendente não age depois do fechamento");
 });
 
+// --- Som do sistema junto com a tela ----------------------------------------
+
+/**
+ * O defeito que estes casos existem pra impedir: compartilhar a tela inteira com
+ * o som marcado, e a transmissão começar muda. O Windows recusa o loopback junto
+ * de uma fonte `screen:` em algumas configurações e aceita junto de `window:`, e
+ * quem paga o preço é quem escolheu a tela inteira.
+ */
+const { MediaManager, describeSystemAudioFailure } = await bundle(
+  join(root, "client", "src", "rtc", "MediaManager.ts"),
+);
+
+const namedError = (name) => Object.assign(new Error(name), { name });
+
+/** Recusa padrão do caminho legado: os casos que esperam som passam o próprio `user`. */
+const refuseUserMedia = () => {
+  throw namedError("NotAllowedError");
+};
+
+/**
+ * Substitui `navigator.mediaDevices` e a ponte do app pelo que o caso precisa, e
+ * devolve o registro do que foi pedido. `display` e `user` decidem o que cada
+ * chamada faz: devolver trilhas, ou estourar o erro que o Windows estouraria.
+ */
+function fakeMedia({ display, user = refuseUserMedia, platform = "win32" }) {
+  const calls = { display: [], user: [], claims: [], failures: [] };
+  globalThis.navigator = {
+    mediaDevices: {
+      getDisplayMedia: async (constraints) => {
+        calls.display.push(constraints.audio);
+        return display(constraints, calls.display.length);
+      },
+      getUserMedia: async (constraints) => {
+        calls.user.push(constraints);
+        return user(constraints);
+      },
+    },
+  };
+  globalThis.window = {
+    desktop: {
+      version: "1.2.0",
+      platform,
+      listSources: async () => [],
+      selectSource: async (request) => {
+        calls.claims.push(request.systemAudio);
+        return { ok: true };
+      },
+      logCaptureFailure: async (report) => {
+        calls.failures.push(report.stage);
+      },
+    },
+  };
+  return calls;
+}
+
+const screenStream = (tracks) => new globalThis.MediaStream(tracks);
+
+/**
+ * O que o caminho legado devolve no Windows: som e imagem. A imagem vem porque
+ * pedir só o áudio mata o renderer do Electron, e é descartada logo depois — o
+ * `legacyStream` guarda a trilha de vídeo pra que o teste confira isso.
+ */
+function legacyStream() {
+  const video = new FakeTrack("video");
+  const stream = screenStream([new FakeTrack("audio"), video]);
+  stream.videoOferecido = video;
+  return stream;
+}
+
+const SHARE = { resolution: "1080", frameRate: 30, systemAudio: true, content: "auto" };
+
+await test("Windows recusando o som da tela inteira ainda traz áudio pelo caminho legado", async () => {
+  const calls = fakeMedia({
+    // Primeira chamada com áudio: recusada, como o WASAPI faz com fonte `screen:`.
+    display: (constraints, nth) =>
+      nth === 1 && constraints.audio
+        ? Promise.reject(namedError("NotReadableError"))
+        : screenStream([new FakeTrack("video")]),
+    user: legacyStream,
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.equal(capture.systemAudioFailure, null, "o som veio, então não há aviso a dar");
+  assert.ok(capture.audio, "e a trilha de som existe");
+  assert.equal(capture.audio.contentHint, "music", "marcada como música, não como fala");
+  assert.equal(calls.user.length, 1, "o caminho legado foi tentado uma vez");
+  assert.deepEqual(calls.claims, [true, false], "a segunda reserva já não pede som");
+  // Vídeo pedido, e com o id da fonte: sem a trilha de vídeo no pedido, o
+  // renderer do Electron 39 morre, e a call cai junto.
+  assert.equal(calls.user[0].video.mandatory.chromeMediaSource, "desktop");
+  assert.equal(calls.user[0].video.mandatory.chromeMediaSourceId, "screen:0:0");
+});
+
+await test("a imagem do caminho legado é descartada, e não fica capturando à toa", async () => {
+  let legado = null;
+  fakeMedia({
+    display: (constraints, nth) =>
+      nth === 1 && constraints.audio
+        ? Promise.reject(namedError("NotReadableError"))
+        : screenStream([new FakeTrack("video")]),
+    user: () => {
+      legado = legacyStream();
+      return legado;
+    },
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.equal(legado.videoOferecido.readyState, "ended", "duas capturas da mesma tela custariam CPU");
+  assert.equal(legado.getVideoTracks().length, 0, "e sai da stream, pra não voltar num loop de trilhas");
+  assert.equal(capture.video.kind, "video", "quem transmite é a captura que já tinha vindo");
+});
+
+await test("captura sem trilha de som cai no caminho legado sem repetir a captura", async () => {
+  const calls = fakeMedia({
+    // Concedida, mas muda: é assim que o loopback falha calado.
+    display: () => screenStream([new FakeTrack("video")]),
+    user: legacyStream,
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.equal(capture.systemAudioFailure, null);
+  assert.ok(capture.audio);
+  assert.equal(calls.display.length, 1, "a imagem já estava boa: não recaptura a tela");
+  assert.ok(calls.failures.includes("systemAudioEmpty"), "e o silêncio é registrado no log do app");
+});
+
+await test("a trilha do caminho legado entra na mesma stream, pra parar junto com a tela", async () => {
+  fakeMedia({
+    display: () => screenStream([new FakeTrack("video")]),
+    user: legacyStream,
+  });
+
+  const media = new MediaManager();
+  const capture = await media.openScreen(SHARE, "screen:0:0");
+  media.closeScreen();
+
+  assert.equal(capture.audio.readyState, "ended", "sem isto o app seguiria ouvindo o computador");
+  assert.equal(capture.video.readyState, "ended");
+});
+
+await test("sem som nos dois caminhos, a transmissão começa muda e diz o porquê", async () => {
+  const calls = fakeMedia({
+    display: (constraints, nth) =>
+      nth === 1 && constraints.audio
+        ? Promise.reject(namedError("NotReadableError"))
+        : screenStream([new FakeTrack("video")]),
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.equal(capture.audio, null);
+  assert.equal(capture.systemAudioFailure, "refused");
+  assert.match(describeSystemAudioFailure("refused"), /janela do programa/);
+  assert.ok(capture.video, "a imagem é o essencial: ela vai de qualquer jeito");
+  assert.ok(calls.failures.includes("systemAudioLegacy"), "as duas etapas ficam no log");
+});
+
+await test("fora do Windows o caminho legado não é tentado", async () => {
+  const calls = fakeMedia({
+    display: () => screenStream([new FakeTrack("video")]),
+    platform: "darwin",
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.equal(calls.user.length, 0, "`chromeMediaSource` só faz loopback no Windows");
+  assert.equal(capture.systemAudioFailure, "empty");
+});
+
+await test("quem não pediu som não ganha tentativa nenhuma de áudio", async () => {
+  const calls = fakeMedia({ display: () => screenStream([new FakeTrack("video")]) });
+
+  const capture = await new MediaManager().openScreen(
+    { ...SHARE, systemAudio: false },
+    "screen:0:0",
+  );
+
+  assert.deepEqual(calls.display, [false]);
+  assert.equal(calls.user.length, 0);
+  assert.equal(capture.systemAudioFailure, null, "não pedir som não é falha");
+});
+
+await test("cancelar o diálogo de captura não vira segunda tentativa", async () => {
+  const calls = fakeMedia({ display: () => Promise.reject(namedError("NotAllowedError")) });
+
+  await assert.rejects(() => new MediaManager().openScreen(SHARE, "screen:0:0"));
+  assert.equal(calls.display.length, 1, "desistir é intenção, não falha de áudio");
+  assert.equal(calls.user.length, 0);
+});
 
 console.log(`\n${passed} passaram, ${failed} falharam`);
 process.exitCode = failed === 0 ? 0 : 1;

@@ -27,7 +27,6 @@ import {
   getMemberById,
   guildRoster,
   guildsOf,
-  isDefaultGuild,
   isGuildMember,
   isGuildOwner,
   leaveGuild,
@@ -173,9 +172,9 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
 
     /**
      * Guarda das ações administrativas: identificada, dentro do limite, membro do
-     * servidor e — quando a ação exige — dona dele. Servidor do catálogo padrão
-     * nunca é administrável: ele é de todo mundo, e deixar um convidado renomear
-     * ou apagar canal ali seria vandalismo sem dono.
+     * servidor e — quando a ação exige — dona dele. Todo servidor tem dono, porque
+     * todo servidor nasce de alguém criando: não há catálogo padrão de que ninguém
+     * responda.
      */
     function guildAction(reply, guildId, { owner = false } = {}) {
       if (!identified) {
@@ -188,10 +187,6 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
       }
       if (!isId(guildId) || !isGuildMember(guildId, userId)) {
         reply({ ok: false, error: "not-member" });
-        return false;
-      }
-      if (isDefaultGuild(guildId)) {
-        reply({ ok: false, error: "default-guild" });
         return false;
       }
       if (owner && !isGuildOwner(guildId, userId)) {
@@ -516,8 +511,7 @@ export function attachSignaling(io, env = process.env, { auth } = {}) {
 
     // --- servidores, canais, convites e banimentos ---------------------------
     // Escrevem no banco e mudam o que as pessoas veem, então cada handler confere
-    // associação e propriedade antes de tocar em qualquer coisa. Um servidor do
-    // catálogo padrão não é administrável: ele é de todo mundo.
+    // associação e propriedade antes de tocar em qualquer coisa.
 
     socket.on("guild:create", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};

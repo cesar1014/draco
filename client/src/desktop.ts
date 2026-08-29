@@ -29,9 +29,16 @@ export type ClaimFailure = "gone" | "denied" | "invalid" | "failed" | "unavailab
 
 export type ClaimResult = { ok: true } | { ok: false; reason: ClaimFailure };
 
-/** Contexto de uma falha de captura, pro console do app, nunca pra interface. */
+/**
+ * Contexto de uma falha de captura, pro console do app, nunca pra interface.
+ *
+ * O som do sistema falha de três jeitos diferentes, e diagnosticar exige saber
+ * qual: `systemAudio` é o pedido recusado inteiro, `systemAudioEmpty` é a captura
+ * concedida com a trilha de som vazia, e `systemAudioLegacy` é a segunda tentativa
+ * de loopback, por fora do pedido de tela, também recusada.
+ */
 export interface CaptureFailure {
-  stage: "claim" | "getDisplayMedia" | "systemAudio";
+  stage: "claim" | "getDisplayMedia" | "systemAudio" | "systemAudioEmpty" | "systemAudioLegacy";
   name: string;
   message: string;
   sourceId: string;

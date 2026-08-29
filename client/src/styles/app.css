@@ -378,6 +378,13 @@ input[type="range"]:disabled {
   grid-template-columns: var(--rail) var(--side) minmax(0, 1fr) var(--members);
 }
 
+/* Sem servidor nenhum não há trilha, canais nem membros pra desenhar: a coluna
+   única deixa a tela de boas-vindas usar a largura toda em vez de ficar apertada
+   entre barras vazias. */
+.app[data-empty="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* Luz ambiente. Fica no fundo, não recebe eventos e usa só `transform`. */
 .app::before {
   content: "";
@@ -424,6 +431,39 @@ input[type="range"]:disabled {
   place-items: center;
   height: 100%;
   color: var(--text-faint);
+}
+
+/* Primeira tela de quem entrou e ainda não tem servidor. Centralizada e estreita:
+   são duas frases e dois botões, e uma coluna larga espalharia o texto até ele
+   ficar difícil de ler. */
+.welcome {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  min-height: 0;
+  padding: 32px 24px;
+  overflow-y: auto;
+  text-align: center;
+}
+
+.welcome h1 {
+  max-width: 22ch;
+  font-size: 26px;
+  line-height: 1.25;
+}
+
+.welcome p {
+  max-width: 52ch;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.welcome-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 .content-header {
@@ -3604,6 +3644,15 @@ button.guild:active {
 }
 
 @media (max-width: 420px) {
+  .welcome h1 {
+    font-size: 21px;
+  }
+
+  .welcome-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
   .join-card {
     padding: 26px 20px 22px;
   }
