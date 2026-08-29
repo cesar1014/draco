@@ -113,12 +113,6 @@ export const SpeakerOffIcon = (props: IconProps) => (
   </Icon>
 );
 
-export const ExpandIcon = (props: IconProps) => (
-  <Icon {...props}>
-    <path d="M4 4h6v2H6v4H4V4Zm10 0h6v6h-2V6h-4V4ZM4 14h2v4h4v2H4v-6Zm14 0h2v6h-6v-2h4v-4Z" />
-  </Icon>
-);
-
 export const CollapseIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M10 4h2v6H6V8h4V4Zm4 0h2v4h4v2h-6V4ZM4 14h6v6H8v-4H4v-2Zm10 0h6v2h-4v4h-2v-6Z" />

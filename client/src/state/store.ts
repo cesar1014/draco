@@ -8,6 +8,7 @@ import {
   describeCameraError,
   describeMicrophoneError,
   describeScreenShareError,
+  describeSystemAudioFailure,
   normalizeCameraOptions,
   normalizeScreenOptions,
   screenBitrate,
@@ -1300,7 +1301,7 @@ export const useStore = create<Store>()((set, get) => {
       writeJson(SCREEN_KEY, options);
 
       try {
-        const { video, audio, systemAudioFailed } = await media.openScreen(options, sourceId);
+        const { video, audio, systemAudioFailure } = await media.openScreen(options, sourceId);
         // O "Parar de compartilhar" do navegador termina a trilha: sem escutar
         // isso, os outros ficariam vendo o último quadro pra sempre.
         video.onended = () => {
@@ -1314,9 +1315,7 @@ export const useStore = create<Store>()((set, get) => {
         });
         set({
           screenOn: true,
-          notice: systemAudioFailed
-            ? "Não foi possível capturar o áudio do sistema. A transmissão foi iniciada sem áudio."
-            : null,
+          notice: systemAudioFailure ? describeSystemAudioFailure(systemAudioFailure) : null,
         });
         publishVoiceState({ screenOn: true });
       } catch (error) {

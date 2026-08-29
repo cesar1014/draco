@@ -255,11 +255,17 @@ export function GuildAdminModal() {
  * a mesma intenção vista de dois lados — "quero outro lugar para conversar" — e
  * quem abriu o `+` pode não saber ainda qual dos dois quer.
  */
-export function GuildCreateModal({ onClose }: { onClose: () => void }) {
+export function GuildCreateModal({
+  initialTab = "create",
+  onClose,
+}: {
+  initialTab?: "create" | "join";
+  onClose: () => void;
+}) {
   const createGuild = useStore((state) => state.createGuild);
   const joinByInvite = useStore((state) => state.joinByInvite);
 
-  const [tab, setTab] = useState<"create" | "join">("create");
+  const [tab, setTab] = useState<"create" | "join">(initialTab);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);

@@ -9,6 +9,7 @@ import { RemoteAudioSink } from "@/components/RemoteAudioSink";
 import { ScreenShareModal } from "@/components/ScreenShareModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { VoiceStage } from "@/components/VoiceStage";
+import { Welcome } from "@/components/Welcome";
 import { resumeAudio } from "@/rtc/SpeakingDetector";
 import { useStore } from "@/state/store";
 
@@ -40,6 +41,7 @@ export function App() {
   const dismissNotice = useStore((state) => state.dismissNotice);
   const channels = useStore((state) => state.channels);
   const activeChannelId = useStore((state) => state.activeChannelId);
+  const guilds = useStore((state) => state.guilds);
 
   /** O aviso é informativo: sai sozinho em vez de exigir um clique. */
   useEffect(() => {
@@ -138,39 +140,53 @@ export function App() {
   if (status !== "ready") return <JoinScreen />;
 
   const channel = channels.find((item) => item.id === activeChannelId);
+  /**
+   * Quem entra pela primeira vez não é membro de nada: o app não tem servidor de
+   * demonstração. A casca de colunas não teria canal, membro nem conversa pra
+   * desenhar, então ela dá lugar à tela que explica os dois caminhos. Os avisos e
+   * as janelas continuam montados: o convite recusado é relatado por ali.
+   */
+  const empty = guilds.length === 0;
 
   return (
     <div
       className="app"
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-members={membersOpen ? "open" : "closed"}
+      data-empty={empty}
     >
       {reconnecting && <div className="banner">Conexão perdida. Reconectando…</div>}
 
-      <GuildRail />
-      <ChannelSidebar />
-      {/* Um véu para as duas gavetas do celular: fecha a que estiver aberta. */}
-      <button
-        type="button"
-        className="scrim"
-        aria-label="Fechar menu"
-        onClick={() => {
-          setSidebarOpen(false);
-          setMembersOpen(false);
-        }}
-      />
+      {empty ? (
+        <Welcome />
+      ) : (
+        <>
+          <GuildRail />
+          <ChannelSidebar />
+          {/* Um véu para as duas gavetas do celular: fecha a que estiver aberta. */}
+          <button
+            type="button"
+            className="scrim"
+            aria-label="Fechar menu"
+            onClick={() => {
+              setSidebarOpen(false);
+              setMembersOpen(false);
+            }}
+          />
 
-      <main className="content">
-        {channel?.type === "voice" ? (
-          <VoiceStage channelId={channel.id} />
-        ) : channel ? (
-          <ChatView channelId={channel.id} />
-        ) : (
-          <div className="content-empty">Escolha um canal à esquerda.</div>
-        )}
-      </main>
+          <main className="content">
+            {channel?.type === "voice" ? (
+              <VoiceStage channelId={channel.id} />
+            ) : channel ? (
+              <ChatView channelId={channel.id} />
+            ) : (
+              <div className="content-empty">Escolha um canal à esquerda.</div>
+            )}
+          </main>
 
-      <MembersPanel />
+          <MembersPanel />
+        </>
+      )}
 
       {/* Fora da área de conteúdo: o som não pode depender do que está na tela. */}
       <RemoteAudioSink />

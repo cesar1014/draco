@@ -24,9 +24,9 @@ export function ChannelSidebar() {
 
   const guild = guilds.find((item) => item.id === activeGuildId);
   /**
-   * Servidor do catálogo padrão não tem dono e não é administrável: ele é de todo
-   * mundo que entra, e deixar um convidado apagar canal ali seria vandalismo sem
-   * responsável. Os controles simplesmente não aparecem.
+   * Todo servidor tem dono, porque todo servidor nasce de alguém criando. Um que
+   * ficou sem dono — o perfil dele deixou de existir — não é administrável por
+   * ninguém, e os controles simplesmente não aparecem.
    */
   const managed = Boolean(guild && guild.ownerId !== null);
   const owner = managed && guild?.ownerId === selfId;

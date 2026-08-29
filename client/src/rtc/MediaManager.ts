@@ -1,5 +1,6 @@
 import {
   claimDesktopSource,
+  desktopPlatform,
   isDesktopApp,
   reportCaptureFailure,
   type CaptureFailure,
@@ -272,7 +273,27 @@ export interface ScreenCapture {
   video: MediaStreamTrack;
   audio: MediaStreamTrack | null;
   /** A imagem veio, o som do sistema não. A transmissão segue; a interface avisa. */
-  systemAudioFailed: boolean;
+  systemAudioFailure: SystemAudioFailure | null;
+}
+
+/**
+ * Como o som do sistema se perdeu, porque a saída é diferente em cada caso:
+ * `refused` é o Windows negando o loopback desta tela, e trocar pra janela do
+ * programa costuma resolver; `empty` é a captura vindo sem trilha nenhuma, que
+ * acontece quando não há nada tocando ou o dispositivo de saída não faz loopback.
+ */
+export type SystemAudioFailure = "refused" | "empty";
+
+/** Frase pra quem está na call: o que aconteceu e o que fazer a respeito. */
+export function describeSystemAudioFailure(failure: SystemAudioFailure): string {
+  if (!isDesktopApp()) {
+    return failure === "refused"
+      ? "O navegador não deixou levar o som desta tela. Compartilhe uma aba pra mandar o áudio junto."
+      : "A transmissão começou sem som: a tela escolhida não manda áudio. Uma aba do navegador manda.";
+  }
+  return failure === "refused"
+    ? "O Windows recusou o som desta tela. Compartilhe a janela do programa pra levar o áudio junto."
+    : "A transmissão começou sem som. Confira se o programa está tocando algo e tente compartilhar a janela dele.";
 }
 
 export class MediaManager {
@@ -408,8 +429,11 @@ export class MediaManager {
    * página pode substituir aquele diálogo.
    *
    * A tela é o essencial e o som do sistema é o extra: se o loopback falhar, a
-   * transmissão começa muda em vez de não começar. `systemAudioFailed` volta
-   * verdadeiro nesse caso, pro aviso discreto na interface.
+   * transmissão começa muda em vez de não começar. Antes de desistir do som há
+   * uma segunda tentativa pelo caminho legado do Chromium, que no Windows chega
+   * ao loopback sem passar pelo pedido de captura de tela — o único caminho que
+   * traz som quando é a tela inteira que o sistema recusa. `systemAudioFailure`
+   * volta preenchido quando nem esse funcionou, pro aviso na interface.
    */
   async openScreen(
     options: ScreenShareOptions = DEFAULT_SCREEN_OPTIONS,
@@ -439,7 +463,7 @@ export class MediaManager {
 
     const video = screenConstraints(options);
     let stream: MediaStream;
-    let systemAudioFailed = false;
+    let failure: SystemAudioFailure | null = null;
 
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: wantsAudio });
@@ -450,7 +474,8 @@ export class MediaManager {
       }
       // Loopback indisponível derruba o pedido inteiro, mesmo com a tela pronta
       // pra capturar. Segunda tentativa sem áudio: perder o som do jogo é
-      // aceitável, perder a transmissão não.
+      // aceitável, perder a transmissão não — e o som ainda tem uma chance logo
+      // abaixo, por um caminho que não depende do pedido de tela.
       fail("systemAudio", error);
       if (sourceId && isDesktopApp()) {
         const claim = await claimDesktopSource(sourceId, false);
@@ -466,7 +491,7 @@ export class MediaManager {
         fail("getDisplayMedia", retryError);
         throw retryError;
       }
-      systemAudioFailed = true;
+      failure = "refused";
     }
 
     this.#stop(this.#screen);
@@ -475,14 +500,84 @@ export class MediaManager {
     const track = stream.getVideoTracks()[0];
     track.contentHint = SCREEN_CONTENT_HINT[options.content];
 
-    const audio = stream.getAudioTracks()[0] ?? null;
+    let audio: MediaStreamTrack | null = stream.getAudioTracks()[0] ?? null;
+    if (wantsAudio && !audio) {
+      // Pedimos áudio, a captura veio, e ainda assim não há trilha de som: no
+      // Windows isso é o loopback silenciosamente indisponível. Só registra
+      // quando o pedido não tinha sido recusado antes — na segunda tentativa a
+      // ausência de som é consequência, não um caso novo.
+      if (!failure) {
+        fail("systemAudioEmpty", new Error("captura sem trilha de áudio"));
+        failure = "empty";
+      }
+      audio = await this.#openSystemLoopback(sourceId, (error) =>
+        fail("systemAudioLegacy", error),
+      );
+      if (audio) {
+        // Na mesma stream que a imagem: assim `closeScreen` para as duas trilhas,
+        // e uma trilha de som sobrando não continuaria capturando o computador.
+        stream.addTrack(audio);
+        failure = null;
+      }
+    }
+
     // Som de jogo e de vídeo não é fala: sem isso o codec corta os graves.
     if (audio) audio.contentHint = "music";
-    // Pedimos áudio, a captura veio, e ainda assim não há trilha de som: no
-    // Windows isso é o loopback silenciosamente indisponível.
-    if (wantsAudio && !audio) systemAudioFailed = true;
 
-    return { video: track, audio, systemAudioFailed };
+    return { video: track, audio, systemAudioFailure: failure };
+  }
+
+  /**
+   * Som do sistema pelo caminho legado do Chromium: `chromeMediaSource: "desktop"`
+   * num `getUserMedia`. No app do Windows isso chega ao loopback do WASAPI por
+   * fora do pedido de captura de tela — e é justamente o pedido de tela que o
+   * sistema recusa em algumas configurações quando a fonte é a tela inteira,
+   * enquanto a janela de um programa passa.
+   *
+   * O vídeo é pedido junto e descartado na hora seguinte, e isso não é desperdício:
+   * pedir só o áudio (`video: false`) mata o renderer do Electron 39 na hora, o
+   * que derrubaria a call inteira em troca de tentar salvar o som dela. Com a
+   * trilha de vídeo no pedido, a captura vem, e parar essa trilha logo depois
+   * deixa o loopback tocando sozinho — verificado com o app rodando.
+   *
+   * Fora do app esse caminho não existe, e insistir só renderia uma exceção a mais
+   * em cima da que já falhou.
+   */
+  async #openSystemLoopback(
+    sourceId: string | null,
+    onError: (error: unknown) => void,
+  ): Promise<MediaStreamTrack | null> {
+    const platform = desktopPlatform();
+    // App até a 1.0.0 não informa a plataforma, e o único instalador é o de
+    // Windows: o desconhecido tem mais chance de ser Windows do que de não ser.
+    if (!isDesktopApp() || (platform !== null && platform !== "win32")) return null;
+    try {
+      // `mandatory` é o dicionário antigo de constraints, que o TypeScript não
+      // descreve mais. O cast é o preço de usar a forma que ainda funciona.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { mandatory: { chromeMediaSource: "desktop" } },
+        video: {
+          mandatory: {
+            chromeMediaSource: "desktop",
+            ...(sourceId ? { chromeMediaSourceId: sourceId } : {}),
+          },
+        },
+      } as unknown as MediaStreamConstraints);
+
+      const track = stream.getAudioTracks()[0] ?? null;
+      // A imagem daqui não serve pra nada: quem transmite é a captura que já
+      // veio. Parar e soltar a trilha é o que impede duas capturas da mesma tela
+      // rodando ao mesmo tempo, cada uma custando CPU.
+      for (const video of stream.getVideoTracks()) {
+        video.stop();
+        stream.removeTrack(video);
+      }
+      if (!track) this.#stop(stream);
+      return track;
+    } catch (error) {
+      onError(error);
+      return null;
+    }
   }
 
   /**

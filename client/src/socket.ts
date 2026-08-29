@@ -325,8 +325,6 @@ export function describeSocketError(code: string | undefined): string {
       return "Você não faz parte desse servidor.";
     case "not-owner":
       return "Só quem criou o servidor pode fazer isso.";
-    case "default-guild":
-      return "Os servidores que já vêm no Draco não podem ser alterados. Crie o seu para administrá-lo.";
     case "is-owner":
       return "Você criou este servidor, então não pode sair dele.";
     case "last-channel":

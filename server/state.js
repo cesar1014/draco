@@ -25,36 +25,14 @@ const MESSAGE_RETENTION = 5000;
  */
 export const MESSAGE_PAGE = 50;
 
-const DEFAULT_GUILDS = [
-  { id: "g-main", name: "Meu Servidor", initials: "MS", color: "#5b6cff" },
-  { id: "g-games", name: "Jogatina", initials: "JG", color: "#3ddc97" },
-];
-
-const DEFAULT_CHANNELS = [
-  { id: "t-geral", guildId: "g-main", type: "text", name: "geral", category: "Canais de Texto" },
-  { id: "t-avisos", guildId: "g-main", type: "text", name: "avisos", category: "Canais de Texto" },
-  { id: "v-geral", guildId: "g-main", type: "voice", name: "Geral", category: "Canais de Voz" },
-  { id: "v-reuniao", guildId: "g-main", type: "voice", name: "Reunião", category: "Canais de Voz" },
-  { id: "t-jogos", guildId: "g-games", type: "text", name: "bate-papo", category: "Canais de Texto" },
-  { id: "v-jogos", guildId: "g-games", type: "voice", name: "Sala de Jogo", category: "Canais de Voz" },
-];
-
 /** Cor do avatar, escolhida de forma estável a partir do nome. */
 const AVATAR_COLORS = ["#5b6cff", "#3ddc97", "#ffb457", "#ff5f7a", "#f45ec1", "#a06bff", "#4fd8ff"];
 
-/** Categorias dos canais criados pela interface, iguais às do catálogo padrão. */
+/** Categorias dos canais criados pela interface. */
 const TEXT_CATEGORY = "Canais de Texto";
 const VOICE_CATEGORY = "Canais de Voz";
 
 const repository = createStateRepository();
-repository.seedCatalog(DEFAULT_GUILDS, DEFAULT_CHANNELS);
-
-/**
- * Os servidores do catálogo padrão são de todo mundo: quem entra pela primeira
- * vez já os encontra. Servidor criado por alguém não entra nesta lista, e é isso
- * que faz um servidor novo ser privado até que se convide alguém.
- */
-const DEFAULT_GUILD_IDS = DEFAULT_GUILDS.map((guild) => guild.id);
 
 /**
  * Catálogo em memória, relido do banco quando alguém cria ou apaga algo. É cache
@@ -148,7 +126,7 @@ export function addMember(socketId, userId, username) {
   };
 
   const color = colorForName(username);
-  repository.saveProfile({ id: userId, username, color }, DEFAULT_GUILD_IDS);
+  repository.saveProfile({ id: userId, username, color });
 
   member.username = username;
   member.color = color;
@@ -284,7 +262,9 @@ export function loadHistory(channelId, beforeId) {
  * É por pessoa, e não global: cada um recebe só os servidores de que é membro.
  * Um servidor criado por alguém não aparece pra quem não foi convidado, e é isso
  * que o torna privado sem precisar de nenhuma regra de permissão além da
- * associação que já está no banco.
+ * associação que já está no banco. Quem acabou de chegar não é membro de nada, e
+ * o snapshot dessa pessoa vem vazio de propósito: o app não tem servidor de
+ * demonstração, então o primeiro passo dela é criar um ou colar um convite.
  *
  * `roster` é o elenco de cada servidor, esteja a pessoa conectada ou não — é dele
  * que sai a parte offline da lista de membros. Presença continua vindo de
@@ -333,9 +313,6 @@ export const guildRoster = (guildId) => repository.listGuildRoster(guildId);
 export const isGuildMember = (guildId, userId) => repository.isMember(guildId, userId);
 
 export const isGuildOwner = (guildId, userId) => repository.isOwner(guildId, userId);
-
-/** Servidor do catálogo padrão: ninguém é dono, e ninguém pode administrá-lo. */
-export const isDefaultGuild = (guildId) => DEFAULT_GUILD_IDS.includes(guildId);
 
 /**
  * Cria um servidor com o primeiro canal de texto e o primeiro de voz. Os dois
@@ -393,7 +370,6 @@ export function deleteChannel(channelId) {
 
 /** Sair do servidor. O dono não sai do próprio: não haveria quem administrasse. */
 export function leaveGuild(guildId, userId) {
-  if (isDefaultGuild(guildId)) return { ok: false, error: "default-guild" };
   if (repository.isOwner(guildId, userId)) return { ok: false, error: "is-owner" };
   if (!repository.isMember(guildId, userId)) return { ok: false, error: "not-member" };
   repository.leaveGuild(guildId, userId);

@@ -47,6 +47,30 @@ const CONTENT_HINT: Record<ScreenContent, string> = {
 
 const mbps = (bits: number) => (bits / 1_000_000).toFixed(1).replace(".", ",");
 
+/**
+ * O que esperar do som do sistema, que depende de onde a página está rodando e do
+ * que foi escolhido. A tela inteira ganha frase própria: é nela que o Windows
+ * recusa o loopback em algumas configurações, e a saída é a janela do programa.
+ */
+function systemAudioHint(where: {
+  capable: boolean;
+  screenOn: boolean;
+  desktop: boolean;
+  wholeScreen: boolean;
+}): string {
+  if (!where.capable) {
+    return "O app só captura o som do sistema no Windows. Aqui a transmissão vai sem áudio.";
+  }
+  if (where.screenOn) return "O som só pode ser ligado ou desligado ao começar a transmissão.";
+  if (!where.desktop) {
+    return "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio.";
+  }
+  if (where.wholeScreen) {
+    return "Manda o áudio do Windows junto. Se ele não vier, compartilhe a janela do programa: o Windows libera o som dela mesmo quando recusa o da tela inteira.";
+  }
+  return "Manda o áudio do Windows junto: o som do jogo ou do vídeo.";
+}
+
 export function ScreenShareModal() {
   const screenOptions = useStore((state) => state.screenOptions);
   const screenOn = useStore((state) => state.screenOn);
@@ -298,13 +322,12 @@ export function ScreenShareModal() {
               <span>
                 <strong>Levar o som do sistema</strong>
                 <em>
-                  {!systemAudioCapable
-                    ? "O app só captura o som do sistema no Windows. Aqui a transmissão vai sem áudio."
-                    : screenOn
-                      ? "O som só pode ser ligado ou desligado ao começar a transmissão."
-                      : desktop
-                        ? "Manda o áudio do Windows junto: o som do jogo ou do vídeo."
-                        : "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio."}
+                  {systemAudioHint({
+                    capable: systemAudioCapable,
+                    screenOn,
+                    desktop,
+                    wholeScreen: selected?.isScreen === true,
+                  })}
                 </em>
               </span>
             </label>

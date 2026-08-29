@@ -242,9 +242,9 @@ Presença e mídia não são "estado que se perdeu": eles deixam de ser verdade 
 
 ### Servidores e privacidade
 
-Os dois servidores que já vêm no Draco são de todo mundo: quem entra pela primeira vez encontra os dois, e ninguém pode renomeá-los ou apagar canais deles — não têm dono, então não há a quem responsabilizar por vandalismo.
+O app não vem com servidores de demonstração. Quem entra pela primeira vez começa sem servidor e encontra dois caminhos: criar o seu ou colar um convite. Isso evita colocar todo mundo num espaço público sem dono nem alguém que possa administrá-lo.
 
-Um servidor **criado pela interface** funciona ao contrário: nasce privado, com um canal de texto e um de voz, e só quem recebe um convite entra. Isso não é uma regra de permissão à parte — o snapshot que cada cliente recebe é montado a partir dos servidores de que aquela pessoa é membro, então um servidor de que ela não faz parte simplesmente não existe do ponto de vista dela: nem os canais, nem a conversa.
+Todo servidor nasce privado, com um canal de texto e um de voz, e só quem recebe um convite entra. Isso não é uma regra de permissão à parte — o snapshot que cada cliente recebe é montado a partir dos servidores de que aquela pessoa é membro, então um servidor de que ela não faz parte simplesmente não existe do ponto de vista dela: nem os canais, nem a conversa.
 
 Quem cria é o dono. Ele cria e apaga canais, convida, bane e readmite; os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
 
@@ -494,7 +494,7 @@ O app tem o próprio seletor de telas e janelas, com miniaturas. Funciona em doi
 Duas consequências práticas:
 
 - **Janela fechada entre escolher e compartilhar** dá uma mensagem que explica isso, em vez de uma captura de nada. O processo principal guarda o id da fonte e reconfere se ela ainda existe na hora de conceder.
-- **O áudio do sistema depende do loopback do Windows.** No app para Mac ou Linux a opção aparece desligada, dizendo o porquê, já que prometer o som ali resultaria numa transmissão muda. Se o loopback falhar no Windows, a transmissão começa sem som e avisa, em vez de não começar.
+- **O áudio do sistema depende do loopback do Windows.** No app para Mac ou Linux a opção aparece desligada, dizendo o porquê, já que prometer o som ali resultaria numa transmissão muda. No Windows, quando o pedido de captura sai sem som — o que acontece com a tela inteira em algumas configurações, enquanto a janela de um programa passa —, o app tenta o loopback uma segunda vez por fora do pedido de tela. Se nem assim vier, a transmissão começa muda e o aviso diz qual dos dois casos foi, porque a saída de um deles é compartilhar a janela em vez da tela.
 
 ---
 
