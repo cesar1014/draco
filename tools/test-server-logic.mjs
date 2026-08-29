@@ -3,7 +3,7 @@
  *
  * São as regras que erram calado: um backoff que não cresce prende a sala em STUN
  * até alguém recarregar a página, e um balde de limite que repõe do jeito errado
- * transforma a senha da sala em algo que se adivinha. Nenhuma das duas aparece
+ * transforma um limite de frequência em algo fácil de contornar. Nenhuma das duas aparece
  * num teste de integração, porque as duas "funcionam" — só funcionam mal.
  *
  *   node tools/test-server-logic.mjs

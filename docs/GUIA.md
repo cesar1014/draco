@@ -171,15 +171,19 @@ o navegador só libera câmera e microfone em origem segura.
 winget install --id Cloudflare.cloudflared
 ```
 
-**Ponha senha na sala.** Sem senha, qualquer um com o link entra na sua call. Copie
-`.env.example` para `.env` e preencha:
+**Configure as contas e o e-mail.** Copie `.env.example` para `.env` e preencha o
+administrador inicial e um serviço SMTP:
 
 ```
-ROOM_PASSWORD=escolha-uma-senha
+SYSTEM_ADMIN_EMAIL=seu-email@exemplo.com
+SMTP_HOST=smtp.exemplo.com
+SMTP_PORT=587
+SMTP_USER=usuario
+SMTP_PASS=senha-do-smtp
+EMAIL_FROM=Draco <noreply@exemplo.com>
 ```
 
-Reinicie depois de editar o `.env`. O campo de senha aparece sozinho na tela de entrada quando
-`ROOM_PASSWORD` está preenchido. Mande a senha pros amigos por outro caminho, não junto do link.
+Reinicie depois de editar o `.env`. Cada amigo cria a própria conta e confirma o próprio e-mail.
 
 ### O que muda pra quem entra
 
@@ -188,7 +192,7 @@ Reinicie depois de editar o `.env`. O campo de senha aparece sozinho na tela de 
 | Baixar algo | sim, este projeto | **não** |
 | Node.js instalado | sim | não |
 | Deixar janela aberta | sim, senão o link morre | não |
-| O que faz | roda o `.bat` e manda o link | abre o link, escolhe apelido, entra na call |
+| O que faz | roda o `.bat` e manda o link | abre o link, cria a própria conta e entra |
 
 ### Duas coisas que incomodam nesse esquema
 
@@ -243,11 +247,7 @@ git remote add origin https://github.com/SEU-USUARIO/SEU-REPO.git && git push -u
 ```
 
 **2. No Render:** entre com a conta do GitHub em https://dashboard.render.com → **New** →
-**Blueprint** → escolha o repositório. Ele acha o `render.yaml` e pede uma coisa só:
-
-| Variável | O que pôr |
-|---|---|
-| `ROOM_PASSWORD` | uma senha pra sala. **Ponha uma**, o link vai ser público |
+**Blueprint** → escolha o repositório. Depois configure as variáveis SMTP descritas no `.env.example`.
 
 Clique em **Apply**. O primeiro build leva alguns minutos. Quando terminar, o endereço aparece no
 topo da página do serviço. Esse é o link definitivo dos seus amigos.
@@ -333,7 +333,7 @@ fly volumes create draco_data --region gru --size 1
 O nome `draco_data` e o destino `/data` já estão declarados no `fly.toml`.
 
 ```bash
-fly secrets set ROOM_PASSWORD=suasenha ORIGIN=https://SEU-APP.fly.dev \n  SESSION_SECRET=$(openssl rand -hex 32)
+fly secrets set ORIGIN=https://SEU-APP.fly.dev APP_URL=https://SEU-APP.fly.dev \n  SYSTEM_ADMIN_EMAIL=seu-email@exemplo.com SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 ```bash
@@ -381,7 +381,7 @@ bash tools/deploy-oracle.sh seu-nome.duckdns.org
 Ele faz o que a receita manual faria, sem as pegadinhas: 2 GB de swap (1 GB de RAM não aguenta o
 build do Vite), Node 22, `npm ci && npm run build`, serviço `draco` no systemd, Caddy pro HTTPS
 automático, coturn com `use-auth-secret` e as portas liberadas no `iptables`. No fim imprime o
-endereço e **a senha da sala**, que ele mesmo sorteia. Pode rodar de novo à vontade: o `.env` é
+endereço e o estado dos serviços. Pode rodar de novo à vontade: o `.env` é
 preservado, ele só preenche o que estiver em branco.
 
 Duas coisas dele que valem saber:
@@ -519,7 +519,7 @@ server/
   data/          SQLite, repositório de dados e migrations
   auth.js        tokens de sessão assinados pelo servidor
   log.js         log com categoria (SIGNAL, SFU, TURN, AUTH, DB…)
-  security.js    sanitização, validação de payload, rate limit, senha da sala
+  security.js    sanitização, validação de payload e rate limit
 client/
   index.html
   public/        manifest e ícones do app instalável
@@ -552,14 +552,12 @@ persistente. A entrada carrega as 50 mensagens mais recentes por canal, e rolar 
 anteriores no banco, uma página por vez. Presença, sockets e estado de mídia são transitórios por
 definição.
 
-Identidade é um apelido mais um token assinado pelo servidor, guardado no navegador. Isso já
-impede alguém de assumir a identidade de outra pessoa, mas não é conta: não há e-mail, senha por
-pessoa, recuperação de acesso, DM, reação, upload de arquivo nem notificação push.
+Identidade é uma conta com e-mail, nome único, senha com hash e token assinado pelo servidor.
+Confirmação e recuperação usam e-mail; mensagens privadas, inclusive para si mesmo, ficam no SQLite.
 
-Servidores, canais, convites e banimentos já são criados pela interface. Cargos e permissões por
-canal, não: o schema reserva as tabelas (`roles`, `guild_member_roles`,
-`channel_permission_overwrites`), e hoje todo membro de um servidor vê todos os canais dele. Quem
-criou o servidor é o único que administra.
+Servidores, canais, convites, banimentos e cargos com permissões por servidor são administrados pela
+interface. Sobrescritas diferentes para um canal específico ainda não estão expostas; a tabela
+`channel_permission_overwrites` fica reservada para essa etapa.
 
 Uma instância só. Presença, limite de frequência e sessões de mídia vivem na memória do processo,
 então subir duas instâncias por trás de um balanceador exigiria estado compartilhado — e é aí que um

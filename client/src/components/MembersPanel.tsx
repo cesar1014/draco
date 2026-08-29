@@ -22,6 +22,8 @@ export function MembersPanel() {
   const activeGuildId = useStore((state) => state.activeGuildId);
   const selfId = useStore((state) => state.selfId);
   const setMembersOpen = useStore((state) => state.setMembersOpen);
+  const account = useStore((state) => state.account);
+  const openDirect = useStore((state) => state.openDirect);
 
   /**
    * Online sai da presença; offline é o elenco do banco menos quem está online.
@@ -30,7 +32,10 @@ export function MembersPanel() {
    * embaixo do cursor de quem estava clicando quando o Wi-Fi de um terceiro caiu.
    */
   const { online, offline } = useMemo(() => {
-    const present = Object.values(members).sort(
+    const rosterIds = new Set((roster[activeGuildId] ?? []).map((entry) => entry.id));
+    const present = Object.values(members).filter(
+      (member) => rosterIds.has(member.id) || (member.guest && member.guestGuildId === activeGuildId),
+    ).sort(
       (a, b) => a.since - b.since || a.username.localeCompare(b.username, "pt-BR"),
     );
     const connected = new Set(present.map((member) => member.id));
@@ -39,6 +44,11 @@ export function MembersPanel() {
       .sort((a, b) => a.username.localeCompare(b.username, "pt-BR"));
     return { online: present, offline: away };
   }, [members, roster, activeGuildId]);
+
+  const startDirect = (userId: string) => {
+    if (account?.guest) return;
+    void openDirect(userId);
+  };
 
   return (
     <aside className="members" aria-label="Membros">
@@ -65,6 +75,7 @@ export function MembersPanel() {
                   member={member}
                   self={member.id === selfId}
                   room={channels.find((channel) => channel.id === member.voiceChannelId)?.name}
+                  onDirect={member.guest ? undefined : () => startDirect(member.id)}
                 />
               ))}
             </ul>
@@ -76,7 +87,7 @@ export function MembersPanel() {
             <p className="category">Offline — {offline.length}</p>
             <ul className="members-list">
               {offline.map((entry) => (
-                <OfflineRow key={entry.id} entry={entry} />
+                <OfflineRow key={entry.id} entry={entry} onDirect={() => startDirect(entry.id)} />
               ))}
             </ul>
           </section>
@@ -90,29 +101,26 @@ export function MembersPanel() {
   );
 }
 
-function OnlineRow({ member, self, room }: { member: Member; self: boolean; room?: string }) {
+function OnlineRow({ member, self, room, onDirect }: { member: Member; self: boolean; room?: string; onDirect?: () => void }) {
   return (
-    <li className="member-row">
-      <Avatar member={member} size={26} />
-      <span className="member-name" data-self={self}>
-        {member.username}
-      </span>
-      {room && (
-        <em className="member-where" title={`Na call em ${room}`}>
-          <SpeakerIcon size={11} />
-          {room}
-        </em>
-      )}
+    <li className="member-row" title={onDirect ? "Abrir mensagem privada" : undefined}>
+      <button type="button" className="member-row-button" disabled={!onDirect} onClick={onDirect}>
+        <Avatar member={member} size={26} />
+        <span className="member-name" data-self={self}>{member.username}{member.guest ? " · visitante" : ""}</span>
+        {room && <em className="member-where" title={`Na call em ${room}`}><SpeakerIcon size={11} />{room}</em>}
+      </button>
     </li>
   );
 }
 
 /** Quem pertence ao servidor mas não está conectado. */
-function OfflineRow({ entry }: { entry: RosterEntry }) {
+function OfflineRow({ entry, onDirect }: { entry: RosterEntry; onDirect: () => void }) {
   return (
     <li className="member-row" data-offline="true">
-      <Avatar member={{ ...entry, speaking: false }} size={26} />
-      <span className="member-name">{entry.username}</span>
+      <button type="button" className="member-row-button" onClick={onDirect} title="Abrir mensagem privada">
+        <Avatar member={{ ...entry, speaking: false }} size={26} />
+        <span className="member-name">{entry.username}</span>
+      </button>
     </li>
   );
 }

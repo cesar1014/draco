@@ -1,5 +1,14 @@
 import { create } from "zustand";
 import {
+  completePasswordReset,
+  describeAuthError,
+  loginAccount,
+  registerAccount,
+  requestOwnPasswordChange,
+  requestPasswordReset,
+  verifyAccountEmail,
+} from "@/auth";
+import {
   DEFAULT_AUDIO_SETTINGS,
   DEFAULT_CAMERA_OPTIONS,
   DEFAULT_SCREEN_OPTIONS,
@@ -41,35 +50,48 @@ import {
   createChannel,
   createGuild,
   createInvite,
+  createRole as createGuildRole,
   createSocket,
   deleteChannel,
   describeSocketError,
   identify,
+  identifyGuest,
   joinVoiceChannel,
   leaveGuild,
   loadChatHistory,
   loadGuildAdmin,
+  loadDirect,
+  openDirect,
   revokeInvite,
+  sendDirect,
   sfuJoin,
   sfuPublish,
   sfuRenegotiate,
   sfuSubscribe,
   unbanMember,
+  updateRole as updateGuildRole,
+  deleteRole as deleteGuildRole,
+  assignRole as assignGuildRole,
   type AppSocket,
   type VoiceFlags,
 } from "@/socket";
 import {
   SLOT_ORDER,
   type BanEntry,
+  type Account,
   type Channel,
   type Guild,
+  type GuildPermission,
   type IceConfigResponse,
   type Invite,
   type MediaSlot,
   type Member,
   type Message,
+  type DirectMessage,
+  type DirectThread,
   type RosterEntry,
   type ServerSnapshot,
+  type Role,
 } from "@/types";
 
 /**
@@ -86,7 +108,9 @@ let socket: AppSocket | null = null;
 let engine: CallEngine | null = null;
 let detector: SpeakingDetector | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
-let credentials = { username: "", password: "" };
+let identity: { token: string | null; guest?: never } | { token?: never; guest: { username: string; inviteCode: string; token?: string } } = {
+  token: null,
+};
 let lastConnectError: string | null = null;
 /** O servidor respondeu que tem SFU: a mídia sobe uma vez, não uma por pessoa. */
 let sfuAvailable = false;
@@ -200,6 +224,14 @@ function readSessionToken(): string | null {
   return typeof raw === "string" && raw.length > 0 && raw.length <= 512 ? raw : null;
 }
 
+function clearSessionToken(): void {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Sessão em memória continua podendo ser encerrada mesmo sem armazenamento.
+  }
+}
+
 function loadSettings(): Settings {
   const raw = (readJson(SETTINGS_KEY) ?? {}) as Partial<Settings> & { noiseSuppression?: boolean };
   const pick = <K extends keyof Settings>(key: K): Settings[K] =>
@@ -263,9 +295,10 @@ interface Store {
   // --- sessão -------------------------------------------------------------
   status: "join" | "connecting" | "ready";
   selfId: string | null;
+  account: Account | null;
   joinError: string | null;
   reconnecting: boolean;
-  requiresPassword: boolean;
+  emailReady: boolean;
 
   // --- servidor -----------------------------------------------------------
   guilds: Guild[];
@@ -278,6 +311,10 @@ interface Store {
    */
   roster: Record<string, RosterEntry[]>;
   messages: Record<string, Message[]>;
+  permissions: Record<string, GuildPermission[]>;
+  directThreads: DirectThread[];
+  directMessages: Record<string, DirectMessage[]>;
+  activeDirectId: string;
   /**
    * Por canal: ainda existe conversa antes da mais antiga que temos. Vem do
    * servidor e é o que decide se rolar até o topo pede mais ou para ali.
@@ -353,12 +390,22 @@ interface Store {
 
   // --- ações --------------------------------------------------------------
   bootstrap: () => Promise<void>;
-  connect: (username: string, password: string) => Promise<void>;
+  connect: (email: string, password: string) => Promise<void>;
+  connectGuest: (username: string, inviteCode: string) => Promise<void>;
+  register: (email: string, username: string, password: string) => Promise<string | null>;
+  verifyEmail: (token: string) => Promise<string | null>;
+  requestPassword: (email: string) => Promise<string | null>;
+  completePassword: (token: string, password: string) => Promise<string | null>;
+  requestOwnPassword: () => Promise<string | null>;
+  logout: () => void;
   selectGuild: (guildId: string) => void;
   selectChannel: (channelId: string) => void;
   setSidebarOpen: (open: boolean) => void;
   setMembersOpen: (open: boolean) => void;
   sendChat: (content: string) => void;
+  openDirect: (userId: string) => Promise<string | null>;
+  selectDirect: (threadId: string) => Promise<void>;
+  sendDirect: (content: string) => void;
   loadOlderMessages: (channelId: string) => Promise<void>;
   joinVoice: (channelId: string) => Promise<void>;
   leaveVoice: () => void;
@@ -401,6 +448,10 @@ interface Store {
   revokeInvite: (code: string) => Promise<void>;
   banMember: (userId: string, reason?: string) => Promise<string | null>;
   unbanMember: (userId: string) => Promise<void>;
+  createRole: (name: string, color: string | null, permissions: GuildPermission[]) => Promise<string | null>;
+  updateRole: (roleId: string, name: string, color: string | null, permissions: GuildPermission[]) => Promise<string | null>;
+  deleteRole: (roleId: string) => Promise<string | null>;
+  assignRole: (userId: string, roleId: string, assigned: boolean) => Promise<string | null>;
 }
 
 /**
@@ -410,11 +461,15 @@ interface Store {
  */
 export interface AdminState {
   guildId: string;
-  /** Só o dono vê banimentos e pode criar ou apagar canal. */
+  /** Dono ou cargos autorizados recebem as seções administrativas correspondentes. */
   owner: boolean;
   roster: RosterEntry[];
   invites: Invite[];
   bans: BanEntry[];
+  permissions: GuildPermission[];
+  roles: Role[];
+  memberRoles: Record<string, string[]>;
+  availablePermissions: GuildPermission[];
   /** Uma ação por vez: dois cliques no mesmo botão criariam dois convites. */
   busy: boolean;
   error: string | null;
@@ -792,6 +847,9 @@ export const useStore = create<Store>()((set, get) => {
     roster: snapshot.roster ?? {},
     messages: snapshot.messages,
     history: snapshot.history ?? {},
+    permissions: snapshot.permissions ?? {},
+    directThreads: snapshot.directThreads ?? [],
+    directMessages: snapshot.directMessages ?? {},
     loadingHistory: null,
   });
 
@@ -820,7 +878,9 @@ export const useStore = create<Store>()((set, get) => {
     s.on("connect", () => {
       void (async () => {
         const fresh = get().status !== "ready";
-        const reply = await identify(s, credentials.username, credentials.password, readSessionToken());
+        const reply = identity.guest
+          ? await identifyGuest(s, identity.guest.username, identity.guest.inviteCode, identity.guest.token)
+          : await identify(s, identity.token ?? readSessionToken());
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
           s.disconnect();
@@ -829,12 +889,19 @@ export const useStore = create<Store>()((set, get) => {
 
         // Guardar o token é o que faz a próxima reconexão voltar como a mesma
         // pessoa. Ele só vem quando muda; o de antes continua valendo.
-        if (reply.token) writeJson(SESSION_KEY, reply.token);
+        if (reply.token) {
+          writeJson(SESSION_KEY, reply.token);
+          identity = { token: reply.token };
+        }
+        if (reply.guestToken && identity.guest) {
+          identity = { guest: { ...identity.guest, token: reply.guestToken } };
+        }
         sfuAvailable = reply.sfu === true;
 
         set({
           status: "ready",
           selfId: reply.selfId,
+          account: reply.account ?? null,
           joinError: null,
           reconnecting: false,
           ...fromSnapshot(reply.state),
@@ -888,6 +955,30 @@ export const useStore = create<Store>()((set, get) => {
           [message.channelId]: [...(state.messages[message.channelId] ?? []), message],
         },
       }));
+    });
+
+    s.on("direct:thread", (thread) => {
+      set((state) => ({
+        directThreads: [thread, ...state.directThreads.filter((item) => item.id !== thread.id)],
+      }));
+    });
+
+    s.on("direct:message", (message) => {
+      set((state) => {
+        const current = state.directMessages[message.threadId] ?? [];
+        const thread = state.directThreads.find((item) => item.id === message.threadId);
+        return {
+          directMessages: current.some((item) => item.id === message.id)
+            ? state.directMessages
+            : { ...state.directMessages, [message.threadId]: [...current, message] },
+          directThreads: thread
+            ? [
+                { ...thread, lastContent: message.content, lastAt: message.at },
+                ...state.directThreads.filter((item) => item.id !== message.threadId),
+              ]
+            : state.directThreads,
+        };
+      });
     });
 
     s.on("voice:peer-joined", ({ channelId, member }) => {
@@ -966,6 +1057,10 @@ export const useStore = create<Store>()((set, get) => {
       );
     });
 
+    s.on("role:changed", ({ guildId }) => {
+      if (get().admin?.guildId === guildId) void get().openAdmin(guildId);
+    });
+
     /** Banido: o servidor sai da lista, com aviso, em vez de sumir sem explicação. */
     s.on("guild:banned", ({ guildId }) => {
       const guild = get().guilds.find((item) => item.id === guildId);
@@ -989,6 +1084,39 @@ export const useStore = create<Store>()((set, get) => {
     });
   };
 
+  const startConnection = async () => {
+    lastConnectError = null;
+    set({ status: "connecting", joinError: null });
+    if (!socket) {
+      socket = createSocket();
+      wire(socket);
+    }
+    socket.connect();
+
+    await new Promise<void>((resolve) => {
+      if (get().status === "ready") return resolve();
+      const timer = setTimeout(resolve, 50000);
+      const unsubscribe = useStore.subscribe((state) => {
+        if (state.status !== "ready" && !state.joinError) return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      });
+    });
+
+    if (get().status !== "ready") {
+      socket.disconnect();
+      const failure =
+        !lastConnectError || lastConnectError === "timeout"
+          ? describeSocketError("timeout")
+          : `Conexão recusada pelo servidor: ${lastConnectError}`;
+      set({ status: "join", joinError: get().joinError ?? failure });
+      return;
+    }
+    void loadIceConfig().then((ice) => set({ ice }));
+    void get().refreshDevices();
+  };
+
   const initialSettings = loadSettings();
   setSoundsEnabled(initialSettings.sounds);
   setSoundVolume(initialSettings.soundVolume);
@@ -996,15 +1124,20 @@ export const useStore = create<Store>()((set, get) => {
   return {
     status: "join",
     selfId: null,
+    account: null,
     joinError: null,
     reconnecting: false,
-    requiresPassword: false,
+    emailReady: false,
 
     guilds: [],
     channels: [],
     members: {},
     roster: {},
     messages: {},
+    permissions: {},
+    directThreads: [],
+    directMessages: {},
+    activeDirectId: "",
     history: {},
     loadingHistory: null,
 
@@ -1043,60 +1176,96 @@ export const useStore = create<Store>()((set, get) => {
     async bootstrap() {
       try {
         const response = await fetch("/api/config");
-        const config = (await response.json()) as { requiresPassword?: boolean };
-        set({ requiresPassword: Boolean(config.requiresPassword) });
+        const config = (await response.json()) as { emailReady?: boolean };
+        set({ emailReady: config.emailReady === true });
       } catch {
-        // Sem resposta o campo de senha não aparece; se houver senha, o erro volta
-        // no `identify` com a mensagem certa.
+        set({ emailReady: false });
+      }
+      const token = readSessionToken();
+      if (token && get().status === "join") {
+        identity = { token };
+        await startConnection();
       }
     },
 
-    async connect(username, password) {
-      credentials = { username: username.trim(), password };
-      lastConnectError = null;
+    async connect(email, password) {
       set({ status: "connecting", joinError: null });
-
-      if (!socket) {
-        socket = createSocket();
-        wire(socket);
-      }
-      socket.connect();
-
-      // O prazo é maior que o `timeout` do socket de propósito: assim ele já
-      // falhou e deixou o motivo em `lastConnectError` antes desta rede agir.
-      await new Promise<void>((resolve) => {
-        if (get().status === "ready") return resolve();
-        const timer = setTimeout(resolve, 50000);
-        const unsubscribe = useStore.subscribe((state) => {
-          if (state.status !== "ready" && !state.joinError) return;
-          clearTimeout(timer);
-          unsubscribe();
-          resolve();
-        });
-      });
-
-      if (get().status !== "ready") {
-        socket.disconnect();
-        // "timeout" é o Socket.IO desistindo: serviço acordando, não recusa.
-        const failure =
-          !lastConnectError || lastConnectError === "timeout"
-            ? describeSocketError("timeout")
-            : `Conexão recusada pelo servidor: ${lastConnectError}`;
-        set({ status: "join", joinError: get().joinError ?? failure });
+      const reply = await loginAccount(email.trim(), password);
+      if (!reply.ok || !reply.token) {
+        set({ status: "join", joinError: describeAuthError(reply.error) });
         return;
       }
+      writeJson(SESSION_KEY, reply.token);
+      identity = { token: reply.token };
+      await startConnection();
+    },
 
-      void loadIceConfig().then((ice) => set({ ice }));
-      void get().refreshDevices();
+    async connectGuest(username, inviteCode) {
+      clearSessionToken();
+      identity = { guest: { username: username.trim(), inviteCode: inviteCode.trim().toUpperCase() } };
+      await startConnection();
+    },
+
+    async register(email, username, password) {
+      const reply = await registerAccount(email, username, password);
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async verifyEmail(token) {
+      const reply = await verifyAccountEmail(token);
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async requestPassword(email) {
+      const reply = await requestPasswordReset(email);
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async completePassword(token, password) {
+      const reply = await completePasswordReset(token, password);
+      if (!reply.ok || !reply.token) return describeAuthError(reply.error);
+      writeJson(SESSION_KEY, reply.token);
+      identity = { token: reply.token };
+      await startConnection();
+      return get().status === "ready" ? null : get().joinError;
+    },
+
+    async requestOwnPassword() {
+      const reply = await requestOwnPasswordChange(readSessionToken());
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    logout() {
+      get().leaveVoice();
+      socket?.disconnect();
+      socket = null;
+      clearSessionToken();
+      identity = { token: null };
+      set({
+        status: "join",
+        selfId: null,
+        account: null,
+        guilds: [],
+        channels: [],
+        members: {},
+        roster: {},
+        messages: {},
+        permissions: {},
+        directThreads: [],
+        directMessages: {},
+        activeDirectId: "",
+        activeGuildId: "",
+        activeChannelId: "",
+      });
     },
 
     selectGuild(guildId) {
       const first = get().channels.find((c) => c.guildId === guildId && c.type === "text");
-      set({ activeGuildId: guildId, activeChannelId: first?.id ?? "" });
+      set({ activeGuildId: guildId, activeChannelId: first?.id ?? "", activeDirectId: "" });
     },
 
     selectChannel(channelId) {
-      set({ activeChannelId: channelId, sidebarOpen: false });
+      set({ activeChannelId: channelId, activeDirectId: "", sidebarOpen: false });
     },
 
     setSidebarOpen(open) {
@@ -1112,6 +1281,39 @@ export const useStore = create<Store>()((set, get) => {
       const trimmed = content.trim();
       if (!trimmed || !channelId) return;
       socket?.emit("chat:send", { channelId, content: trimmed });
+    },
+
+    async openDirect(userId) {
+      const s = socket;
+      if (!s || get().account?.guest) return "Entre na sua conta para conversar em privado.";
+      const reply = await openDirect(s, userId);
+      if (!reply.ok || !reply.thread) return describeSocketError(reply.error);
+      set((state) => ({
+        directThreads: [reply.thread!, ...state.directThreads.filter((item) => item.id !== reply.thread!.id)],
+        directMessages: { ...state.directMessages, [reply.thread!.id]: reply.messages ?? [] },
+        activeDirectId: reply.thread!.id,
+        activeChannelId: "",
+        membersOpen: false,
+      }));
+      return null;
+    },
+
+    async selectDirect(threadId) {
+      const s = socket;
+      if (!s) return;
+      set({ activeDirectId: threadId, activeChannelId: "", sidebarOpen: false });
+      if (get().directMessages[threadId]) return;
+      const reply = await loadDirect(s, threadId);
+      if (reply.ok) {
+        set((state) => ({ directMessages: { ...state.directMessages, [threadId]: reply.messages ?? [] } }));
+      }
+    },
+
+    sendDirect(content) {
+      const threadId = get().activeDirectId;
+      const trimmed = content.trim();
+      if (!socket || !threadId || !trimmed) return;
+      void sendDirect(socket, threadId, trimmed);
     },
 
     async loadOlderMessages(channelId) {
@@ -1587,6 +1789,10 @@ export const useStore = create<Store>()((set, get) => {
           roster: [],
           invites: [],
           bans: [],
+          permissions: [],
+          roles: [],
+          memberRoles: {},
+          availablePermissions: [],
           busy: true,
           error: null,
           lastCode: null,
@@ -1609,6 +1815,10 @@ export const useStore = create<Store>()((set, get) => {
           roster: reply.roster ?? [],
           invites: reply.invites ?? [],
           bans: reply.bans ?? [],
+          permissions: reply.permissions ?? [],
+          roles: reply.roles ?? [],
+          memberRoles: reply.memberRoles ?? {},
+          availablePermissions: reply.availablePermissions ?? [],
           busy: false,
           error: null,
           lastCode: null,
@@ -1706,6 +1916,53 @@ export const useStore = create<Store>()((set, get) => {
           error: reply.ok ? null : describeSocketError(reply.error),
         },
       });
+    },
+
+    async createRole(name, color, permissions) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await createGuildRole(s, admin.guildId, name, color, permissions);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, roles: reply.roles ?? admin.roles, error: null } });
+      return null;
+    },
+
+    async updateRole(roleId, name, color, permissions) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await updateGuildRole(s, admin.guildId, roleId, name, color, permissions);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, roles: reply.roles ?? admin.roles, error: null } });
+      return null;
+    },
+
+    async deleteRole(roleId) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await deleteGuildRole(s, admin.guildId, roleId);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({
+        admin: {
+          ...admin,
+          roles: reply.roles ?? admin.roles,
+          memberRoles: reply.memberRoles ?? admin.memberRoles,
+          error: null,
+        },
+      });
+      return null;
+    },
+
+    async assignRole(userId, roleId, assigned) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await assignGuildRole(s, admin.guildId, userId, roleId, assigned);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, memberRoles: reply.memberRoles ?? admin.memberRoles, error: null } });
+      return null;
     },
   };
 });

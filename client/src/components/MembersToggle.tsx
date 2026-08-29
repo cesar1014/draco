@@ -7,7 +7,12 @@ import { useStore } from "@/state/store";
  * mesmo lugar, em vez de um botão por tamanho de tela.
  */
 export function MembersToggle() {
-  const count = useStore((state) => Object.keys(state.members).length);
+  const count = useStore((state) => {
+    const ids = new Set((state.roster[state.activeGuildId] ?? []).map((entry) => entry.id));
+    return Object.values(state.members).filter(
+      (member) => ids.has(member.id) || (member.guest && member.guestGuildId === state.activeGuildId),
+    ).length;
+  });
   const membersOpen = useStore((state) => state.membersOpen);
   const setMembersOpen = useStore((state) => state.setMembersOpen);
 

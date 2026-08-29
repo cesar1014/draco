@@ -44,11 +44,10 @@ if not exist node_modules (
 )
 
 if not exist .env (
-  echo   AVISO: sem arquivo .env, a sala fica SEM SENHA.
-  echo   Qualquer pessoa com o link entra na sua call.
+  echo   AVISO: sem arquivo .env, o envio de e-mail fica desativado.
+  echo   Cadastro e troca de senha precisam de SMTP.
   echo.
-  echo   Para por senha: copie .env.example para .env e
-  echo   preencha ROOM_PASSWORD. Depois rode isto de novo.
+  echo   Copie .env.example para .env e preencha as opcoes SMTP.
   echo.
   timeout /t 6 /nobreak >nul
 )

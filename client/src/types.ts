@@ -33,6 +33,9 @@ export interface Member {
   speaking: boolean;
   /** Quando entrou no servidor, pra ordenar a lista de Online por chegada. */
   since: number;
+  /** Visitantes existem apenas enquanto o socket está aberto. */
+  guest?: boolean;
+  guestGuildId?: string | null;
   /** Sessão da pessoa no SFU. `null` em malha direta. */
   sfuSessionId: string | null;
   /** Nome de cada trilha publicada no SFU, por slot. É o que se assina. */
@@ -69,6 +72,54 @@ export interface ServerSnapshot {
   messages: Record<string, Message[]>;
   /** Canais em que ainda existe conversa antes da que veio no snapshot. */
   history: Record<string, boolean>;
+  /** Permissões efetivas da conta em cada servidor. */
+  permissions: Record<string, GuildPermission[]>;
+  directThreads?: DirectThread[];
+  directMessages?: Record<string, DirectMessage[]>;
+}
+
+export interface Account {
+  id: string;
+  email: string | null;
+  username: string;
+  isSystemAdmin: boolean;
+  guest?: boolean;
+}
+
+export type GuildPermission =
+  | "view_channels"
+  | "send_messages"
+  | "connect"
+  | "speak"
+  | "manage_channels"
+  | "create_invites"
+  | "ban_members"
+  | "manage_roles";
+
+export interface Role {
+  id: string;
+  guildId: string;
+  name: string;
+  color: string | null;
+  permissions: GuildPermission[];
+  isDefault: boolean;
+}
+
+export interface DirectThread {
+  id: string;
+  peer: RosterEntry;
+  lastContent: string | null;
+  lastAt: number | null;
+}
+
+export interface DirectMessage {
+  id: string;
+  threadId: string;
+  authorId: string;
+  username: string;
+  color: string;
+  content: string;
+  at: number;
 }
 
 /** Convite ativo de um servidor, como a tela de administração o mostra. */

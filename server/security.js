@@ -11,6 +11,7 @@ const MAX_PASSWORD = 256;
 const MAX_GUILD_NAME = 48;
 const MAX_CHANNEL_NAME = 32;
 const MAX_REASON = 200;
+const MAX_ROLE_NAME = 32;
 /**
  * SDP de uma call com tela e quatro trilhas passa longe disso. O teto existe
  * porque o corpo inteiro do evento é lido antes de qualquer validação, e um SDP
@@ -84,6 +85,12 @@ export function sanitizeReason(raw) {
   if (typeof raw !== "string") return null;
   const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim().slice(0, MAX_REASON);
   return cleaned.length > 0 ? cleaned : null;
+}
+
+export function sanitizeRoleName(raw) {
+  if (typeof raw !== "string" || raw.length > MAX_ROLE_NAME * 4) return null;
+  const cleaned = stripControlChars(raw).replace(/\s+/g, " ").trim().slice(0, MAX_ROLE_NAME);
+  return cleaned.length >= 2 ? cleaned : null;
 }
 
 /** Identificador de mensagem, canal ou sessão: texto curto, sem surpresa. */

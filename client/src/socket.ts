@@ -1,13 +1,18 @@
 import { io, type Socket } from "socket.io-client";
 import type {
   BanEntry,
+  Account,
   Channel,
+  DirectMessage,
+  DirectThread,
   Guild,
   Invite,
   MediaSlot,
   Member,
   Message,
   RosterEntry,
+  Role,
+  GuildPermission,
   ServerSnapshot,
   SignalPayload,
 } from "@/types";
@@ -32,6 +37,9 @@ interface ServerEvents {
   "guild:member-joined": (payload: { guildId: string; member: RosterEntry }) => void;
   "guild:member-left": (payload: { guildId: string; userId: string }) => void;
   "guild:banned": (payload: { guildId: string }) => void;
+  "role:changed": (payload: { guildId: string }) => void;
+  "direct:thread": (thread: DirectThread) => void;
+  "direct:message": (message: DirectMessage) => void;
 }
 
 export interface VoiceFlags {
@@ -53,9 +61,11 @@ export interface IdentifyReply {
    * servidor emite outra.
    */
   token?: string;
+  guestToken?: string;
   /** O servidor tem credenciais do SFU: a mídia passa por servidor. */
   sfu?: boolean;
   state?: ServerSnapshot;
+  account?: Account;
 }
 
 export interface VoiceJoinReply {
@@ -118,6 +128,22 @@ export interface AdminReply extends Ack {
   roster?: RosterEntry[];
   invites?: Invite[];
   bans?: BanEntry[];
+  permissions?: GuildPermission[];
+  roles?: Role[];
+  memberRoles?: Record<string, string[]>;
+  availablePermissions?: GuildPermission[];
+}
+
+export interface RoleReply extends Ack {
+  role?: Role;
+  roles?: Role[];
+  memberRoles?: Record<string, string[]>;
+}
+
+export interface DirectReply extends Ack {
+  thread?: DirectThread;
+  messages?: DirectMessage[];
+  message?: DirectMessage;
 }
 
 interface SfuPublishReply extends SfuReply {
@@ -131,7 +157,7 @@ interface SfuSubscribeReply extends SfuReply {
 
 interface ClientEvents {
   identify: (
-    payload: { username: string; password: string; token: string | null },
+    payload: { token?: string | null; guest?: { username?: string; inviteCode?: string; token?: string } },
     ack: (reply: IdentifyReply) => void,
   ) => void;
   "chat:send": (payload: { channelId: string; content: string }) => void;
@@ -187,6 +213,22 @@ interface ClientEvents {
     payload: { guildId: string; userId: string },
     ack: (reply: BanReply) => void,
   ) => void;
+  "role:create": (
+    payload: { guildId: string; name: string; color?: string | null; permissions: GuildPermission[] },
+    ack: (reply: RoleReply) => void,
+  ) => void;
+  "role:update": (
+    payload: { guildId: string; roleId: string; name: string; color?: string | null; permissions: GuildPermission[] },
+    ack: (reply: RoleReply) => void,
+  ) => void;
+  "role:delete": (payload: { guildId: string; roleId: string }, ack: (reply: RoleReply) => void) => void;
+  "role:assign": (
+    payload: { guildId: string; userId: string; roleId: string; assigned: boolean },
+    ack: (reply: RoleReply) => void,
+  ) => void;
+  "direct:open": (payload: { userId: string }, ack: (reply: DirectReply) => void) => void;
+  "direct:history": (payload: { threadId: string }, ack: (reply: DirectReply) => void) => void;
+  "direct:send": (payload: { threadId: string; content: string }, ack: (reply: DirectReply) => void) => void;
 }
 
 export type AppSocket = Socket<ServerEvents, ClientEvents>;
@@ -231,12 +273,15 @@ function ask<T extends SfuReply>(
 
 export const identify = (
   socket: AppSocket,
-  username: string,
-  password: string,
   token: string | null,
 ) =>
   new Promise<IdentifyReply>((resolve) =>
-    socket.emit("identify", { username, password, token }, resolve),
+    socket.emit("identify", { token }, resolve),
+  );
+
+export const identifyGuest = (socket: AppSocket, username: string, inviteCode: string, token?: string) =>
+  new Promise<IdentifyReply>((resolve) =>
+    socket.emit("identify", { guest: { username, inviteCode, token } }, resolve),
   );
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
@@ -306,6 +351,43 @@ export const banMember = (socket: AppSocket, guildId: string, userId: string, re
 export const unbanMember = (socket: AppSocket, guildId: string, userId: string) =>
   ask<BanReply>((resolve) => socket.emit("member:unban", { guildId, userId }, resolve));
 
+export const createRole = (
+  socket: AppSocket,
+  guildId: string,
+  name: string,
+  color: string | null,
+  permissions: GuildPermission[],
+) => ask<RoleReply>((resolve) => socket.emit("role:create", { guildId, name, color, permissions }, resolve));
+
+export const updateRole = (
+  socket: AppSocket,
+  guildId: string,
+  roleId: string,
+  name: string,
+  color: string | null,
+  permissions: GuildPermission[],
+) => ask<RoleReply>((resolve) => socket.emit("role:update", { guildId, roleId, name, color, permissions }, resolve));
+
+export const deleteRole = (socket: AppSocket, guildId: string, roleId: string) =>
+  ask<RoleReply>((resolve) => socket.emit("role:delete", { guildId, roleId }, resolve));
+
+export const assignRole = (
+  socket: AppSocket,
+  guildId: string,
+  userId: string,
+  roleId: string,
+  assigned: boolean,
+) => ask<RoleReply>((resolve) => socket.emit("role:assign", { guildId, userId, roleId, assigned }, resolve));
+
+export const openDirect = (socket: AppSocket, userId: string) =>
+  ask<DirectReply>((resolve) => socket.emit("direct:open", { userId }, resolve));
+
+export const loadDirect = (socket: AppSocket, threadId: string) =>
+  ask<DirectReply>((resolve) => socket.emit("direct:history", { threadId }, resolve));
+
+export const sendDirect = (socket: AppSocket, threadId: string, content: string) =>
+  ask<DirectReply>((resolve) => socket.emit("direct:send", { threadId, content }, resolve));
+
 /** Códigos do servidor traduzidos pra algo que a pessoa na tela entenda. */
 export function describeSocketError(code: string | undefined): string {
   switch (code) {
@@ -325,6 +407,14 @@ export function describeSocketError(code: string | undefined): string {
       return "Você não faz parte desse servidor.";
     case "not-owner":
       return "Só quem criou o servidor pode fazer isso.";
+    case "missing-permission":
+      return "Seu cargo não tem permissão para fazer isso.";
+    case "not-authenticated":
+      return "Entre na sua conta para usar esse recurso.";
+    case "not-shared-server":
+      return "Só é possível conversar com alguém de um servidor em comum.";
+    case "role-protected":
+      return "Esse cargo é protegido ou já está com esse estado.";
     case "is-owner":
       return "Você criou este servidor, então não pode sair dele.";
     case "last-channel":

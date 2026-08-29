@@ -46,8 +46,10 @@ export class SessionAuthority {
   }
 
   /** Token novo pra uma identidade. `userId` ausente cria uma. */
-  issue(userId = randomUUID()) {
-    const payload = encode(JSON.stringify({ sub: userId, exp: Date.now() + TOKEN_TTL_MS }));
+  issue(userId = randomUUID(), sessionVersion = 0) {
+    const payload = encode(
+      JSON.stringify({ sub: userId, ver: sessionVersion, exp: Date.now() + TOKEN_TTL_MS }),
+    );
     return { userId, token: `${VERSION}.${payload}.${sign(this.#secret, payload)}` };
   }
 
@@ -74,7 +76,8 @@ export class SessionAuthority {
     if (typeof claims?.sub !== "string" || !/^[0-9a-f-]{36}$/i.test(claims.sub)) return null;
     if (typeof claims.exp !== "number" || claims.exp <= Date.now()) return null;
 
-    return { userId: claims.sub, expiresAt: claims.exp };
+    const sessionVersion = Number.isInteger(claims.ver) && claims.ver >= 0 ? claims.ver : 0;
+    return { userId: claims.sub, sessionVersion, expiresAt: claims.exp };
   }
 
   /**
@@ -84,7 +87,7 @@ export class SessionAuthority {
    */
   renewIfNeeded(session) {
     if (session.expiresAt - Date.now() > RENEW_BEFORE_MS) return null;
-    return this.issue(session.userId);
+    return this.issue(session.userId, session.sessionVersion);
   }
 }
 
