@@ -102,7 +102,21 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const fallback = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const valid = await verifyPassword(password, account?.passwordHash ?? fallback);
     if (!account || !valid || account.disabledAt) return { ok: false, error: "login-failed" };
-    if (!account.emailVerifiedAt) return { ok: false, error: "email-unverified" };
+    if (!account.emailVerifiedAt) {
+      // A senha correta prova que não é uma tentativa anônima de bombardear a
+      // caixa de outra pessoa. Reemitir aqui resolve o caso comum em que o link
+      // do cadastro expirou ou o primeiro envio se perdeu: basta tentar entrar
+      // de novo, sem abrir Gmail/Outlook nem depender de um botão escondido.
+      try {
+        const sent = await actionMail(account, "verify_email");
+        return {
+          ok: false,
+          error: sent.ok ? "email-verification-sent" : "email-unavailable",
+        };
+      } catch (error) {
+        return { ok: false, error: "email-failed", detail: error };
+      }
+    }
     const issued = auth.issue(account.userId, account.sessionVersion);
     return { ok: true, token: issued.token, account: publicAccount(account) };
   }
