@@ -56,6 +56,8 @@ export function describeAuthError(code?: string): string {
       return "E-mail ou senha incorretos.";
     case "email-unverified":
       return "Confirme o e-mail antes de entrar.";
+    case "email-verification-sent":
+      return "Enviamos um novo link de confirmação para esse e-mail.";
     case "email-unavailable":
       return "O envio de e-mail ainda não foi configurado no servidor.";
     case "email-failed":

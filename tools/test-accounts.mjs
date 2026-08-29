@@ -24,9 +24,12 @@ try {
     await service.register({ email: "ana@example.com", username: "Ana", password: "senha-super-segura" }),
     { ok: true },
   );
-  assert.equal((await service.login({ email: "ana@example.com", password: "senha-super-segura" })).error, "email-unverified");
-  assert.equal(sent.length, 1);
-  const verifyToken = new URL(sent[0].action).searchParams.get("token");
+  assert.equal(
+    (await service.login({ email: "ana@example.com", password: "senha-super-segura" })).error,
+    "email-verification-sent",
+  );
+  assert.equal(sent.length, 2, "o login não confirmado reenvia um link novo");
+  const verifyToken = new URL(sent.at(-1).action).searchParams.get("token");
   assert.deepEqual(await service.verifyEmail(verifyToken), { ok: true });
 
   const login = await service.login({ email: "ANA@example.com", password: "senha-super-segura" });
