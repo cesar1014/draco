@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { GuildCreateModal } from "@/components/GuildAdmin";
 import { BrandMark } from "@/components/Icons";
+import { useStore } from "@/state/store";
 
 /**
  * O que a pessoa vê quando não é membro de nenhum servidor — o estado normal de
@@ -13,6 +14,7 @@ import { BrandMark } from "@/components/Icons";
  */
 export function Welcome() {
   const [tab, setTab] = useState<"create" | "join" | null>(null);
+  const openSettings = useStore((state) => state.openSettings);
 
   return (
     <div className="welcome">
@@ -29,6 +31,9 @@ export function Welcome() {
         </button>
         <button type="button" className="secondary-button" onClick={() => setTab("join")}>
           Tenho um convite
+        </button>
+        <button type="button" className="secondary-button" onClick={openSettings}>
+          Minha conta
         </button>
       </div>
 

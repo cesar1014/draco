@@ -19,6 +19,12 @@ export function ChannelSidebar() {
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
   const openAdmin = useStore((state) => state.openAdmin);
   const deleteChannel = useStore((state) => state.deleteChannel);
+  const directThreads = useStore((state) => state.directThreads);
+  const activeDirectId = useStore((state) => state.activeDirectId);
+  const selectDirect = useStore((state) => state.selectDirect);
+  const openDirect = useStore((state) => state.openDirect);
+  const permissions = useStore((state) => state.permissions[activeGuildId] ?? []);
+  const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
 
   const [creating, setCreating] = useState(false);
 
@@ -28,8 +34,8 @@ export function ChannelSidebar() {
    * ficou sem dono — o perfil dele deixou de existir — não é administrável por
    * ninguém, e os controles simplesmente não aparecem.
    */
-  const managed = Boolean(guild && guild.ownerId !== null);
-  const owner = managed && guild?.ownerId === selfId;
+  const managed = Boolean(guild && (systemAdmin || permissions.some((permission) => ["manage_channels", "create_invites", "ban_members", "manage_roles"].includes(permission))));
+  const owner = Boolean(guild && (systemAdmin || permissions.includes("manage_channels") || guild.ownerId === selfId));
 
   /** Agrupa por categoria mantendo a ordem em que o servidor mandou. */
   const groups = useMemo(() => {
@@ -42,6 +48,30 @@ export function ChannelSidebar() {
     }
     return [...map];
   }, [channels, activeGuildId]);
+
+  if (!activeGuildId) {
+    return (
+      <aside className="sidebar">
+        <header className="sidebar-header">
+          <strong>Mensagens privadas</strong>
+          <button type="button" className="sidebar-close" onClick={() => setSidebarOpen(false)} title="Fechar"><CloseIcon size={18} /></button>
+        </header>
+        <div className="channel-scroll direct-list">
+          <button type="button" className="channel add-channel" onClick={() => selfId && void openDirect(selfId)}>
+            <PlusIcon size={16} /><span className="channel-name">Mensagem para mim</span>
+          </button>
+          {directThreads.map((thread) => (
+            <button key={thread.id} type="button" className="channel direct-channel" data-active={thread.id === activeDirectId} onClick={() => void selectDirect(thread.id)}>
+              <span className="direct-avatar" style={{ background: thread.peer.color }}>{thread.peer.username.slice(0, 2).toUpperCase()}</span>
+              <span className="channel-name">{thread.peer.username}</span>
+            </button>
+          ))}
+          {directThreads.length === 0 && <p className="members-empty">Clique em alguém da lista de membros para conversar.</p>}
+        </div>
+        <UserPanel />
+      </aside>
+    );
+  }
 
   return (
     <aside className="sidebar">

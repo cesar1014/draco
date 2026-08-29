@@ -26,10 +26,10 @@ services:
       - key: TRUSTED_PROXY
         value: "1"
 
-      # `sync: false` = o Render pergunta o valor na hora de aplicar e guarda só lá.
-      # É o que mantém a senha fora do repositório.
-      - key: ROOM_PASSWORD
-        sync: false
+      - key: SYSTEM_ADMIN_USERNAME
+        value: cesar1014
+      - key: SYSTEM_ADMIN_EMAIL
+        value: xcesaryt@gmail.com
 
       # Assina os tokens de sessão. No plano grátis o disco é descartável, então o
       # segredo não pode ficar no banco: sem esta variável, cada substituição da
@@ -43,6 +43,8 @@ services:
 #   ORIGIN                 https://SEU-APP.onrender.com  (o endereço que o Render
 #                          te der). Tranca a origem aceita pelo Socket.IO e pelas
 #                          rotas /api nessa origem só.
+#   APP_URL                o mesmo endereço, usado nos links enviados por e-mail.
+#   SMTP_HOST/PORT/USER/PASS, SMTP_SECURE e EMAIL_FROM para confirmação de conta.
 #
 #   TURN_CREDENTIALS_URL   a URL de credenciais do Open Relay. Sem TURN, cerca de
 #                          uma em cada cinco duplas não conecta pela internet.

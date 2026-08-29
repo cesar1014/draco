@@ -9,11 +9,14 @@ import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { Server as SocketServer } from "socket.io";
 import { DEV_API_PORT, DEV_WEB_PORT } from "../shared/ports.js";
+import { createAccountService } from "./accounts.js";
 import { createSessionAuthority } from "./auth.js";
 import { logger, reason } from "./log.js";
+import { createMailer } from "./mail.js";
 import { resolveIceConfig, invalidateIceCache } from "./ice.js";
+import { RateLimiter } from "./security.js";
 import { attachSignaling } from "./signaling.js";
-import { readSetting, writeSetting } from "./state.js";
+import { colorForName, readSetting, writeSetting } from "./state.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = join(here, "..", "dist");
@@ -46,8 +49,8 @@ const allowedOrigins = (process.env.ORIGIN ?? "")
  * Em desenvolvimento a origem é livre: quem abre é o Vite, um túnel ou o celular
  * na rede local, e cada um chega com um endereço diferente. Em produção sem
  * `ORIGIN` a checagem por origem também fica aberta — não há como adivinhar o
- * endereço publicado — e é por isso que o boot avisa em voz alta: o que protege
- * de verdade nesse caso é a `ROOM_PASSWORD`, não a origem.
+ * endereço publicado — e é por isso que o boot avisa em voz alta. A autenticação
+ * das contas continua obrigatória mesmo quando a origem não foi restringida.
  */
 const originIsOpen = allowedOrigins.length === 0;
 
@@ -102,6 +105,7 @@ async function loadOrCreateCert() {
 
 const app = express();
 app.disable("x-powered-by");
+if (process.env.TRUSTED_PROXY === "1") app.set("trust proxy", 1);
 
 /**
  * Cabeçalhos de segurança. A CSP é escrita à mão porque a de fábrica do Helmet
@@ -159,10 +163,61 @@ app.use("/api", (req, res, next) => {
   res.status(403).json({ error: "origin-not-allowed" });
 });
 
-/** O cliente pergunta se precisa de senha antes de mostrar o campo na tela de entrada. */
+/** Autoridades de conta e rotas de autenticação da mesma origem do aplicativo. */
+const { auth, source: secretSource } = createSessionAuthority({ readSetting, writeSetting });
+const mailer = createMailer(process.env);
+const accountService = createAccountService({ auth, mailer, colorForName, env: process.env });
+const accountLimiter = new RateLimiter();
+
+function bearer(req) {
+  const value = req.headers.authorization;
+  return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : null;
+}
+
+function accountRoute(handler, { burst = 8, perSec = 0.2 } = {}) {
+  return async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const key = `${req.ip}:${req.path}`;
+    if (!accountLimiter.allow(key, burst, perSec)) {
+      return res.status(429).json({ ok: false, error: "rate-limited" });
+    }
+    try {
+      const result = await handler(req);
+      const { detail: _detail, ...safe } = result;
+      const status = result.ok
+        ? 200
+        : result.error === "not-authenticated"
+          ? 401
+          : result.error === "email-taken" || result.error === "username-taken"
+            ? 409
+            : 400;
+      return res.status(status).json(safe);
+    } catch (error) {
+      log.error("falha em conta", { rota: req.path, motivo: reason(error) });
+      return res.status(500).json({ ok: false, error: "account-failed" });
+    }
+  };
+}
+
 app.get("/api/config", (_req, res) => {
-  res.json({ requiresPassword: Boolean(process.env.ROOM_PASSWORD) });
+  res.json({ auth: "accounts", emailReady: accountService.emailReady, guestInvites: true });
 });
+
+app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body)));
+app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body)));
+app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token)));
+app.post(
+  "/api/auth/password/request",
+  accountRoute((req) => accountService.requestPassword(req.body?.email), { burst: 4, perSec: 0.03 }),
+);
+app.post(
+  "/api/auth/password/change-request",
+  accountRoute((req) => accountService.requestOwnPassword(bearer(req)), { burst: 4, perSec: 0.03 }),
+);
+app.post(
+  "/api/auth/password/complete",
+  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password)),
+);
 
 /**
  * Saída do autoteste do WebRTC. Só existe com `--dev`, e o motivo de gravar em
@@ -228,8 +283,8 @@ const io = new SocketServer(server, {
   },
 });
 
-const { auth, source: secretSource } = createSessionAuthority({ readSetting, writeSetting });
-attachSignaling(io, process.env, { auth });
+const adminBootstrap = await accountService.bootstrapSystemAdmin();
+attachSignaling(io, process.env, { auth, accountService });
 
 server.listen(port, "0.0.0.0", async () => {
   const scheme = credentials ? "https" : "http";
@@ -248,7 +303,8 @@ server.listen(port, "0.0.0.0", async () => {
     }
   }
   console.log("");
-  console.log(`  senha da sala  ·  ${process.env.ROOM_PASSWORD ? "configurada" : "nenhuma (link aberto)"}`);
+  console.log(`  contas         ·  e-mail ${accountService.emailReady ? "ativo" : "não configurado"}`);
+  console.log(`  administrador  ·  ${adminBootstrap.active ? "ativo" : adminBootstrap.emailSent ? "ativação enviada" : "pendente"}`);
   console.log(`  origem         ·  ${originIsOpen ? "qualquer" : allowedOrigins.join(", ")}`);
   console.log(`  sessões        ·  segredo ${secretSource === "env" ? "do ambiente" : "guardado no banco"}`);
   console.log(`  TURN           ·  ${ice.hasTurn ? `ativo (${ice.source})` : "ausente, só STUN"}`);

@@ -7,12 +7,19 @@ export function GuildRail() {
   const guilds = useStore((state) => state.guilds);
   const activeGuildId = useStore((state) => state.activeGuildId);
   const selectGuild = useStore((state) => state.selectGuild);
+  const directThreads = useStore((state) => state.directThreads);
 
   return (
     <nav className="guild-rail" aria-label="Servidores">
-      <span className="guild home" title="Draco">
+      <button
+        type="button"
+        className="guild home"
+        data-active={!activeGuildId}
+        title="Mensagens privadas"
+        onClick={() => useStore.setState({ activeGuildId: "", activeChannelId: "", activeDirectId: directThreads[0]?.id ?? "" })}
+      >
         <BrandMark size={34} />
-      </span>
+      </button>
 
       <span className="guild-divider" />
 

@@ -1,4 +1,5 @@
 import { openDatabase } from "./database.js";
+import { DEFAULT_GUILD_PERMISSIONS } from "../permissions.js";
 
 /**
  * Todo o SQL do estado vive aqui. O resto do servidor conversa com objetos no
@@ -11,8 +12,6 @@ import { openDatabase } from "./database.js";
  * `sequence` é a ordem real de chegada e nunca anda pra trás.
  */
 
-const DEFAULT_PERMISSIONS = ["view_channels", "send_messages", "connect", "speak"];
-
 function mapGuild(row) {
   return {
     id: row.id,
@@ -22,6 +21,17 @@ function mapGuild(row) {
     // `null` só num servidor que ficou sem ninguém: o dono é apagado por
     // `ON DELETE SET NULL`, e daí ninguém mais o administra.
     ownerId: row.owner_id ?? null,
+  };
+}
+
+function mapRole(row) {
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    name: row.name,
+    color: row.color ?? null,
+    permissions: JSON.parse(row.permissions_json ?? "[]"),
+    isDefault: row.is_default === 1,
   };
 }
 
@@ -127,6 +137,56 @@ export class StateRepository {
         )
         VALUES (@id, @guildId, '@everyone', 0, @permissions, 1, @now, @now)
         ON CONFLICT(id) DO NOTHING
+      `),
+      listRoles: database.prepare(`
+        SELECT id, guild_id, name, color, permissions_json, is_default
+        FROM roles WHERE guild_id = ? ORDER BY is_default DESC, position, id
+      `),
+      listPermissionsForUser: database.prepare(`
+        SELECT r.permissions_json
+        FROM guild_member_roles gmr
+        JOIN roles r ON r.id = gmr.role_id
+        WHERE gmr.guild_id = ? AND gmr.user_id = ?
+      `),
+      insertRole: database.prepare(`
+        INSERT INTO roles (
+          id, guild_id, name, color, position, permissions_json,
+          is_default, created_at, updated_at
+        ) VALUES (
+          @id, @guildId, @name, @color,
+          (SELECT COALESCE(MAX(position), -1) + 1 FROM roles WHERE guild_id = @guildId),
+          @permissions, 0, @now, @now
+        )
+      `),
+      updateRole: database.prepare(`
+        UPDATE roles
+        SET name = @name, color = @color, permissions_json = @permissions, updated_at = @now
+        WHERE id = @id AND guild_id = @guildId AND is_default = 0
+      `),
+      deleteRole: database.prepare(`
+        DELETE FROM roles WHERE id = ? AND guild_id = ? AND is_default = 0
+      `),
+      findRole: database.prepare(`
+        SELECT id, guild_id, name, color, permissions_json, is_default
+        FROM roles WHERE id = ? AND guild_id = ?
+      `),
+      assignRole: database.prepare(`
+        INSERT INTO guild_member_roles (guild_id, user_id, role_id, assigned_at)
+        SELECT @guildId, @userId, @roleId, @now
+        WHERE EXISTS (
+          SELECT 1 FROM roles WHERE id = @roleId AND guild_id = @guildId
+        ) AND EXISTS (
+          SELECT 1 FROM guild_members WHERE guild_id = @guildId AND user_id = @userId
+        )
+        ON CONFLICT(guild_id, user_id, role_id) DO NOTHING
+      `),
+      unassignRole: database.prepare(`
+        DELETE FROM guild_member_roles
+        WHERE guild_id = @guildId AND user_id = @userId AND role_id = @roleId
+          AND role_id IN (SELECT id FROM roles WHERE guild_id = @guildId AND is_default = 0)
+      `),
+      listMemberRoles: database.prepare(`
+        SELECT user_id, role_id FROM guild_member_roles WHERE guild_id = ?
       `),
       insertChannel: database.prepare(`
         INSERT INTO channels (
@@ -303,7 +363,7 @@ export class StateRepository {
       this.statements.insertDefaultRole.run({
         id: `${guild.id}:everyone`,
         guildId: guild.id,
-        permissions: JSON.stringify(DEFAULT_PERMISSIONS),
+        permissions: JSON.stringify(DEFAULT_GUILD_PERMISSIONS),
         now,
       });
       for (const [position, channel] of channels.entries()) {
@@ -343,6 +403,19 @@ export class StateRepository {
         this.statements.bumpInviteUses.run(code);
       }
       return { ok: true, guildId: invite.guild_id, joined: !already };
+    });
+
+    this.acceptGuestInviteTransaction = database.transaction((code) => {
+      const invite = this.statements.findInvite.get(code);
+      if (!invite || invite.revoked_at) return { ok: false, error: "invite-invalid" };
+      if (invite.expires_at !== null && invite.expires_at <= Date.now()) {
+        return { ok: false, error: "invite-expired" };
+      }
+      if (invite.max_uses !== null && invite.uses >= invite.max_uses) {
+        return { ok: false, error: "invite-used-up" };
+      }
+      this.statements.bumpInviteUses.run(code);
+      return { ok: true, guildId: invite.guild_id };
     });
 
     /** Banir tira do servidor e registra o banimento: as duas coisas ou nenhuma. */
@@ -447,6 +520,59 @@ export class StateRepository {
       .some((row) => row.id === guildId && row.owner_id === userId);
   }
 
+  permissionsForUser(guildId, userId) {
+    const permissions = new Set();
+    for (const row of this.statements.listPermissionsForUser.all(guildId, userId)) {
+      try {
+        for (const permission of JSON.parse(row.permissions_json)) permissions.add(permission);
+      } catch {
+        // Cargo corrompido não concede nada em vez de derrubar a autorização.
+      }
+    }
+    return [...permissions];
+  }
+
+  listRoles(guildId) {
+    return this.statements.listRoles.all(guildId).map(mapRole);
+  }
+
+  listMemberRoles(guildId) {
+    const out = {};
+    for (const row of this.statements.listMemberRoles.all(guildId)) {
+      (out[row.user_id] ??= []).push(row.role_id);
+    }
+    return out;
+  }
+
+  createRole(role) {
+    this.statements.insertRole.run({
+      ...role,
+      permissions: JSON.stringify(role.permissions),
+      now: Date.now(),
+    });
+    return mapRole(this.statements.findRole.get(role.id, role.guildId));
+  }
+
+  updateRole(role) {
+    const changes = this.statements.updateRole.run({
+      ...role,
+      permissions: JSON.stringify(role.permissions),
+      now: Date.now(),
+    }).changes;
+    return changes > 0 ? mapRole(this.statements.findRole.get(role.id, role.guildId)) : null;
+  }
+
+  deleteRole(guildId, roleId) {
+    return this.statements.deleteRole.run(roleId, guildId).changes > 0;
+  }
+
+  assignRole(guildId, userId, roleId, assigned) {
+    const params = { guildId, userId, roleId, now: Date.now() };
+    return assigned
+      ? this.statements.assignRole.run(params).changes > 0
+      : this.statements.unassignRole.run(params).changes > 0;
+  }
+
   leaveGuild(guildId, userId) {
     this.statements.deleteGuildMember.run(guildId, userId);
   }
@@ -478,6 +604,22 @@ export class StateRepository {
 
   acceptInvite(code, userId) {
     return this.acceptInviteTransaction(code, userId, Date.now());
+  }
+
+  inspectInvite(code) {
+    const invite = this.statements.findInvite.get(code);
+    if (!invite || invite.revoked_at) return { ok: false, error: "invite-invalid" };
+    if (invite.expires_at !== null && invite.expires_at <= Date.now()) {
+      return { ok: false, error: "invite-expired" };
+    }
+    if (invite.max_uses !== null && invite.uses >= invite.max_uses) {
+      return { ok: false, error: "invite-used-up" };
+    }
+    return { ok: true, guildId: invite.guild_id };
+  }
+
+  acceptGuestInvite(code) {
+    return this.acceptGuestInviteTransaction(code);
   }
 
   revokeInvite(guildId, code) {

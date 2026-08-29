@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { ChannelSidebar } from "@/components/ChannelSidebar";
 import { ChatView } from "@/components/ChatView";
+import { DirectMessages } from "@/components/DirectMessages";
 import { GuildAdminModal } from "@/components/GuildAdmin";
 import { GuildRail } from "@/components/GuildRail";
 import { JoinScreen } from "@/components/JoinScreen";
@@ -42,6 +43,9 @@ export function App() {
   const channels = useStore((state) => state.channels);
   const activeChannelId = useStore((state) => state.activeChannelId);
   const guilds = useStore((state) => state.guilds);
+  const activeDirectId = useStore((state) => state.activeDirectId);
+  const activeGuildId = useStore((state) => state.activeGuildId);
+  const account = useStore((state) => state.account);
 
   /** O aviso é informativo: sai sozinho em vez de exigir um clique. */
   useEffect(() => {
@@ -76,7 +80,7 @@ export function App() {
    * um uso do convite.
    */
   useEffect(() => {
-    if (status !== "ready") return;
+    if (status !== "ready" || account?.guest) return;
     const code = new URLSearchParams(window.location.search).get("convite");
     if (!code) return;
 
@@ -84,7 +88,7 @@ export function App() {
     void joinByInvite(code).then((error) => {
       if (error) useStore.setState({ mediaError: error });
     });
-  }, [status, joinByInvite]);
+  }, [status, joinByInvite, account?.guest]);
 
   /**
    * Encodar câmera ou tela é o que mais custa CPU numa call. Enquanto isso está
@@ -175,7 +179,9 @@ export function App() {
           />
 
           <main className="content">
-            {channel?.type === "voice" ? (
+            {activeDirectId ? (
+              <DirectMessages threadId={activeDirectId} />
+            ) : channel?.type === "voice" ? (
               <VoiceStage channelId={channel.id} />
             ) : channel ? (
               <ChatView channelId={channel.id} />
@@ -184,7 +190,7 @@ export function App() {
             )}
           </main>
 
-          <MembersPanel />
+          {activeGuildId && <MembersPanel />}
         </>
       )}
 

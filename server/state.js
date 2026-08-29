@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createStateRepository } from "./data/state-repository.js";
+import { GUILD_PERMISSIONS } from "./permissions.js";
 
 /**
  * Perfis, servidores, canais e mensagens vivem no SQLite. Conexões e estado de
@@ -94,7 +95,7 @@ export const writeSetting = (key, value) => repository.writeSetting(key, value);
  * objeto: preferências e estado de voz seguem de pé. O socket antigo é devolvido
  * pra quem chamou, que precisa derrubá-lo pra não ficarem dois donos do mesmo id.
  */
-export function addMember(socketId, userId, username) {
+export function addMember(socketId, userId, username, { systemAdmin = false } = {}) {
   const existing = members.get(userId);
   const previousSocketId = existing?.socketId ?? null;
 
@@ -123,6 +124,9 @@ export function addMember(socketId, userId, username) {
     /** Nome das trilhas publicadas, por slot, que é o que os outros assinam. */
     sfuTracks: {},
     since: Date.now(),
+    guest: false,
+    guestGuildId: null,
+    systemAdmin,
   };
 
   const color = colorForName(username);
@@ -131,6 +135,9 @@ export function addMember(socketId, userId, username) {
   member.username = username;
   member.color = color;
   member.socketId = socketId;
+  member.guest = false;
+  member.guestGuildId = null;
+  member.systemAdmin = systemAdmin;
 
   // Socket novo, sessão de mídia nova: os ids antigos apontam pra uma sessão que
   // o SFU já está descartando, e anunciá-los faria os outros assinarem o vazio.
@@ -144,6 +151,33 @@ export function addMember(socketId, userId, username) {
   members.set(userId, member);
   sockets.set(socketId, userId);
   return { member, previousSocketId };
+}
+
+/** Visitante existe só na memória e em um único servidor. */
+export function addGuest(socketId, username, guildId, existingUserId = null) {
+  const userId = existingUserId ?? randomUUID();
+  const member = {
+    id: userId,
+    username,
+    color: colorForName(username),
+    voiceChannelId: null,
+    muted: false,
+    deafened: false,
+    camOn: false,
+    screenOn: false,
+    speaking: false,
+    sfuSessionId: null,
+    sfuRecvSessionId: null,
+    sfuTracks: {},
+    since: Date.now(),
+    socketId,
+    guest: true,
+    guestGuildId: guildId,
+    systemAdmin: false,
+  };
+  members.set(userId, member);
+  sockets.set(socketId, userId);
+  return { member, previousSocketId: null };
 }
 
 /** O membro dono deste socket, ou `undefined` se o socket não se identificou. */
@@ -273,17 +307,36 @@ export function loadHistory(channelId, beforeId) {
  * Só o fim de cada conversa vai aqui. `history` diz em quais canais ainda existe
  * passado, e é o que o cliente usa pra decidir se vale pedir mais ao rolar.
  */
-export function snapshot(userId) {
-  const mine = repository.listGuildsForUser(userId);
+export function snapshot(userId, { systemAdmin = false, guestGuildId = null } = {}) {
+  const mine = systemAdmin
+    ? guilds
+    : guestGuildId
+      ? guilds.filter((guild) => guild.id === guestGuildId)
+      : repository.listGuildsForUser(userId);
   const visible = new Set(mine.map((guild) => guild.id));
   const myChannels = channels.filter((channel) => visible.has(channel.guildId));
   const channelIds = new Set(myChannels.map((channel) => channel.id));
+  const visibleMembers = listMembers().filter((member) => {
+    if (member.id === userId) return true;
+    if (member.guest) return visible.has(member.guestGuildId);
+    return repository.listGuildsForUser(member.id).some((guild) => visible.has(guild.id));
+  });
 
   return {
     guilds: mine,
     channels: myChannels,
-    members: listMembers(),
+    members: visibleMembers,
     roster: Object.fromEntries(mine.map((guild) => [guild.id, repository.listGuildRoster(guild.id)])),
+    permissions: Object.fromEntries(
+      mine.map((guild) => [
+        guild.id,
+        systemAdmin || guild.ownerId === userId
+          ? GUILD_PERMISSIONS
+          : guestGuildId
+            ? ["view_channels", "connect", "speak"]
+            : repository.permissionsForUser(guild.id, userId),
+      ]),
+    ),
     // Só a conversa dos canais que esta pessoa vê: mandar o resto seria vazar o
     // chat de um servidor de que ela não faz parte.
     messages: Object.fromEntries([...messages].filter(([channelId]) => channelIds.has(channelId))),
@@ -306,13 +359,38 @@ function initialsFor(name) {
 }
 
 /** Servidores de que a pessoa é membro. É o que a barra da esquerda desenha. */
-export const guildsOf = (userId) => repository.listGuildsForUser(userId);
+export const guildsOf = (userId, { systemAdmin = false } = {}) =>
+  systemAdmin ? [...guilds] : repository.listGuildsForUser(userId);
 
 export const guildRoster = (guildId) => repository.listGuildRoster(guildId);
 
 export const isGuildMember = (guildId, userId) => repository.isMember(guildId, userId);
 
 export const isGuildOwner = (guildId, userId) => repository.isOwner(guildId, userId);
+
+export const hasGuildPermission = (guildId, userId, permission) =>
+  repository.isOwner(guildId, userId) || repository.permissionsForUser(guildId, userId).includes(permission);
+
+export const rolesOf = (guildId) => repository.listRoles(guildId);
+export const memberRolesOf = (guildId) => repository.listMemberRoles(guildId);
+
+export function createRole(guildId, name, color, permissions) {
+  return repository.createRole({
+    id: `r-${randomUUID().slice(0, 10)}`,
+    guildId,
+    name,
+    color,
+    permissions,
+  });
+}
+
+export const updateRole = (guildId, roleId, name, color, permissions) =>
+  repository.updateRole({ id: roleId, guildId, name, color, permissions });
+
+export const deleteRole = (guildId, roleId) => repository.deleteRole(guildId, roleId);
+
+export const assignRole = (guildId, userId, roleId, assigned) =>
+  repository.assignRole(guildId, userId, roleId, assigned);
 
 /**
  * Cria um servidor com o primeiro canal de texto e o primeiro de voz. Os dois
@@ -402,6 +480,11 @@ export function createInvite(guildId, inviterId, { maxUses = null, expiresInHour
   });
   return code;
 }
+
+/** Confere um convite sem criar associação: usado pela entrada temporária. */
+export const inspectInvite = (code) => repository.inspectInvite(code);
+
+export const acceptGuestInvite = (code) => repository.acceptGuestInvite(code);
 
 export const acceptInvite = (code, userId) => repository.acceptInvite(code, userId);
 

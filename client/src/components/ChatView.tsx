@@ -21,6 +21,7 @@ export function ChatView({ channelId }: { channelId: string }) {
   const sendChat = useStore((state) => state.sendChat);
   const loadOlderMessages = useStore((state) => state.loadOlderMessages);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
+  const guest = useStore((state) => state.account?.guest === true);
 
   const [draft, setDraft] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
@@ -133,13 +134,14 @@ export function ChatView({ channelId }: { channelId: string }) {
         ))}
       </div>
 
-      <div className="composer">
+      <div className="composer" data-readonly={guest}>
         <textarea
           ref={composer}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={`Conversar em #${channel?.name ?? "canal"}`}
+          placeholder={guest ? "Visitantes podem ler, mas não enviar mensagens" : `Conversar em #${channel?.name ?? "canal"}`}
+          disabled={guest}
           rows={1}
           maxLength={2000}
         />
@@ -147,7 +149,7 @@ export function ChatView({ channelId }: { channelId: string }) {
           type="button"
           className="composer-send"
           onClick={submit}
-          disabled={!draft.trim()}
+          disabled={guest || !draft.trim()}
           title="Enviar"
         >
           <SendIcon size={18} />

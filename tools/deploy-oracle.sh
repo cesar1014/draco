@@ -90,7 +90,6 @@ fi
 
 say "Configuração do app"
 [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
-ROOM_PASSWORD="$(set_env ROOM_PASSWORD "$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9')")"
 TURN_SECRET="$(set_env TURN_SECRET "$(openssl rand -hex 32)")"
 # O segredo de sessão fica no .env, não sorteado a cada boot: assim os tokens já
 # emitidos continuam válidos depois de um deploy ou de um restart do serviço.
@@ -100,6 +99,9 @@ set_env DATABASE_PATH "$ROOT/data/draco.sqlite" >/dev/null
 # compartilharia o mesmo balde.
 set_env TRUSTED_PROXY 1 force >/dev/null
 set_env ORIGIN "https://$DOMAIN" force >/dev/null
+set_env APP_URL "https://$DOMAIN" force >/dev/null
+set_env SYSTEM_ADMIN_USERNAME "cesar1014" force >/dev/null
+set_env SYSTEM_ADMIN_EMAIL "xcesaryt@gmail.com" force >/dev/null
 set_env TURN_HOST "turn:$DOMAIN:3478" force >/dev/null
 chmod 600 "$ROOT/.env"
 grep -vE '^\s*(#|$)' "$ROOT/.env" | sed 's/=.*/=•••/'
@@ -180,7 +182,7 @@ cat <<EOF
 
 ────────────────────────────────────────────────────────────
 Endereço      https://$DOMAIN
-Senha da sala $ROOM_PASSWORD
+Conta inicial  cesar1014 (ativação enviada por e-mail quando SMTP estiver configurado)
 IP público    ${PUBLIC_IP:-não detectado}
 
 Falta abrir no painel da Oracle (Networking → VCN → Security List →

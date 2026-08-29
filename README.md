@@ -28,7 +28,7 @@ A mesma experiência funciona pelo navegador, no celular e no aplicativo para Wi
 
 O projeto usa **WebRTC** para transportar áudio, câmera e tela. Existem dois caminhos possíveis para a mídia, e quem escolhe é o servidor: **malha direta** entre os participantes, ou **por servidor (SFU)** quando a call é grande. O servidor cuida da sinalização, presença, canais, chat e configuração de conexão.
 
-Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o servidor não apaga o histórico. A identidade é um **token assinado pelo servidor**: reconectar volta como a mesma pessoa, e conhecer o identificador de alguém não dá acesso à conta dela.
+Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reiniciar o servidor não apaga o histórico. Cada pessoa entra com e-mail e senha próprios; a sessão é um **token assinado pelo servidor**, e trocar a senha revoga as sessões antigas.
 
 > O objetivo do Draco não é ser uma cópia de outro app. Ele nasceu para ser uma solução própria, leve e focada em calls.
 
@@ -107,7 +107,10 @@ Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o se
 
 - Criar servidores, canais de voz e texto pela interface
 - Convites por link, com validade e limite de usos
+- Entrada temporária como visitante, sem acesso para escrever no chat
 - Chat em tempo real, com histórico que sobrevive ao restart
+- Mensagens privadas, inclusive uma conversa consigo mesmo
+- Cargos com permissões de canal, convite, moderação e gerenciamento de cargos
 - Conversa anterior carregada ao rolar para cima
 - Interface responsiva para desktop e celular
 - PWA para adicionar à tela inicial
@@ -120,7 +123,8 @@ Perfis, servidores, canais e conversa ficam em **SQLite**, então reiniciar o se
 
 ### 🔒 Segurança
 
-- Senha opcional para entrar na sala
+- Conta individual com e-mail e senha protegida por scrypt
+- Confirmação de e-mail e troca de senha por link de uso único
 - Identidade assinada pelo servidor: conhecer o id de alguém não dá acesso à conta dela
 - Origem aceita pelo Socket.IO e pelas rotas `/api` restringível
 - Limite de tamanho, formato e frequência de eventos
@@ -231,10 +235,10 @@ A divisão é simples: **o que faz sentido depois de um restart vai para o SQLit
 
 | No banco | Na memória |
 |---|---|
-| perfis e apelidos | quem está conectado agora |
+| contas, perfis e senhas com hash | quem está conectado agora |
 | servidores e canais | quem está em qual canal de voz |
 | membros e cargos | sessões do SFU, tracks e streams |
-| mensagens | estado de mute, câmera e tela |
+| mensagens de canal e privadas | estado de mute, câmera e tela |
 | convites e banimentos | baldes de rate limit |
 | segredo de assinatura das sessões | |
 
@@ -262,9 +266,7 @@ O banco guarda as **5000 mensagens mais recentes** de cada canal. A entrada carr
 
 ### Identidade
 
-O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana. Antes o cliente mandava o próprio identificador e ele era aceito de cara — quem soubesse o UUID de alguém entrava como essa pessoa.
-
-Não é sistema de contas: não há e-mail, senha por pessoa nem recuperação de acesso. Mas **o servidor passou a ser a autoridade da identidade**, que é o que faltava para o resto poder ser construído em cima.
+Cada pessoa tem uma conta com e-mail único, nome único e senha própria. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador e troca de senha usam links de uso único enviados por e-mail. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
 
 O segredo de assinatura vem de `SESSION_SECRET` ou, na falta dele, é sorteado no primeiro boot e guardado no banco. Guardar em vez de sortear a cada boot é o que faz um deploy não desconectar todo mundo da própria identidade.
 
@@ -534,7 +536,15 @@ As principais opções são:
 PORT=3100
 DATABASE_PATH=
 ORIGIN=
-ROOM_PASSWORD=
+SYSTEM_ADMIN_USERNAME=cesar1014
+SYSTEM_ADMIN_EMAIL=xcesaryt@gmail.com
+APP_URL=https://dracocall.duckdns.org
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=0
+SMTP_USER=
+SMTP_PASS=
+EMAIL_FROM=
 SESSION_SECRET=
 TRUSTED_PROXY=0
 LOG_LEVEL=
@@ -595,7 +605,8 @@ No servidor:
 - **a identidade é assinada pelo servidor.** O navegador guarda um token com HMAC e prazo; conhecer o identificador de outra pessoa não permite mais entrar como ela;
 - cabeçalhos de segurança pelo Helmet, com CSP escrita à mão para não quebrar WebSocket, worklet de áudio nem as miniaturas de captura;
 - a origem aceita vale para o Socket.IO **e** para as rotas `/api`, e aceita uma lista;
-- rate limit por IP antes da entrada e por identidade depois dela, então reconectar não zera as proteções. Tentativa de entrada recusada custa mais que uma entrada legítima, o que trava força bruta na senha da sala;
+- rate limit por IP antes da entrada e por identidade depois dela, então reconectar não zera as proteções;
+- senhas com scrypt e salt aleatório; tokens de confirmação e recuperação ficam no banco somente como SHA-256 e expiram;
 - payload de cada evento é validado por tipo e por tamanho; SDP e candidatos ICE são recortados antes de serem repassados;
 - credenciais TURN podem ser geradas/obtidas pelo servidor sem expor chaves permanentes no cliente, com prazo, renovação antes do vencimento e retry com backoff limitado;
 - o segredo do SFU nunca chega ao navegador: quem assina as chamadas à Cloudflare é o servidor;
@@ -683,7 +694,7 @@ Para produção, o ideal é usar:
 - HTTPS válido;
 - servidor sempre disponível;
 - TURN configurado;
-- `ROOM_PASSWORD` quando a instância não for pública;
+- SMTP configurado para confirmação de conta e troca de senha;
 - `ORIGIN` restringindo a origem aceita;
 - `SESSION_SECRET` quando o disco não for durável;
 - `TRUSTED_PROXY=1` quando houver proxy na frente;
@@ -706,7 +717,8 @@ O Draco está em desenvolvimento ativo. Alguns caminhos naturais para as próxim
 - [x] aviso de versão nova no aplicativo Windows;
 - [x] tela de configuração de dispositivos antes de entrar na call;
 - [x] criar servidores, canais e convites pela interface;
-- [ ] cargos e permissões por canal (o schema já reserva as tabelas);
+- [x] cargos com permissões por servidor;
+- [ ] sobrescritas de permissão por canal (o schema já reserva a tabela);
 - [ ] substituição automática do instalador (depende de assinatura de código);
 - [ ] camadas simultâneas de qualidade (simulcast), para quem tem banda ver melhor que quem não tem;
 - [ ] evolução da experiência mobile;

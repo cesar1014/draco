@@ -50,6 +50,7 @@ const STRENGTH_LABEL: Record<DenoiseStrength, string> = {
 };
 
 const TABS = [
+  ["account", "Conta"],
   ["audio", "Áudio"],
   ["video", "Vídeo"],
   ["people", "Pessoas"],
@@ -77,13 +78,17 @@ export function SettingsModal() {
   const setScreenVolume = useStore((state) => state.setScreenVolume);
   const toggleScreenMuted = useStore((state) => state.toggleScreenMuted);
   const resetPerson = useStore((state) => state.resetPerson);
+  const account = useStore((state) => state.account);
+  const requestOwnPassword = useStore((state) => state.requestOwnPassword);
+  const logout = useStore((state) => state.logout);
 
-  const [tab, setTab] = useState<Tab>("audio");
+  const [tab, setTab] = useState<Tab>("account");
   const [level, setLevel] = useState(0);
   const [capturing, setCapturing] = useState(false);
   const [probing, setProbing] = useState(false);
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [accountMessage, setAccountMessage] = useState<string | null>(null);
 
   const peers = useMemo(
     () => membersInVoice(members, voiceChannelId).filter((member) => member.id !== selfId),
@@ -180,6 +185,29 @@ export function SettingsModal() {
         </nav>
 
         <div className="modal-body">
+          {tab === "account" && (
+            <section className="settings-section account-settings">
+              <h3>{account?.guest ? "Sessão de visitante" : "Sua conta"}</h3>
+              <p className="hint">
+                <strong>{account?.username}</strong>
+                {!account?.guest && <> · {account?.email}</>}
+                {account?.isSystemAdmin && <> · administrador global</>}
+              </p>
+              {!account?.guest && (
+                <>
+                  <p className="hint">A troca de senha exige confirmação pelo seu próprio e-mail. Ao concluir, as sessões antigas são encerradas.</p>
+                  <button type="button" className="secondary-button" onClick={() => { setAccountMessage(null); void requestOwnPassword().then((error) => setAccountMessage(error ?? "Enviamos o link de troca para seu e-mail.")); }}>
+                    Trocar minha senha
+                  </button>
+                </>
+              )}
+              {accountMessage && <p className={accountMessage.startsWith("Enviamos") ? "status-ok" : "status-warn"}>{accountMessage}</p>}
+              <button type="button" className="secondary-button danger" onClick={() => { closeSettings(); logout(); }}>
+                Sair {account?.guest ? "da visita" : "da conta"}
+              </button>
+            </section>
+          )}
+
           {tab === "audio" && (
             <>
               <section className="settings-section">

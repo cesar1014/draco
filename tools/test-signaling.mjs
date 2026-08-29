@@ -12,13 +12,40 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io as connect } from "socket.io-client";
+import { createAccountRepository } from "../server/data/account-repository.js";
+import { hashPassword } from "../server/passwords.js";
+import { SessionAuthority } from "../server/auth.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 3999;
-const PASSWORD = "segredo";
+const PASSWORD = "segredo-bem-longo";
+const SESSION_SECRET = "segredo-de-sessao-do-teste-com-mais-de-32-caracteres";
 const URL = `http://localhost:${PORT}`;
 const testDirectory = mkdtempSync(join(tmpdir(), "draco-signaling-"));
 const databasePath = join(testDirectory, "draco.sqlite");
+
+const seeded = [
+  ["11111111-1111-4111-8111-111111111111", "ana@teste.local", "Ana"],
+  ["22222222-2222-4222-8222-222222222222", "bruno@teste.local", "Bruno"],
+  ["33333333-3333-4333-8333-333333333333", "carla@teste.local", "Carla"],
+  ["44444444-4444-4444-8444-444444444444", "davi@teste.local", "Davi"],
+  ["55555555-5555-4555-8555-555555555555", "elena@teste.local", "Elena"],
+];
+const passwordHash = await hashPassword(PASSWORD);
+const accountRepository = createAccountRepository({ databasePath });
+for (const [userId, email, username] of seeded) {
+  accountRepository.createAccount({
+    userId,
+    email,
+    username,
+    passwordHash,
+    verifiedAt: Date.now(),
+    color: "#5b6cff",
+  });
+}
+accountRepository.close();
+const authority = new SessionAuthority(SESSION_SECRET);
+const tokens = Object.fromEntries(seeded.map(([userId, , username]) => [username, authority.issue(userId, 1).token]));
 
 let passed = 0;
 let failed = 0;
@@ -75,7 +102,7 @@ const server = spawn(process.execPath, ["server/index.js"], {
     ...process.env,
     DATABASE_PATH: databasePath,
     PORT: String(PORT),
-    ROOM_PASSWORD: PASSWORD,
+    SESSION_SECRET,
     ORIGIN: "",
   },
   stdio: ["ignore", "ignore", "inherit"],
@@ -89,24 +116,24 @@ process.on("exit", stopServer);
 try {
   await sleep(1200);
 
-  // --- entrada e senha -----------------------------------------------------
+  // --- entrada e contas ----------------------------------------------------
   const a = connect(URL, { transports: ["websocket"] });
   const b = connect(URL, { transports: ["websocket"] });
   const c = connect(URL, { transports: ["websocket"] });
   await Promise.all([waitFor(a, "connect"), waitFor(b, "connect"), waitFor(c, "connect")]);
 
-  check("senha errada é recusada", await emit(a, "identify", { username: "Ana", password: "errada" }), {
+  check("entrada sem sessão é recusada", await emit(a, "identify", {}), {
     ok: false,
-    error: "bad-password",
+    error: "not-authenticated",
   });
   check(
-    "nome curto é recusado",
-    (await emit(a, "identify", { username: "x", password: PASSWORD })).error,
-    "bad-username",
+    "token inventado é recusado",
+    (await emit(a, "identify", { token: "v1.invalido.invalido" })).error,
+    "not-authenticated",
   );
 
-  const joinA = await emit(a, "identify", { username: "Ana", password: PASSWORD });
-  check("entrada com senha certa", joinA.ok, true);
+  const joinA = await emit(a, "identify", { token: tokens.Ana });
+  check("entrada com conta válida", joinA.ok, true);
   // Não há servidor de demonstração: quem chega não é membro de nada, e o
   // snapshot dessa pessoa vem vazio até ela criar um servidor ou aceitar convite.
   check("quem acaba de chegar não tem servidor nenhum", [joinA.state.guilds, joinA.state.channels], [
@@ -115,18 +142,18 @@ try {
   ]);
   // O id da pessoa não é o do socket: é ele que sobrevive a uma reconexão.
   check("selfId é uma identidade própria", /^[0-9a-f-]{36}$/.test(joinA.selfId ?? ""), true);
-  check("a entrada devolve um token de sessão assinado", /^v1\.[\w-]+\.[\w-]+$/.test(joinA.token ?? ""), true);
+  check("a conta usa um token de sessão assinado", /^v1\.[\w-]+\.[\w-]+$/.test(tokens.Ana), true);
   check("identidade não é o id do socket", joinA.selfId !== a.id, true);
   const idA = joinA.selfId;
-  const tokenA = joinA.token;
+  const tokenA = tokens.Ana;
 
   const memberJoined = waitFor(b, "member:joined");
-  const joinB = await emit(b, "identify", { username: "Bruno", password: PASSWORD });
-  const joinC = await emit(c, "identify", { username: "Carla", password: PASSWORD });
+  const joinB = await emit(b, "identify", { token: tokens.Bruno });
+  const joinC = await emit(c, "identify", { token: tokens.Carla });
   const idB = joinB.selfId;
   const idC = joinC.selfId;
-  const tokenC = joinC.token;
-  check("identificar duas vezes é recusado", (await emit(b, "identify", { username: "Bruno2", password: PASSWORD })).error, "already-identified");
+  const tokenC = tokens.Carla;
+  check("identificar duas vezes é recusado", (await emit(b, "identify", { token: tokens.Bruno })).error, "already-identified");
   void memberJoined;
 
   // --- um servidor pra conversar --------------------------------------------
@@ -144,6 +171,43 @@ try {
   const homeInvite = await emit(a, "invite:create", { guildId: homeId });
   await emit(b, "invite:accept", { code: homeInvite.code });
   await emit(c, "invite:accept", { code: homeInvite.code });
+
+  // Visitante entra só pelo convite, sem criar conta e sem poder escrever.
+  const visitor = connect(URL, { transports: ["websocket"] });
+  await waitFor(visitor, "connect");
+  const guestJoin = await emit(visitor, "identify", {
+    guest: { username: "Visitante", inviteCode: homeInvite.code },
+  });
+  check("link permite entrada temporária sem conta", [guestJoin.ok, guestJoin.account?.guest], [true, true]);
+  check("visitante vê somente o servidor do convite", guestJoin.state.guilds.map((guild) => guild.id), [homeId]);
+  const guestChat = collect(a, "chat:message");
+  visitor.emit("chat:send", { channelId: text, content: "não deve aparecer" });
+  await sleep(100);
+  check("visitante não consegue escrever no chat", guestChat.length, 0);
+  check("visitante pode entrar na voz", (await emit(visitor, "voice:join", { channelId: voice })).ok, true);
+  visitor.close();
+  await sleep(100);
+
+  // Cargos concedem as permissões escolhidas, sem transformar todo membro em dono.
+  const role = await emit(a, "role:create", {
+    guildId: homeId,
+    name: "Organizador",
+    color: "#3366FF",
+    permissions: ["manage_channels"],
+  });
+  check("dono cria cargo com permissão", role.role?.name, "Organizador");
+  check("membro sem cargo não cria canal", (await emit(c, "channel:create", { guildId: homeId, type: "text", name: "negado" })).error, "missing-permission");
+  check("cargo pode ser atribuído a um membro", (await emit(a, "role:assign", { guildId: homeId, userId: joinB.selfId, roleId: role.role.id, assigned: true })).ok, true);
+  check("permissão do cargo libera criar canal", (await emit(b, "channel:create", { guildId: homeId, type: "text", name: "equipe" })).ok, true);
+
+  // Mensagem privada para outra conta e para si mesmo.
+  const selfThread = await emit(a, "direct:open", { userId: idA });
+  check("usuário abre conversa consigo mesmo", selfThread.thread?.peer?.id, idA);
+  check("usuário envia mensagem para si mesmo", (await emit(a, "direct:send", { threadId: selfThread.thread.id, content: "minha nota" })).ok, true);
+  const directOnA = waitFor(a, "direct:message");
+  const pairThread = await emit(b, "direct:open", { userId: idA });
+  await emit(b, "direct:send", { threadId: pairThread.thread.id, content: "oi no privado" });
+  check("DM chega à outra conta", (await directOnA)?.content, "oi no privado");
 
   // --- chat ----------------------------------------------------------------
   const chatOnB = waitFor(b, "chat:message");
@@ -234,7 +298,7 @@ try {
   // --- reconexão com a mesma identidade ------------------------------------
   const d = connect(URL, { transports: ["websocket"] });
   await waitFor(d, "connect");
-  const rejoin = await emit(d, "identify", { username: "Carla", password: PASSWORD, token: tokenC });
+  const rejoin = await emit(d, "identify", { token: tokenC });
   check("o token devolve a mesma identidade", rejoin.selfId, idC);
   const onlineIds = rejoin.state.members.map((m) => m.id).sort();
   check("reconectar não duplica ninguém na lista", onlineIds, [idA, idB, idC].sort());
@@ -246,13 +310,13 @@ try {
   // como essa pessoa. Agora sem a assinatura o servidor emite outra identidade.
   const e = connect(URL, { transports: ["websocket"] });
   await waitFor(e, "connect");
-  const impostor = await emit(e, "identify", { username: "Falsa", password: PASSWORD, userId: idA });
-  check("mandar o userId de outra pessoa não assume a identidade dela", impostor.selfId !== idA, true);
+  const impostor = await emit(e, "identify", { userId: idA });
+  check("mandar o userId de outra pessoa não assume a identidade dela", impostor.error, "not-authenticated");
   const forged = `${tokenA.split(".").slice(0, 2).join(".")}.assinaturafalsa`;
   const f = connect(URL, { transports: ["websocket"] });
   await waitFor(f, "connect");
-  const tampered = await emit(f, "identify", { username: "Falsa2", password: PASSWORD, token: forged });
-  check("token com assinatura trocada não vale", tampered.selfId !== idA, true);
+  const tampered = await emit(f, "identify", { token: forged });
+  check("token com assinatura trocada não vale", tampered.error, "not-authenticated");
   e.close();
   f.close();
   await sleep(250);
@@ -284,8 +348,8 @@ try {
   const g = connect(URL, { transports: ["websocket"] });
   const h = connect(URL, { transports: ["websocket"] });
   await Promise.all([waitFor(g, "connect"), waitFor(h, "connect")]);
-  const joinG = await emit(g, "identify", { username: "Davi", password: PASSWORD });
-  await emit(h, "identify", { username: "Elena", password: PASSWORD });
+  const joinG = await emit(g, "identify", { token: tokens.Davi });
+  await emit(h, "identify", { token: tokens.Elena });
   const idG = joinG.selfId;
 
   check(
@@ -382,7 +446,7 @@ try {
   check(
     "quem não é dono não apaga canal",
     (await emit(g, "channel:delete", { channelId: voiceOnly.id })).error,
-    "not-owner",
+    "missing-permission",
   );
   check("quem não é dono pode sair", (await emit(g, "guild:leave", { guildId })).ok, true);
   check(
