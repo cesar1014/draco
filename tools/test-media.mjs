@@ -411,6 +411,28 @@ await test("fechar o motor solta os temporizadores e as conexões", async () => 
 const { MediaManager, describeSystemAudioFailure } = await bundle(
   join(root, "client", "src", "rtc", "MediaManager.ts"),
 );
+const {
+  DEFAULT_SCREEN_OPTIONS,
+  normalizeScreenOptions,
+  screenDegradation,
+} = await bundle(join(root, "client", "src", "rtc", "MediaManager.ts"));
+const { preferLowLatency } = await bundle(join(root, "client", "src", "rtc", "engine.ts"));
+
+await test("padrão de tela prioriza fluidez sem esconder as opções maiores", async () => {
+  assert.equal(DEFAULT_SCREEN_OPTIONS.resolution, "720");
+  assert.equal(DEFAULT_SCREEN_OPTIONS.frameRate, 30);
+  assert.equal(normalizeScreenOptions({}).resolution, "720");
+  assert.equal(screenDegradation("auto"), "balanced");
+  assert.equal(screenDegradation("game"), "maintain-framerate");
+  assert.equal(screenDegradation("text"), "maintain-resolution");
+});
+
+await test("receptor da tela pede buffer mínimo quando o navegador permite", async () => {
+  const receiver = {};
+  preferLowLatency(receiver);
+  assert.equal(receiver.playoutDelayHint, 0);
+  assert.equal(receiver.jitterBufferTarget, 0);
+});
 
 const namedError = (name) => Object.assign(new Error(name), { name });
 

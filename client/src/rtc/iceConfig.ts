@@ -1,7 +1,7 @@
 import type { IceConfigResponse } from "@/types";
 
 /**
- * Só STUN público. É o fallback quando `/api/ice` não responde, e melhor tentar
+ * Só STUN público. É o fallback quando o socket autenticado não responde, e melhor tentar
  * conectar com o que dá do que não abrir a call.
  */
 const FALLBACK: IceConfigResponse = {
@@ -32,13 +32,20 @@ interface Cached {
 let cached: Cached | null = null;
 /** Uma busca por vez: seis tiles pedindo junto renderiam seis requisições iguais. */
 let inFlight: Promise<IceConfigResponse> | null = null;
+type IceConfigProvider = (refresh: boolean) => Promise<IceConfigResponse>;
+let provider: IceConfigProvider | null = null;
+
+/** Credenciais TURN nunca saem por HTTP anônimo: o store instala o socket identificado. */
+export function setIceConfigProvider(next: IceConfigProvider | null): void {
+  provider = next;
+  cached = null;
+  inFlight = null;
+}
 
 async function fetchConfig(refresh: boolean): Promise<IceConfigResponse> {
-  const url = refresh ? "/api/ice?refresh=1" : "/api/ice";
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const config = (await response.json()) as IceConfigResponse;
+    if (!provider) throw new Error("socket ainda não identificado");
+    const config = await provider(refresh);
     const ttl = config.expiresAt ? config.expiresAt - Date.now() : DEFAULT_TTL_MS;
     cached = { config, staleAt: Date.now() + Math.max(ttl, RENEW_BEFORE_MS) };
     return config;

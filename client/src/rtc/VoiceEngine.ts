@@ -1,5 +1,6 @@
 import {
   applyProfile,
+  preferLowLatency,
   type CallEngine,
   type EngineSample,
   type RemoteTrackRef,
@@ -143,6 +144,7 @@ export class VoiceEngine implements CallEngine {
       this.#mapTransceivers(peer);
       const slot = peer.slots.get(event.transceiver);
       if (!slot) return;
+      if (slot === "screen") preferLowLatency(event.receiver);
 
       // Stream próprio em vez de `event.streams[0]`: depois de um `replaceTrack` o
       // stream de origem pode vir vazio.

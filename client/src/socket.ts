@@ -13,6 +13,7 @@ import type {
   RosterEntry,
   Role,
   GuildPermission,
+  IceConfigResponse,
   ServerSnapshot,
   SignalPayload,
 } from "@/types";
@@ -160,6 +161,10 @@ interface ClientEvents {
     payload: { token?: string | null; guest?: { username?: string; inviteCode?: string; age?: number; token?: string } },
     ack: (reply: IdentifyReply) => void,
   ) => void;
+  "ice:get": (
+    payload: { refresh: boolean },
+    ack: (reply: { ok: boolean; error?: string; config?: IceConfigResponse }) => void,
+  ) => void;
   "chat:send": (payload: { channelId: string; content: string }) => void;
   "chat:history": (
     payload: { channelId: string; beforeId: string },
@@ -292,6 +297,14 @@ export const identifyGuest = (
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
   new Promise<VoiceJoinReply>((resolve) => socket.emit("voice:join", { channelId }, resolve));
+
+export const requestIceConfig = async (socket: AppSocket, refresh: boolean) => {
+  const reply = await ask<{ ok: boolean; error?: string; config?: IceConfigResponse }>((resolve) =>
+    socket.emit("ice:get", { refresh }, resolve),
+  );
+  if (!reply.ok || !reply.config) throw new Error(reply.error ?? "ice-config-failed");
+  return reply.config;
+};
 
 export const loadChatHistory = (socket: AppSocket, channelId: string, beforeId: string) =>
   ask<ChatHistoryReply>((resolve) => socket.emit("chat:history", { channelId, beforeId }, resolve));

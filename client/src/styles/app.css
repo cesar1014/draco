@@ -433,6 +433,151 @@ input[type="range"]:disabled {
   color: var(--text-faint);
 }
 
+/* Início aberto pela marca. Não existe presença global: a contagem de cada
+   cartão é calculada somente com o elenco daquele servidor. */
+.home-view {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.home-header svg {
+  color: var(--brand-2);
+}
+
+.home-scroll {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  padding: clamp(24px, 4vw, 48px);
+  overflow-y: auto;
+}
+
+.home-hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--brand-line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(125deg, rgba(91, 108, 255, 0.18), rgba(79, 216, 255, 0.06));
+  box-shadow: var(--shadow);
+}
+
+.home-hero h2 {
+  font-size: clamp(21px, 3vw, 28px);
+}
+
+.home-hero p,
+.home-guild-copy small {
+  color: var(--text-dim);
+}
+
+.home-section {
+  margin-top: 34px;
+}
+
+.home-section-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 13px;
+}
+
+.home-section-title h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.home-section-title span {
+  min-width: 23px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
+.home-guild-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+
+.home-guild-card,
+.home-direct-card,
+.home-empty-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: rgba(19, 26, 48, 0.76);
+  text-align: left;
+}
+
+.home-guild-card,
+.home-direct-card {
+  transition: transform var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.home-guild-card:hover,
+.home-direct-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--brand-line);
+  background: var(--surface-3);
+}
+
+.home-guild-avatar {
+  display: grid;
+  width: 45px;
+  height: 45px;
+  flex: none;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--guild-color, var(--brand));
+  color: #fff;
+  font-weight: 750;
+}
+
+.home-guild-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.home-guild-copy strong,
+.home-guild-copy small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.home-card-arrow {
+  color: var(--text-faint);
+  font-size: 28px;
+}
+
+.home-direct-list {
+  display: grid;
+  gap: 8px;
+}
+
+.home-empty-card {
+  color: var(--text-dim);
+}
+
+@media (max-width: 620px) {
+  .home-scroll { padding: 20px 16px; }
+  .home-hero { align-items: flex-start; padding: 19px; }
+}
+
 /* Primeira tela de quem entrou e ainda não tem servidor. Centralizada e estreita:
    são duas frases e dois botões, e uma coluna larga espalharia o texto até ele
    ficar difícil de ler. */

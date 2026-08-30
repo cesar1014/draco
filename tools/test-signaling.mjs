@@ -120,12 +120,22 @@ try {
   const a = connect(URL, { transports: ["websocket"] });
   const b = connect(URL, { transports: ["websocket"] });
   const c = connect(URL, { transports: ["websocket"] });
-  await Promise.all([waitFor(a, "connect"), waitFor(b, "connect"), waitFor(c, "connect")]);
+  // scrypt mais forte e bootstrap do banco podem alongar o primeiro boot em CI.
+  await Promise.all([
+    waitFor(a, "connect", 10_000),
+    waitFor(b, "connect", 10_000),
+    waitFor(c, "connect", 10_000),
+  ]);
 
   check("entrada sem sessão é recusada", await emit(a, "identify", {}), {
     ok: false,
     error: "not-authenticated",
   });
+  check(
+    "credencial ICE é recusada antes da identificação",
+    (await emit(a, "ice:get", { refresh: false })).error,
+    "not-identified",
+  );
   check(
     "token inventado é recusado",
     (await emit(a, "identify", { token: "v1.invalido.invalido" })).error,
@@ -134,6 +144,11 @@ try {
 
   const joinA = await emit(a, "identify", { token: tokens.Ana });
   check("entrada com conta válida", joinA.ok, true);
+  check(
+    "conta identificada recebe configuração ICE",
+    (await emit(a, "ice:get", { refresh: false })).ok,
+    true,
+  );
   // Não há servidor de demonstração: quem chega não é membro de nada, e o
   // snapshot dessa pessoa vem vazio até ela criar um servidor ou aceitar convite.
   check("quem acaba de chegar não tem servidor nenhum", [joinA.state.guilds, joinA.state.channels], [

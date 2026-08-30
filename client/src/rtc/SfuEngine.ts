@@ -1,5 +1,6 @@
 import {
   applyProfile,
+  preferLowLatency,
   type CallEngine,
   type EngineSample,
   type RemoteTrackRef,
@@ -496,6 +497,7 @@ export class SfuEngine implements CallEngine {
       const transceiver = this.#recv.getTransceivers().find((t) => t.mid === entry.mid);
       const track = transceiver?.receiver.track;
       if (!track || track.kind !== SLOT_KIND[ref.slot]) continue;
+      if (ref.slot === "screen") preferLowLatency(transceiver.receiver);
       this.#attach(ref, track, entry.mid);
       attached.add(slotKey(ref.memberId, ref.slot));
     }

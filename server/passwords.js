@@ -3,9 +3,10 @@ import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCallback);
 const KEY_BYTES = 64;
-const COST = 16_384;
+// OWASP: scrypt N=2^15, r=8, p=3 é uma das combinações mínimas indicadas.
+const COST = 32_768;
 const BLOCK_SIZE = 8;
-const PARALLELISM = 1;
+const PARALLELISM = 3;
 
 export function normalizeEmail(raw) {
   if (typeof raw !== "string" || raw.length > 320) return null;

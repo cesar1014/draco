@@ -102,7 +102,11 @@ export function JoinScreen() {
       if (!validNewPassword(password)) setMessage("A senha precisa ter no mínimo 8 caracteres, uma letra maiúscula e uma minúscula.");
       else if (password !== confirmation) setMessage("As duas senhas precisam ser iguais.");
       else if (!actionToken) setMessage("Esse link não tem um token válido.");
-      else setMessage(await completePassword(actionToken, password));
+      else {
+        const error = await completePassword(actionToken, password);
+        setMessage(error);
+        if (!error) window.history.replaceState(null, "", window.location.pathname);
+      }
     }
     setBusy(false);
   }

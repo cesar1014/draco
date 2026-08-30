@@ -1,4 +1,5 @@
 import { logger, reason } from "./log.js";
+import { invalidateIceCache, resolveIceConfig } from "./ice.js";
 import { randomUUID } from "node:crypto";
 import {
   RateLimiter,
@@ -81,6 +82,7 @@ const LIMITS = {
   voiceState: { burst: 30, perSec: 12 },
   signal: { burst: 400, perSec: 200 },
   sfu: { burst: 40, perSec: 10 },
+  ice: { burst: 6, perSec: 0.2 },
   /**
    * Ações administrativas. A rajada é generosa porque montar um servidor é uma
    * sequência: criar, dois ou três canais, um convite, abrir o painel. Quem
@@ -139,6 +141,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
   const sfu = sfuConfig(env);
   const accounts = accountService.repository;
   const guestSessions = new Map();
+  let lastForcedIceRefresh = 0;
 
   io.on("connection", (socket) => {
     /** Enquanto não passar pelo `identify`, o socket não existe pro resto do app. */
@@ -329,6 +332,24 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         state,
       });
       emitPresence("member:joined", member, { excludeSelf: true });
+    });
+
+    // TURN é um recurso autenticado. Visitante identificado pode usá-lo para
+    // voz, mas um robô anônimo não consegue colher credenciais pela API.
+    socket.on("ice:get", async (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified) return reply({ ok: false, error: "not-identified" });
+      if (!allow("ice")) return reply({ ok: false, error: "rate-limited" });
+      if (payload?.refresh === true && Date.now() - lastForcedIceRefresh > 60_000) {
+        lastForcedIceRefresh = Date.now();
+        invalidateIceCache();
+      }
+      try {
+        reply({ ok: true, config: await resolveIceConfig() });
+      } catch (error) {
+        sfuLog.error("falha ao montar ICE", { motivo: reason(error) });
+        reply({ ok: false, error: "ice-config-failed" });
+      }
     });
 
     socket.on("chat:send", (payload) => {

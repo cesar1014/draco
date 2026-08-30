@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, desktopCapturer, ipcMain, session, shell, webContents } = require("electron");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { checkForUpdates, currentVersion } = require("./updater.js");
 
 /**
@@ -31,17 +32,45 @@ const log = {
 
 const describe = (error) => (error instanceof Error ? error.message : String(error));
 
-/** Endereço publicado. `DESKTOP_URL` ou `--url=` mandam mais, pra apontar pro localhost em teste. */
+/** Endereço publicado. Override existe só no Electron não empacotado, para desenvolvimento. */
 const DEFAULT_URL = "https://dracocall.duckdns.org";
 
 const urlFromArgv = process.argv.find((arg) => arg.startsWith("--url="))?.slice(6);
-const APP_URL = (urlFromArgv || process.env.DESKTOP_URL || DEFAULT_URL).trim().replace(/\/+$/, "");
+const developmentUrl = app.isPackaged ? null : urlFromArgv || process.env.DESKTOP_URL;
+const APP_URL = (developmentUrl || DEFAULT_URL).trim().replace(/\/+$/, "");
 const APP_ORIGIN = new URL(APP_URL).origin;
+const STATUS_URL = pathToFileURL(path.join(__dirname, "status.html")).href;
 
 /** Comparação por origem, não por texto: barra no fim e caminho não podem enganar. */
 function sameOrigin(value) {
   try {
     return new URL(value).origin === APP_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+function localStatusPage(value) {
+  try {
+    const candidate = new URL(value);
+    const status = new URL(STATUS_URL);
+    return candidate.protocol === "file:" && candidate.pathname === status.pathname;
+  } catch {
+    return false;
+  }
+}
+
+/** Nunca entrega protocolos do sistema nem URL sem HTTPS ao `openExternal`. */
+function openSafeExternal(value) {
+  try {
+    const url = new URL(value);
+    const officialRelease =
+      url.protocol === "https:" &&
+      url.hostname === "github.com" &&
+      url.pathname.startsWith("/cesar1014/draco/releases/");
+    if (!officialRelease) return false;
+    void shell.openExternal(url.href);
+    return true;
   } catch {
     return false;
   }
@@ -278,8 +307,7 @@ ipcMain.handle("desktop:open-release", async (event) => {
   if (!sameOrigin(event.senderFrame?.url ?? "")) return false;
   const result = await checkForUpdates();
   if (!result.url) return false;
-  await shell.openExternal(result.url);
-  return true;
+  return openSafeExternal(result.url);
 });
 
 function showError(window, message) {
@@ -341,13 +369,13 @@ function createWindow() {
  */
 function guardNavigation(contents) {
   contents.on("will-navigate", (event, url) => {
-    if (sameOrigin(url) || url.startsWith("file://")) return;
+    if (sameOrigin(url) || localStatusPage(url)) return;
     event.preventDefault();
-    void shell.openExternal(url);
+    openSafeExternal(url);
   });
   contents.setWindowOpenHandler(({ url }) => {
     if (sameOrigin(url)) return { action: "allow" };
-    void shell.openExternal(url);
+    openSafeExternal(url);
     return { action: "deny" };
   });
   // Anexar um devtools ou um webview seria outra porta pra carregar conteúdo com
