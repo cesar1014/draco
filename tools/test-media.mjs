@@ -448,32 +448,42 @@ const refuseUserMedia = () => {
  */
 function fakeMedia({ display, user = refuseUserMedia, platform = "win32" }) {
   const calls = { display: [], user: [], claims: [], failures: [] };
-  globalThis.navigator = {
-    mediaDevices: {
-      getDisplayMedia: async (constraints) => {
-        calls.display.push(constraints.audio);
-        return display(constraints, calls.display.length);
-      },
-      getUserMedia: async (constraints) => {
-        calls.user.push(constraints);
-        return user(constraints);
-      },
-    },
-  };
-  globalThis.window = {
-    desktop: {
-      version: "1.2.0",
-      platform,
-      listSources: async () => [],
-      selectSource: async (request) => {
-        calls.claims.push(request.systemAudio);
-        return { ok: true };
-      },
-      logCaptureFailure: async (report) => {
-        calls.failures.push(report.stage);
+  // Node 22 passou a expor `navigator` como getter sem setter. Definir a
+  // propriedade deixa o mesmo mock funcionar nele e no Node 20 da estação.
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      mediaDevices: {
+        getDisplayMedia: async (constraints) => {
+          calls.display.push(constraints.audio);
+          return display(constraints, calls.display.length);
+        },
+        getUserMedia: async (constraints) => {
+          calls.user.push(constraints);
+          return user(constraints);
+        },
       },
     },
-  };
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    writable: true,
+    value: {
+      desktop: {
+        version: "1.0.0",
+        platform,
+        listSources: async () => [],
+        selectSource: async (request) => {
+          calls.claims.push(request.systemAudio);
+          return { ok: true };
+        },
+        logCaptureFailure: async (report) => {
+          calls.failures.push(report.stage);
+        },
+      },
+    },
+  });
   return calls;
 }
 
