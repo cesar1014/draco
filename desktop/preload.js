@@ -21,4 +21,19 @@ contextBridge.exposeInMainWorld("desktop", {
   logCaptureFailure: (report) => ipcRenderer.invoke("desktop:log-capture-failure", report),
   checkUpdate: () => ipcRenderer.invoke("desktop:check-update"),
   openRelease: () => ipcRenderer.invoke("desktop:open-release"),
+  downloadUpdate: () => ipcRenderer.invoke("desktop:download-update"),
+  installUpdate: () => ipcRenderer.invoke("desktop:install-update"),
+  onUpdateStatus: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const handler = (_event, status) => listener(status);
+    ipcRenderer.on("desktop:update-status", handler);
+    return () => ipcRenderer.removeListener("desktop:update-status", handler);
+  },
+  showNotification: (payload) => ipcRenderer.invoke("desktop:notify", payload),
+  onNotificationOpen: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const handler = (_event, route) => listener(route);
+    ipcRenderer.on("desktop:notification-open", handler);
+    return () => ipcRenderer.removeListener("desktop:notification-open", handler);
+  },
 });

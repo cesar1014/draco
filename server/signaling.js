@@ -16,7 +16,10 @@ import {
   validAdultAge,
 } from "./security.js";
 import { GUILD_PERMISSIONS, sanitizePermissions } from "./permissions.js";
-import { createSession, newTracks, renegotiate, sfuConfig } from "./sfu.js";
+import { SocialRepository } from "./data/social-repository.js";
+import { CommunicationRepository } from "./data/communication-repository.js";
+import { AdminRepository } from "./data/admin-repository.js";
+import { createSession, createSfuHealth, newTracks, renegotiate, sfuConfig } from "./sfu.js";
 import {
   acceptInvite,
   acceptGuestInvite,
@@ -29,6 +32,7 @@ import {
   createGuild,
   createInvite,
   createRole,
+  channelsOfGuild,
   deleteChannel,
   deleteRole,
   findChannel,
@@ -47,11 +51,15 @@ import {
   peersInVoiceChannel,
   removeMember,
   revokeInvite,
+  reorderChannels,
+  reorderRoles,
   rolesOf,
   setSfuSession,
   setSfuTracks,
+  setPresence,
   setVoiceChannel,
   setVoiceState,
+  patchCachedMessage,
   snapshot,
   unban,
   updateRole,
@@ -93,6 +101,8 @@ const LIMITS = {
   // Aceitar convite é apertado por outro motivo: tentar códigos até acertar um
   // é o único caminho pra entrar num servidor sem ser convidado.
   invite: { burst: 5, perSec: 0.1 },
+  social: { burst: 12, perSec: 0.3 },
+  presence: { burst: 8, perSec: 0.2 },
 };
 
 /** Trilhas que uma pessoa pode publicar. Espelha `SLOT_ORDER` no cliente. */
@@ -108,7 +118,9 @@ const voiceRoom = (channelId) => `voice:${channelId}`;
  * vez de vazarem pra todo mundo conectado.
  */
 const guildRoom = (guildId) => `guild:${guildId}`;
+const channelRoom = (channelId) => `channel:${channelId}`;
 const directRoom = (threadId) => `direct:${threadId}`;
+const userRoom = (userId) => `user:${userId}`;
 
 /** Só o que o outro lado precisa saber, sem vazar detalhe interno. */
 function publicMember(member) {
@@ -123,6 +135,9 @@ function publicMember(member) {
     screenOn: member.screenOn,
     speaking: member.speaking,
     since: member.since,
+    presence: member.presenceMode === "invisible" ? "offline" : (member.presenceMode ?? "online"),
+    customStatus: member.customStatus ?? null,
+    statusExpiresAt: member.statusExpiresAt ?? null,
     guest: member.guest === true,
     guestGuildId: member.guest ? member.guestGuildId : null,
     // Com SFU, é assim que os outros sabem o que existe pra assinar.
@@ -131,7 +146,7 @@ function publicMember(member) {
   };
 }
 
-export function attachSignaling(io, env = process.env, { auth, accountService } = {}) {
+export function attachSignaling(io, env = process.env, { auth, accountService, telemetry = null } = {}) {
   if (!auth || !accountService) {
     throw new Error("attachSignaling precisa das autoridades de sessão e conta");
   }
@@ -139,9 +154,36 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
   const limiter = new RateLimiter();
   const trustProxy = env.TRUSTED_PROXY === "1";
   const sfu = sfuConfig(env);
+  const sfuHealth = createSfuHealth(sfu, { intervalMs: 5 * 60_000 });
+  const callModes = new Map();
   const accounts = accountService.repository;
+  const social = new SocialRepository(accounts.database);
+  const communication = new CommunicationRepository(accounts.database);
+  const administration = new AdminRepository(accounts.database);
   const guestSessions = new Map();
   let lastForcedIceRefresh = 0;
+
+  const socketCanChannel = (client, channel, permission = "view_channels") => {
+    const identity = client.data?.draco;
+    if (!identity?.userId) return false;
+    if (identity.systemAdmin || isGuildOwner(channel.guildId, identity.userId)) return true;
+    if (identity.guest) {
+      return identity.guestGuildId === channel.guildId && ["view_channels", "connect", "speak"].includes(permission);
+    }
+    if (!isGuildMember(channel.guildId, identity.userId)) return false;
+    const base = hasGuildPermission(channel.guildId, identity.userId, permission) ? [permission] : [];
+    return administration.resolveChannelPermissions(channel.id, channel.guildId, identity.userId, base).includes(permission);
+  };
+
+  const syncChannelRoom = (channel) => {
+    for (const client of io.sockets.sockets.values()) {
+      const operation = socketCanChannel(client, channel) ? client.join(channelRoom(channel.id)) : client.leave(channelRoom(channel.id));
+      void operation;
+    }
+  };
+  const syncGuildChannelRooms = (guildId) => {
+    for (const channel of channelsOfGuild(guildId)) syncChannelRoom(channel);
+  };
 
   io.on("connection", (socket) => {
     /** Enquanto não passar pelo `identify`, o socket não existe pro resto do app. */
@@ -177,15 +219,32 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         ? guestGuildId === guildId && ["view_channels", "connect", "speak"].includes(permission)
         : hasGuildPermission(guildId, userId, permission));
 
+    const canChannel = (channel, permission) => {
+      if (systemAdmin || isGuildOwner(channel.guildId, userId)) return true;
+      if (guest) return guestGuildId === channel.guildId && ["view_channels", "connect", "speak"].includes(permission);
+      return administration.resolveChannelPermissions(
+        channel.id,
+        channel.guildId,
+        userId,
+        hasGuildPermission(channel.guildId, userId, permission)
+          ? [permission]
+          : [],
+      ).includes(permission);
+    };
+
     function presenceTarget(member, fromSocket = false) {
       const guildIds = member.guest
         ? [member.guestGuildId]
         : guildsOf(member.id).map((guild) => guild.id);
       const voiceGuildId = member.voiceChannelId ? findChannel(member.voiceChannelId)?.guildId : null;
       if (voiceGuildId && !guildIds.includes(voiceGuildId)) guildIds.push(voiceGuildId);
-      let target = fromSocket ? socket.to(guildRoom(guildIds[0] ?? "none")) : io.to(guildRoom(guildIds[0] ?? "none"));
-      for (const guildId of guildIds.slice(1)) target = target.to(guildRoom(guildId));
-      return { target, hasRooms: guildIds.length > 0 };
+      const rooms = [
+        ...guildIds.filter(Boolean).map(guildRoom),
+        ...(member.guest ? [] : social.friendIds(member.id).map(userRoom)),
+      ];
+      let target = fromSocket ? socket.to(rooms[0] ?? "none") : io.to(rooms[0] ?? "none");
+      for (const room of rooms.slice(1)) target = target.to(room);
+      return { target, hasRooms: rooms.length > 0 };
     }
 
     function emitPresence(event, member, { excludeSelf = false } = {}) {
@@ -201,7 +260,9 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const channelId = member.voiceChannelId;
       socket.leave(voiceRoom(channelId));
       setVoiceChannel(member.id, null);
+      telemetry?.leaveCall(channelId, member.id);
       io.to(voiceRoom(channelId)).emit("voice:peer-left", { channelId, memberId: member.id });
+      if (peersInVoiceChannel(channelId, member.id).length === 0) callModes.delete(channelId);
       emitPresence("member:state", getMemberById(member.id));
     }
 
@@ -213,15 +274,49 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
     function visibleChannel(channelId, type) {
       const channel = findChannel(channelId);
       if (!channel || channel.type !== type) return null;
-      return hasAccess(channel.guildId) && can(channel.guildId, "view_channels") ? channel : null;
+      return hasAccess(channel.guildId) && canChannel(channel, "view_channels") ? channel : null;
     }
 
     /** Entra nas salas dos servidores de que a pessoa é membro. */
     function joinGuildRooms() {
       for (const guild of currentGuilds()) socket.join(guildRoom(guild.id));
+      for (const guild of currentGuilds()) {
+        for (const channel of channelsOfGuild(guild.id)) {
+          if (canChannel(channel, "view_channels")) socket.join(channelRoom(channel.id));
+        }
+      }
+      socket.join(userRoom(userId));
       if (!guest) {
         for (const thread of accounts.listThreads(userId)) socket.join(directRoom(thread.id));
       }
+    }
+
+    /** Snapshot pessoal: aplica overwrites antes de qualquer canal ou histórico sair. */
+    function clientState() {
+      const state = snapshot(userId, { systemAdmin, guestGuildId });
+      const visibleIds = new Set(
+        state.channels
+          .filter((channel) => canChannel(channel, "view_channels"))
+          .map((channel) => channel.id),
+      );
+      state.channels = state.channels.filter((channel) => visibleIds.has(channel.id));
+      state.messages = Object.fromEntries(
+        Object.entries(state.messages)
+          .filter(([channelId]) => visibleIds.has(channelId))
+          .map(([channelId, channelMessages]) => [channelId, communication.enrich("channel", channelMessages)]),
+      );
+      if (!guest) {
+        state.directThreads = accounts.listThreads(userId);
+        state.directMessages = {};
+        state.relationships = social.relationshipSnapshot(userId);
+        state.notifications = social.notifications(userId);
+        state.unread = social.unreadSnapshot(
+          userId,
+          new Set(state.channels.filter((channel) => channel.type === "text").map((channel) => channel.id)),
+        );
+      }
+      state.sfuHealth = sfuHealth.snapshot();
+      return state;
     }
 
     /**
@@ -305,6 +400,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         renewed = auth.renewIfNeeded(authenticated);
         ({ member, previousSocketId } = addMember(socket.id, userId, account.username, {
           systemAdmin,
+          profile: social.profile(userId),
         }));
       }
 
@@ -314,12 +410,9 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       }
 
       log.info("identificado", { userId: member.id, visitante: guest, administrador: systemAdmin });
+      socket.data.draco = { userId: member.id, guest, guestGuildId, systemAdmin };
       joinGuildRooms();
-      const state = snapshot(member.id, { systemAdmin, guestGuildId });
-      if (!guest) {
-        state.directThreads = accounts.listThreads(userId);
-        state.directMessages = {};
-      }
+      const state = clientState();
       reply({
         ok: true,
         selfId: member.id,
@@ -328,7 +421,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         account: guest
           ? { id: member.id, username: member.username, email: null, isSystemAdmin: false, guest: true }
           : { ...accountService.publicAccount(account), guest: false },
-        sfu: Boolean(sfu),
+        sfu: sfuHealth.available(),
         state,
       });
       emitPresence("member:joined", member, { excludeSelf: true });
@@ -345,23 +438,235 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         invalidateIceCache();
       }
       try {
-        reply({ ok: true, config: await resolveIceConfig() });
+        const config = await resolveIceConfig();
+        if (payload?.refresh === true) {
+          telemetry?.iceRestart();
+          if (config.hasTurn) telemetry?.turnFailure();
+        }
+        reply({ ok: true, config });
       } catch (error) {
         sfuLog.error("falha ao montar ICE", { motivo: reason(error) });
         reply({ ok: false, error: "ice-config-failed" });
       }
     });
 
-    socket.on("chat:send", (payload) => {
-      if (!identified || guest || !allow("chat")) return;
+    socket.on("chat:send", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("chat")) return reply({ ok: false, error: "not-authenticated" });
       const member = getMember(socket.id);
       const channel = visibleChannel(payload?.channelId, "text");
-      if (!member || !channel || !can(channel.guildId, "send_messages")) return;
+      if (!member || !channel || !canChannel(channel, "send_messages")) return reply({ ok: false, error: "forbidden" });
+      if (administration.isTimedOut(channel.guildId, userId)) return reply({ ok: false, error: "timed-out" });
       const content = sanitizeMessage(payload?.content);
-      if (!content) return;
+      if (!content) return reply({ ok: false, error: "bad-message" });
       // Só quem é do servidor: mandar pra todo mundo conectado vazaria a conversa
       // de um servidor privado pra quem não faz parte dele.
-      io.to(guildRoom(channel.guildId)).emit("chat:message", addMessage(channel.id, member, content));
+      const replyToId = isId(payload?.replyToId) ? payload.replyToId : null;
+      if (replyToId && communication.channelMessage(replyToId)?.channelId !== channel.id) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const message = addMessage(channel.id, member, content, replyToId);
+      telemetry?.message();
+      const mentionResult = social.recordMentions(message.id, channel.guildId, content, {
+        elevated: can(channel.guildId, "mention_everyone"),
+        authorId: userId,
+      });
+      const hydrated = communication.channelMessage(message.id);
+      hydrated.mentions = mentionResult.targets;
+      patchCachedMessage(hydrated);
+      io.to(channelRoom(channel.id)).emit("chat:message", hydrated);
+      for (const mentionedId of mentionResult.userIds) {
+        social.incrementMention(mentionedId, "channel", channel.id);
+        const notification = social.notify({
+          userId: mentionedId,
+          kind: "mention",
+          actorId: userId,
+          conversationType: "channel",
+          conversationId: channel.id,
+          metadata: { username: member.username, guildId: channel.guildId },
+        });
+        io.to(userRoom(mentionedId)).emit("notification:new", notification);
+      }
+      reply({ ok: true, message: hydrated });
+    });
+
+    socket.on("chat:edit", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("chat") || !isId(payload?.messageId)) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const original = communication.channelMessage(payload.messageId);
+      if (!original || !visibleChannel(original.channelId, "text")) return reply({ ok: false, error: "no-message" });
+      if (original.authorId !== userId && !can(original.guildId, "manage_messages")) {
+        return reply({ ok: false, error: "missing-permission" });
+      }
+      const content = sanitizeMessage(payload?.content);
+      if (!content) return reply({ ok: false, error: "bad-message" });
+      const message = communication.editChannel(original.id, content);
+      communication.clearMentions(original.id);
+      message.mentions = social.recordMentions(original.id, original.guildId, content, {
+        elevated: can(original.guildId, "mention_everyone"), authorId: userId,
+      }).targets;
+      patchCachedMessage(message);
+      io.to(channelRoom(original.channelId)).emit("chat:updated", message);
+      reply({ ok: true, message });
+    });
+
+    socket.on("chat:delete", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("chat") || !isId(payload?.messageId)) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const original = communication.channelMessage(payload.messageId);
+      if (!original || !visibleChannel(original.channelId, "text")) return reply({ ok: false, error: "no-message" });
+      if (original.authorId !== userId && !can(original.guildId, "manage_messages")) {
+        return reply({ ok: false, error: "missing-permission" });
+      }
+      const message = communication.deleteChannel(original.id);
+      patchCachedMessage(message);
+      io.to(channelRoom(original.channelId)).emit("chat:updated", message);
+      reply({ ok: true, message });
+    });
+
+    socket.on("chat:react", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("social") || !isId(payload?.messageId)) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const original = communication.channelMessage(payload.messageId);
+      const emoji = typeof payload?.emoji === "string" ? payload.emoji.trim() : "";
+      if (!original || !visibleChannel(original.channelId, "text") || !emoji || emoji.length > 16 || /[\u0000-\u001f]/.test(emoji)) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const message = communication.toggleReaction("channel", original.id, userId, emoji);
+      patchCachedMessage(message);
+      io.to(channelRoom(original.channelId)).emit("chat:updated", message);
+      reply({ ok: true, message });
+    });
+
+    const relationshipsFor = (id) => social.relationshipSnapshot(id);
+    const publishRelationships = (...ids) => {
+      for (const id of new Set(ids.filter(Boolean))) {
+        io.to(userRoom(id)).emit("relationship:update", relationshipsFor(id));
+      }
+    };
+
+    socket.on("friend:request", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social")) return reply({ ok: false, error: "rate-limited" });
+      const username = sanitizeUsername(payload?.username);
+      const target = username ? social.targetByUsername(username) : null;
+      if (!target) return reply({ ok: false, error: "no-user" });
+      const result = social.sendRequest(userId, target.id);
+      if (!result.ok) return reply(result);
+      const notification = social.notify({
+        userId: target.id,
+        kind: "friend_request",
+        actorId: userId,
+        metadata: { username: getMember(socket.id)?.username ?? account?.username },
+      });
+      io.to(userRoom(target.id)).emit("notification:new", notification);
+      publishRelationships(userId, target.id);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:accept", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+      const result = social.acceptRequest(userId, payload.userId);
+      if (!result.ok) return reply(result);
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:reject", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+      if (!social.rejectRequest(userId, payload.userId)) return reply({ ok: false, error: "no-request" });
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:cancel", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+      if (!social.cancelRequest(userId, payload.userId)) return reply({ ok: false, error: "no-request" });
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:remove", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+      if (!social.removeFriend(userId, payload.userId)) return reply({ ok: false, error: "not-friends" });
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:block", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId) || payload.userId === userId) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      social.block(userId, payload.userId);
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("friend:unblock", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social") || !isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
+      if (!social.unblock(userId, payload.userId)) return reply({ ok: false, error: "not-blocked" });
+      publishRelationships(userId, payload.userId);
+      reply({ ok: true, relationships: relationshipsFor(userId) });
+    });
+
+    socket.on("presence:update", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("presence")) return reply({ ok: false, error: "rate-limited" });
+      const mode = ["online", "away", "dnd", "invisible"].includes(payload?.mode)
+        ? payload.mode
+        : null;
+      if (!mode) return reply({ ok: false, error: "bad-request" });
+      const status = payload?.status == null ? null : sanitizeMessage(payload.status)?.slice(0, 128) || null;
+      const expiresAt = status && Number.isFinite(payload?.expiresAt)
+        ? Math.min(Math.max(payload.expiresAt, Date.now() + 60_000), Date.now() + 30 * 24 * 60 * 60 * 1000)
+        : null;
+      const profile = social.updatePresence(userId, mode, status, expiresAt);
+      const member = setPresence(userId, profile);
+      emitPresence("member:state", member);
+      reply({ ok: true, profile });
+    });
+
+    socket.on("notification:read", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !isId(payload?.id)) return reply({ ok: false, error: "bad-request" });
+      reply({ ok: social.readNotification(userId, payload.id) });
+    });
+
+    socket.on("read:mark", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("presence")) return reply({ ok: false, error: "rate-limited" });
+      const type = payload?.type;
+      const id = payload?.id;
+      const sequence = payload?.sequence;
+      if (!["channel", "direct"].includes(type) || !isId(id) || !Number.isSafeInteger(sequence) || sequence < 0) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const allowed = type === "channel"
+        ? Boolean(visibleChannel(id, "text"))
+        : accounts.isParticipant(id, userId);
+      if (!allowed) return reply({ ok: false, error: "not-member" });
+      social.markRead(userId, type, id, sequence);
+      reply({ ok: true });
     });
 
     /**
@@ -378,14 +683,14 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
 
       const page = loadHistory(channel.id, payload.beforeId);
       if (!page) return reply({ ok: false, error: "no-message" });
-      reply({ ok: true, channelId: channel.id, messages: page.messages, more: page.more });
+      reply({ ok: true, channelId: channel.id, messages: communication.enrich("channel", page.messages), more: page.more });
     });
 
     socket.on("voice:join", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
       if (!identified || !allow("voiceJoin")) return reply({ ok: false, error: "rate-limited" });
       const channel = visibleChannel(payload?.channelId, "voice");
-      if (!channel || !can(channel.guildId, "connect")) {
+      if (!channel || !canChannel(channel, "connect") || administration.isTimedOut(channel.guildId, userId)) {
         return reply({ ok: false, error: "no-channel" });
       }
 
@@ -395,11 +700,14 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       // conhecer todo mundo antes de os outros serem avisados dele. Se fosse por
       // evento, dava pra receber uma oferta de alguém que ainda não está no mapa.
       const peers = peersInVoiceChannel(channel.id, userId).map(publicMember);
+      const mode = callModes.get(channel.id) ?? (sfuHealth.available() ? "sfu" : "p2p");
+      callModes.set(channel.id, mode);
       setVoiceChannel(userId, channel.id);
+      telemetry?.joinCall(channel.id, userId, mode);
       socket.join(voiceRoom(channel.id));
 
       const member = getMember(socket.id);
-      reply({ ok: true, channelId: channel.id, peers, sfu: Boolean(sfu) });
+      reply({ ok: true, channelId: channel.id, peers, sfu: mode === "sfu", sfuHealth: sfuHealth.snapshot() });
       socket.to(voiceRoom(channel.id)).emit("voice:peer-joined", {
         channelId: channel.id,
         member: publicMember(member),
@@ -452,7 +760,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
 
     /** Guarda comum: identificado, dentro de uma call e com SFU disponível. */
     function sfuMember(reply) {
-      if (!sfu) {
+      if (!sfu || sfuHealth.snapshot().status === "UNAVAILABLE") {
         reply({ ok: false, error: "no-sfu" });
         return null;
       }
@@ -463,6 +771,10 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const member = getMember(socket.id);
       if (!member?.voiceChannelId) {
         reply({ ok: false, error: "not-in-voice" });
+        return null;
+      }
+      if (callModes.get(member.voiceChannelId) !== "sfu") {
+        reply({ ok: false, error: "call-mode-p2p" });
         return null;
       }
       return member;
@@ -483,9 +795,13 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
           return reply({ ok: false, error: "not-in-voice" });
         }
         setSfuSession(member.id, { sendSessionId: send.sessionId, recvSessionId: recv.sessionId });
+        sfuHealth.markSuccess();
         emitPresence("member:state", getMemberById(member.id));
         reply({ ok: true });
       } catch (error) {
+        sfuHealth.markFailure(error);
+        telemetry?.callError();
+        io.to(voiceRoom(member.voiceChannelId)).emit("sfu:health", sfuHealth.snapshot());
         sfuLog.error("falha ao criar sessão", { userId: member.id, motivo: reason(error) });
         reply({ ok: false, error: "sfu-failed" });
       }
@@ -533,6 +849,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         });
         reply({ ok: true, description: result.sessionDescription ?? null });
       } catch (error) {
+        sfuHealth.markFailure(error);
         sfuLog.error("falha ao publicar trilhas", { userId: member.id, motivo: reason(error) });
         reply({ ok: false, error: "sfu-failed" });
       }
@@ -578,6 +895,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
           })),
         });
       } catch (error) {
+        sfuHealth.markFailure(error);
         sfuLog.error("falha ao assinar trilhas", { userId: member.id, motivo: reason(error) });
         reply({ ok: false, error: "sfu-failed" });
       }
@@ -604,6 +922,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         await renegotiate(sfu, sessionId, description);
         reply({ ok: true });
       } catch (error) {
+        sfuHealth.markFailure(error);
         sfuLog.error("falha ao renegociar", {
           userId: member.id,
           role,
@@ -628,8 +947,9 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const guild = createGuild(userId, name);
       if (!guild) return reply({ ok: false, error: "create-failed" });
       socket.join(guildRoom(guild.id));
+      for (const channel of channelsOfGuild(guild.id)) syncChannelRoom(channel);
       log.info("servidor criado", { guildId: guild.id, ownerId: userId });
-      reply({ ok: true, guild, state: snapshot(userId, { systemAdmin }) });
+      reply({ ok: true, guild, state: clientState() });
     });
 
     socket.on("guild:leave", (payload, ack) => {
@@ -648,8 +968,9 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (current?.guildId === guildId) leaveVoice();
 
       socket.leave(guildRoom(guildId));
+      for (const channel of channelsOfGuild(guildId)) socket.leave(channelRoom(channel.id));
       io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId });
-      reply({ ok: true, state: snapshot(userId, { systemAdmin }) });
+      reply({ ok: true, state: clientState() });
     });
 
     socket.on("channel:create", (payload, ack) => {
@@ -663,6 +984,8 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
 
       const channel = createChannel(guildId, type, name);
       if (!channel) return reply({ ok: false, error: "create-failed" });
+      administration.audit(guildId, userId, "channel.create", "channel", channel.id, { type, name });
+      syncChannelRoom(channel);
       io.to(guildRoom(guildId)).emit("channel:created", { channel });
       reply({ ok: true, channel });
     });
@@ -675,6 +998,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
 
       const result = deleteChannel(channel.id);
       if (!result.ok) return reply(result);
+      administration.audit(channel.guildId, userId, "channel.delete", "channel", channel.id, { name: channel.name, type: channel.type });
 
       // Quem estava na call do canal apagado precisa saber, senão o cliente
       // continuaria mostrando uma call que não existe mais.
@@ -684,6 +1008,20 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         channelId: channel.id,
       });
       reply({ ok: true });
+    });
+
+    socket.on("channel:reorder", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "manage_channels" })) return;
+      const orderedIds = payload?.orderedIds;
+      if (!Array.isArray(orderedIds) || orderedIds.length > 100 || orderedIds.some((id) => !isId(id))) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      if (!reorderChannels(guildId, orderedIds)) return reply({ ok: false, error: "bad-request" });
+      const reordered = channelsOfGuild(guildId);
+      io.to(guildRoom(guildId)).emit("channels:reordered", { guildId, channels: reordered });
+      reply({ ok: true, channels: reordered });
     });
 
     socket.on("invite:create", (payload, ack) => {
@@ -700,6 +1038,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
           : null;
 
       const code = createInvite(guildId, userId, { maxUses, expiresInHours: hours });
+      administration.audit(guildId, userId, "invite.create", "invite", code, { maxUses, expiresInHours: hours });
       reply({ ok: true, code, invites: listInvites(guildId) });
     });
 
@@ -715,6 +1054,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!result.ok) return reply(result);
 
       socket.join(guildRoom(result.guildId));
+      for (const channel of channelsOfGuild(result.guildId)) syncChannelRoom(channel);
       if (result.joined) {
         const member = getMember(socket.id);
         io.to(guildRoom(result.guildId)).emit("guild:member-joined", {
@@ -723,7 +1063,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         });
       }
       log.info("convite aceito", { guildId: result.guildId, userId, novo: result.joined });
-      reply({ ok: true, guildId: result.guildId, state: snapshot(userId, { systemAdmin }) });
+      reply({ ok: true, guildId: result.guildId, state: clientState() });
     });
 
     socket.on("invite:revoke", (payload, ack) => {
@@ -733,6 +1073,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(payload?.code, 32)) return reply({ ok: false, error: "bad-request" });
 
       const removed = revokeInvite(guildId, payload.code);
+      if (removed) administration.audit(guildId, userId, "invite.revoke", "invite", payload.code);
       reply({ ok: removed, invites: listInvites(guildId), ...(removed ? {} : { error: "no-invite" }) });
     });
 
@@ -757,8 +1098,11 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         return reply({ ok: false, error: "protected-user" });
       }
       if (!isGuildMember(guildId, target)) return reply({ ok: false, error: "not-member" });
-
+      if (!administration.canActOn(guildId, userId, target, { systemAdmin })) {
+        return reply({ ok: false, error: "role-hierarchy" });
+      }
       const banned = banMember(guildId, target, userId, sanitizeReason(payload?.reason));
+      administration.audit(guildId, userId, "member.ban", "member", target, { reason: sanitizeReason(payload?.reason) });
       io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId: target });
 
       // A pessoa banida precisa sair da sala do servidor agora: continuar nela
@@ -767,6 +1111,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (socketId) {
         const targetSocket = io.sockets.sockets.get(socketId);
         targetSocket?.leave(guildRoom(guildId));
+        for (const channel of channelsOfGuild(guildId)) targetSocket?.leave(channelRoom(channel.id));
         targetSocket?.emit("guild:banned", { guildId });
       }
       log.info("membro banido", { guildId, userId: target, por: userId });
@@ -780,7 +1125,86 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(payload?.userId)) return reply({ ok: false, error: "bad-request" });
 
       const removed = unban(guildId, payload.userId);
+      if (removed) administration.audit(guildId, userId, "member.unban", "member", payload.userId);
       reply({ ok: removed, bans: listBans(guildId), ...(removed ? {} : { error: "no-ban" }) });
+    });
+
+    socket.on("member:kick", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "moderate_members" })) return;
+      const target = payload?.userId;
+      if (!isId(target) || target === userId || !isGuildMember(guildId, target)) return reply({ ok: false, error: "bad-request" });
+      if (!administration.canActOn(guildId, userId, target, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
+      if (!administration.kick(guildId, target)) return reply({ ok: false, error: "not-member" });
+      administration.audit(guildId, userId, "member.kick", "member", target, { reason: sanitizeReason(payload?.reason) });
+      io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId: target });
+      const targetSocket = getMemberById(target)?.socketId ? io.sockets.sockets.get(getMemberById(target).socketId) : null;
+      targetSocket?.leave(guildRoom(guildId));
+      for (const channel of channelsOfGuild(guildId)) targetSocket?.leave(channelRoom(channel.id));
+      targetSocket?.emit("guild:kicked", { guildId });
+      reply({ ok: true });
+    });
+
+    socket.on("member:timeout", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "moderate_members" })) return;
+      const target = payload?.userId;
+      const durationMs = payload?.durationMs;
+      if (!isId(target) || target === userId || !isGuildMember(guildId, target) || !Number.isSafeInteger(durationMs) || durationMs < 60_000 || durationMs > 28 * 24 * 60 * 60 * 1000) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      if (!administration.canActOn(guildId, userId, target, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
+      const expiresAt = administration.timeout(guildId, target, userId, durationMs, sanitizeReason(payload?.reason));
+      administration.audit(guildId, userId, "member.timeout", "member", target, { expiresAt, reason: sanitizeReason(payload?.reason) });
+      const targetMember = getMemberById(target);
+      const voiceChannel = targetMember?.voiceChannelId ? findChannel(targetMember.voiceChannelId) : null;
+      if (voiceChannel?.guildId === guildId) {
+        const targetSocket = io.sockets.sockets.get(targetMember.socketId);
+        targetSocket?.leave(voiceRoom(voiceChannel.id));
+        setVoiceChannel(target, null);
+        telemetry?.leaveCall(voiceChannel.id, target);
+        io.to(voiceRoom(voiceChannel.id)).emit("voice:peer-left", { channelId: voiceChannel.id, memberId: target });
+        targetSocket?.emit("voice:moderated", { channelId: voiceChannel.id });
+        emitPresence("member:state", getMemberById(target));
+      }
+      reply({ ok: true, expiresAt, timeouts: administration.timeouts(guildId) });
+    });
+
+    socket.on("member:timeout-remove", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "moderate_members" }) || !isId(payload?.userId)) return;
+      const removed = administration.removeTimeout(guildId, payload.userId);
+      if (removed) administration.audit(guildId, userId, "member.timeout_remove", "member", payload.userId);
+      reply({ ok: removed, timeouts: administration.timeouts(guildId), ...(removed ? {} : { error: "no-timeout" }) });
+    });
+
+    socket.on("channel:permissions", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const channel = findChannel(payload?.channelId);
+      if (!channel || !guildAction(reply, channel.guildId, { permission: "manage_channels" })) return;
+      if (payload?.operation === "list") return reply({ ok: true, overwrites: administration.overwrites(channel.id) });
+      const targetType = payload?.targetType;
+      const targetId = payload?.targetId;
+      if (!["role", "member"].includes(targetType) || !isId(targetId)) return reply({ ok: false, error: "bad-request" });
+      if (targetType === "role" && !rolesOf(channel.guildId).some((role) => role.id === targetId)) return reply({ ok: false, error: "bad-request" });
+      if (targetType === "member" && !isGuildMember(channel.guildId, targetId)) return reply({ ok: false, error: "bad-request" });
+      const allowPermissions = sanitizePermissions(payload?.allow);
+      const denyPermissions = sanitizePermissions(payload?.deny).filter((permission) => !allowPermissions.includes(permission));
+      administration.setOverwrite(channel.id, targetType, targetId, allowPermissions, denyPermissions);
+      administration.audit(channel.guildId, userId, "channel.permissions", "channel", channel.id, { targetType, targetId, allow: allowPermissions, deny: denyPermissions });
+      syncChannelRoom(channel);
+      reply({ ok: true, overwrites: administration.overwrites(channel.id) });
+    });
+
+    socket.on("audit:list", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "view_audit_log" })) return;
+      const action = typeof payload?.action === "string" && payload.action.length <= 64 ? payload.action : null;
+      reply({ ok: true, auditLog: administration.auditLog(guildId, { action }) });
     });
 
     socket.on("guild:admin", (payload, ack) => {
@@ -807,6 +1231,8 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         roles: mayManageRoles ? rolesOf(guildId) : [],
         memberRoles: mayManageRoles ? memberRoles : {},
         availablePermissions: mayManageRoles ? [...GUILD_PERMISSIONS] : [],
+        timeouts: can(guildId, "moderate_members") ? administration.timeouts(guildId) : [],
+        auditLog: can(guildId, "view_audit_log") ? administration.auditLog(guildId) : [],
       });
     });
 
@@ -814,6 +1240,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const reply = typeof ack === "function" ? ack : () => {};
       const guildId = payload?.guildId;
       if (!guildAction(reply, guildId, { permission: "manage_roles" })) return;
+      if (!systemAdmin && !isGuildOwner(guildId, userId)) return reply({ ok: false, error: "role-hierarchy" });
       const name = sanitizeRoleName(payload?.name);
       if (!name) return reply({ ok: false, error: "bad-name" });
       const permissions = sanitizePermissions(payload?.permissions);
@@ -821,7 +1248,13 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         ? payload.color.toUpperCase()
         : null;
       const role = createRole(guildId, name, color, permissions);
-      io.to(guildRoom(guildId)).emit("role:changed", { guildId });
+      administration.audit(guildId, userId, "role.create", "role", role.id, { name });
+      syncGuildChannelRooms(guildId);
+      io.to(guildRoom(guildId)).emit("role:changed", {
+        guildId,
+        roles: rolesOf(guildId),
+        memberRoles: memberRolesOf(guildId),
+      });
       reply({ ok: true, role, roles: rolesOf(guildId) });
     });
 
@@ -830,6 +1263,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const guildId = payload?.guildId;
       if (!guildAction(reply, guildId, { permission: "manage_roles" })) return;
       if (!isId(payload?.roleId)) return reply({ ok: false, error: "bad-request" });
+      if (!administration.canManageRole(guildId, userId, payload.roleId, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
       const name = sanitizeRoleName(payload?.name);
       if (!name) return reply({ ok: false, error: "bad-name" });
       const permissions = sanitizePermissions(payload?.permissions);
@@ -838,7 +1272,13 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         : null;
       const role = updateRole(guildId, payload.roleId, name, color, permissions);
       if (!role) return reply({ ok: false, error: "role-protected" });
-      io.to(guildRoom(guildId)).emit("role:changed", { guildId });
+      administration.audit(guildId, userId, "role.update", "role", role.id, { name });
+      syncGuildChannelRooms(guildId);
+      io.to(guildRoom(guildId)).emit("role:changed", {
+        guildId,
+        roles: rolesOf(guildId),
+        memberRoles: memberRolesOf(guildId),
+      });
       reply({ ok: true, role, roles: rolesOf(guildId) });
     });
 
@@ -847,9 +1287,16 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       const guildId = payload?.guildId;
       if (!guildAction(reply, guildId, { permission: "manage_roles" })) return;
       if (!isId(payload?.roleId)) return reply({ ok: false, error: "bad-request" });
+      if (!administration.canManageRole(guildId, userId, payload.roleId, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
       const removed = deleteRole(guildId, payload.roleId);
       if (!removed) return reply({ ok: false, error: "role-protected" });
-      io.to(guildRoom(guildId)).emit("role:changed", { guildId });
+      administration.audit(guildId, userId, "role.delete", "role", payload.roleId);
+      syncGuildChannelRooms(guildId);
+      io.to(guildRoom(guildId)).emit("role:changed", {
+        guildId,
+        roles: rolesOf(guildId),
+        memberRoles: memberRolesOf(guildId),
+      });
       reply({ ok: true, roles: rolesOf(guildId), memberRoles: memberRolesOf(guildId) });
     });
 
@@ -860,10 +1307,38 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(payload?.roleId) || !isId(payload?.userId) || !isGuildMember(guildId, payload.userId)) {
         return reply({ ok: false, error: "bad-request" });
       }
+      if (!administration.canManageRole(guildId, userId, payload.roleId, { systemAdmin }) ||
+          !administration.canActOn(guildId, userId, payload.userId, { systemAdmin })) {
+        return reply({ ok: false, error: "role-hierarchy" });
+      }
       const changed = assignRole(guildId, payload.userId, payload.roleId, payload.assigned === true);
       if (!changed) return reply({ ok: false, error: "role-protected" });
-      io.to(guildRoom(guildId)).emit("role:changed", { guildId });
+      administration.audit(guildId, userId, payload.assigned === true ? "role.assign" : "role.unassign", "member", payload.userId, { roleId: payload.roleId });
+      syncGuildChannelRooms(guildId);
+      io.to(guildRoom(guildId)).emit("role:changed", {
+        guildId,
+        roles: rolesOf(guildId),
+        memberRoles: memberRolesOf(guildId),
+      });
       reply({ ok: true, memberRoles: memberRolesOf(guildId) });
+    });
+
+    socket.on("role:reorder", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId, { permission: "manage_roles" })) return;
+      if (!systemAdmin && !isGuildOwner(guildId, userId)) return reply({ ok: false, error: "role-hierarchy" });
+      const orderedIds = payload?.orderedIds;
+      if (!Array.isArray(orderedIds) || orderedIds.length > 100 || orderedIds.some((id) => !isId(id))) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      if (!reorderRoles(guildId, orderedIds)) return reply({ ok: false, error: "bad-request" });
+      administration.audit(guildId, userId, "role.reorder", "guild", guildId, { orderedIds });
+      syncGuildChannelRooms(guildId);
+      const roles = rolesOf(guildId);
+      const memberRoles = memberRolesOf(guildId);
+      io.to(guildRoom(guildId)).emit("role:changed", { guildId, roles, memberRoles });
+      reply({ ok: true, roles, memberRoles });
     });
 
     socket.on("direct:open", (payload, ack) => {
@@ -874,7 +1349,10 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(targetId) || !accounts.accountById(targetId)) {
         return reply({ ok: false, error: "no-user" });
       }
-      if (!accounts.sharesGuild(userId, targetId)) {
+      if (social.isBlocked(userId, targetId)) {
+        return reply({ ok: false, error: "relationship-blocked" });
+      }
+      if (!social.areFriends(userId, targetId) && !accounts.sharesGuild(userId, targetId)) {
         return reply({ ok: false, error: "not-shared-server" });
       }
       const threadId = accounts.createOrFindThread(userId, targetId);
@@ -889,7 +1367,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       reply({
         ok: true,
         thread: accounts.listThreads(userId).find((item) => item.id === threadId),
-        messages: accounts.listDirectMessages(threadId),
+        messages: communication.enrich("direct", accounts.listDirectMessages(threadId)),
       });
     });
 
@@ -901,7 +1379,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(payload?.threadId) || !accounts.isParticipant(payload.threadId, userId)) {
         return reply({ ok: false, error: "no-thread" });
       }
-      reply({ ok: true, messages: accounts.listDirectMessages(payload.threadId) });
+      reply({ ok: true, messages: communication.enrich("direct", accounts.listDirectMessages(payload.threadId)) });
     });
 
     socket.on("direct:send", (payload, ack) => {
@@ -913,10 +1391,70 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
       if (!isId(threadId) || !accounts.isParticipant(threadId, userId)) {
         return reply({ ok: false, error: "no-thread" });
       }
+      const participants = accounts.participants(threadId);
+      if (participants.some((participantId) => participantId !== userId && social.isBlocked(userId, participantId))) {
+        return reply({ ok: false, error: "relationship-blocked" });
+      }
       const content = sanitizeMessage(payload?.content);
       if (!content) return reply({ ok: false, error: "bad-message" });
-      const message = accounts.addDirectMessage(threadId, userId, content);
+      const replyToId = isId(payload?.replyToId) ? payload.replyToId : null;
+      if (replyToId && communication.directMessage(replyToId)?.threadId !== threadId) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const created = accounts.addDirectMessage(threadId, userId, content, replyToId);
+      telemetry?.message();
+      const message = communication.directMessage(created.id);
       io.to(directRoom(threadId)).emit("direct:message", message);
+      for (const participantId of participants) {
+        if (participantId === userId) continue;
+        const notification = social.notify({
+          userId: participantId,
+          kind: "direct",
+          actorId: userId,
+          conversationType: "direct",
+          conversationId: threadId,
+          metadata: { username: message.username },
+        });
+        io.to(userRoom(participantId)).emit("notification:new", notification);
+      }
+      reply({ ok: true, message });
+    });
+
+    socket.on("direct:edit", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("chat") || !isId(payload?.messageId)) return reply({ ok: false, error: "bad-request" });
+      const original = communication.directMessage(payload.messageId);
+      if (!original || original.authorId !== userId || !accounts.isParticipant(original.threadId, userId)) {
+        return reply({ ok: false, error: "not-author" });
+      }
+      const content = sanitizeMessage(payload?.content);
+      if (!content) return reply({ ok: false, error: "bad-message" });
+      const message = communication.editDirect(original.id, content);
+      io.to(directRoom(original.threadId)).emit("direct:updated", message);
+      reply({ ok: true, message });
+    });
+
+    socket.on("direct:delete", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest || !allow("chat") || !isId(payload?.messageId)) return reply({ ok: false, error: "bad-request" });
+      const original = communication.directMessage(payload.messageId);
+      if (!original || original.authorId !== userId || !accounts.isParticipant(original.threadId, userId)) {
+        return reply({ ok: false, error: "not-author" });
+      }
+      const message = communication.deleteDirect(original.id);
+      io.to(directRoom(original.threadId)).emit("direct:updated", message);
+      reply({ ok: true, message });
+    });
+
+    socket.on("direct:react", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const original = isId(payload?.messageId) ? communication.directMessage(payload.messageId) : null;
+      const emoji = typeof payload?.emoji === "string" ? payload.emoji.trim() : "";
+      if (!identified || guest || !allow("social") || !original || !accounts.isParticipant(original.threadId, userId) || !emoji || emoji.length > 16) {
+        return reply({ ok: false, error: "bad-request" });
+      }
+      const message = communication.toggleReaction("direct", original.id, userId, emoji);
+      io.to(directRoom(original.threadId)).emit("direct:updated", message);
       reply({ ok: true, message });
     });
 

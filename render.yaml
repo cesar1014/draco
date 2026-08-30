@@ -19,7 +19,7 @@ services:
     healthCheckPath: /api/config
     envVars:
       - key: NODE_VERSION
-        value: 20.17.0
+        value: 24.20.0
 
       # O Render termina o TLS num proxy: sem isto o limite por IP veria o
       # endereço dele e todo mundo dividiria o mesmo balde.

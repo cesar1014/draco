@@ -89,13 +89,18 @@ export function colorForName(name) {
 export const readSetting = (key) => repository.readSetting(key);
 export const writeSetting = (key, value) => repository.writeSetting(key, value);
 
+/** Fecha o catálogo persistente depois que HTTP e sockets pararam de escrever. */
+export function closeState() {
+  repository.close();
+}
+
 /**
  * Entra ou reassume uma identidade. Quando o mesmo `userId` volta com um socket
  * novo (reconexão, ou a mesma pessoa recarregando a página), o membro é o mesmo
  * objeto: preferências e estado de voz seguem de pé. O socket antigo é devolvido
  * pra quem chamou, que precisa derrubá-lo pra não ficarem dois donos do mesmo id.
  */
-export function addMember(socketId, userId, username, { systemAdmin = false } = {}) {
+export function addMember(socketId, userId, username, { systemAdmin = false, profile = null } = {}) {
   const existing = members.get(userId);
   const previousSocketId = existing?.socketId ?? null;
 
@@ -127,6 +132,9 @@ export function addMember(socketId, userId, username, { systemAdmin = false } = 
     guest: false,
     guestGuildId: null,
     systemAdmin,
+    presenceMode: profile?.presenceMode ?? "online",
+    customStatus: profile?.customStatus ?? null,
+    statusExpiresAt: profile?.statusExpiresAt ?? null,
   };
 
   const color = colorForName(username);
@@ -138,6 +146,9 @@ export function addMember(socketId, userId, username, { systemAdmin = false } = 
   member.guest = false;
   member.guestGuildId = null;
   member.systemAdmin = systemAdmin;
+  member.presenceMode = profile?.presenceMode ?? member.presenceMode ?? "online";
+  member.customStatus = profile?.customStatus ?? null;
+  member.statusExpiresAt = profile?.statusExpiresAt ?? null;
 
   // Socket novo, sessão de mídia nova: os ids antigos apontam pra uma sessão que
   // o SFU já está descartando, e anunciá-los faria os outros assinarem o vazio.
@@ -237,6 +248,15 @@ export function setVoiceState(userId, patch) {
   return member;
 }
 
+export function setPresence(userId, profile) {
+  const member = members.get(userId);
+  if (!member || member.guest) return null;
+  member.presenceMode = profile.presenceMode;
+  member.customStatus = profile.customStatus;
+  member.statusExpiresAt = profile.statusExpiresAt;
+  return member;
+}
+
 /** Sessão no SFU. Uma por socket: reconectar cria outra, e a antiga expira sozinha. */
 export function setSfuSession(userId, { sendSessionId, recvSessionId }) {
   const member = members.get(userId);
@@ -259,7 +279,7 @@ export function findChannel(channelId) {
   return channels.find((c) => c.id === channelId) ?? null;
 }
 
-export function addMessage(channelId, author, content) {
+export function addMessage(channelId, author, content, replyToId = null) {
   const message = {
     id: randomUUID(),
     channelId,
@@ -267,9 +287,10 @@ export function addMessage(channelId, author, content) {
     username: author.username,
     color: author.color,
     content,
+    replyToId,
     at: Date.now(),
   };
-  repository.addMessage(message, MESSAGE_RETENTION);
+  message.sequence = repository.addMessage(message, MESSAGE_RETENTION);
   const list = messages.get(channelId) ?? [];
   list.push(message);
   if (list.length > MESSAGE_PAGE) {
@@ -278,6 +299,13 @@ export function addMessage(channelId, author, content) {
   }
   messages.set(channelId, list);
   return message;
+}
+
+export function patchCachedMessage(message) {
+  const list = messages.get(message.channelId);
+  if (!list) return;
+  const index = list.findIndex((item) => item.id === message.id);
+  if (index >= 0) list[index] = { ...list[index], ...message };
 }
 
 /**
@@ -327,6 +355,8 @@ export function snapshot(userId, { systemAdmin = false, guestGuildId = null } = 
     channels: myChannels,
     members: visibleMembers,
     roster: Object.fromEntries(mine.map((guild) => [guild.id, repository.listGuildRoster(guild.id)])),
+    roles: Object.fromEntries(mine.map((guild) => [guild.id, repository.listRoles(guild.id)])),
+    memberRoles: Object.fromEntries(mine.map((guild) => [guild.id, repository.listMemberRoles(guild.id)])),
     permissions: Object.fromEntries(
       mine.map((guild) => [
         guild.id,
@@ -392,6 +422,8 @@ export const deleteRole = (guildId, roleId) => repository.deleteRole(guildId, ro
 export const assignRole = (guildId, userId, roleId, assigned) =>
   repository.assignRole(guildId, userId, roleId, assigned);
 
+export const reorderRoles = (guildId, orderedIds) => repository.reorderRoles(guildId, orderedIds);
+
 /**
  * Cria um servidor com o primeiro canal de texto e o primeiro de voz. Os dois
  * canais não são enfeite: um servidor sem canal nenhum abre numa tela vazia sem
@@ -422,6 +454,14 @@ export function createChannel(guildId, type, name) {
   reloadCatalog();
   return channels.find((channel) => channel.id === id) ?? null;
 }
+
+export function reorderChannels(guildId, orderedIds) {
+  const changed = repository.reorderChannels(guildId, orderedIds);
+  if (changed) reloadCatalog();
+  return changed;
+}
+
+export const channelsOfGuild = (guildId) => channels.filter((channel) => channel.guildId === guildId);
 
 /**
  * Apaga um canal. Recusa o último do tipo: sem canal de texto não há onde

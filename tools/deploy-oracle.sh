@@ -71,9 +71,9 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq curl git openssl coturn iptables-persistent \
   debian-keyring debian-archive-keyring apt-transport-https
 
-if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
-  say "Node.js 22"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -ne 24 ]; then
+  say "Node.js 24 LTS"
+  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
   sudo apt-get install -y -qq nodejs
 fi
 node --version
@@ -126,6 +126,8 @@ Environment=PORT=3100
 ExecStart=$(command -v node) server/index.js
 Restart=always
 RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=20
 
 [Install]
 WantedBy=multi-user.target

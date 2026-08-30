@@ -37,7 +37,7 @@ canal **Geral** da seção *Canais de voz*: uma vai ouvir a outra.
 Enquanto `npm run dev` está de pé, o servidor de sinalização fica na porta 3100 e a página na
 5173. As duas portas estão num único lugar, `shared/ports.js`.
 
-Precisa de Node.js 20 ou mais novo:
+Precisa de Node.js 24 LTS:
 
 ```bash
 winget install --id OpenJS.NodeJS.LTS

@@ -7,6 +7,10 @@ export const GUILD_PERMISSIONS = [
   "create_invites",
   "ban_members",
   "manage_roles",
+  "manage_messages",
+  "moderate_members",
+  "mention_everyone",
+  "view_audit_log",
 ];
 
 export const DEFAULT_GUILD_PERMISSIONS = [

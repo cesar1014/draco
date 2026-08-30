@@ -54,6 +54,15 @@ export interface UpdateStatus {
   /** Página da release. `null` quando o app não confirmou a origem do link. */
   url: string | null;
   notes: string | null;
+  automatic?: boolean;
+}
+
+export interface UpdateProgress {
+  phase: "idle" | "checking" | "available" | "downloading" | "downloaded" | "error";
+  version?: string;
+  percent?: number;
+  bytesPerSecond?: number;
+  message?: string;
 }
 
 const OFFICIAL_RESET_VERSION = "1.0.0";
@@ -99,6 +108,11 @@ interface DesktopBridge {
   logCaptureFailure?: (report: CaptureFailure) => Promise<void>;
   checkUpdate?: () => Promise<UpdateStatus | null>;
   openRelease?: () => Promise<boolean>;
+  downloadUpdate?: () => Promise<{ ok: boolean; error?: string }>;
+  installUpdate?: () => Promise<boolean>;
+  onUpdateStatus?: (listener: (status: UpdateProgress) => void) => () => void;
+  showNotification?: (payload: { title: string; body: string; conversationType: "channel" | "direct" | null; conversationId: string | null }) => Promise<boolean>;
+  onNotificationOpen?: (listener: (route: { conversationType: "channel" | "direct"; conversationId: string }) => void) => () => void;
 }
 
 declare global {
@@ -182,3 +196,9 @@ export async function openDesktopRelease(): Promise<boolean> {
     return false;
   }
 }
+
+export const downloadDesktopUpdate = async () => (await window.desktop?.downloadUpdate?.())?.ok === true;
+export const installDesktopUpdate = async () => (await window.desktop?.installUpdate?.()) === true;
+export const onDesktopUpdateStatus = (listener: (status: UpdateProgress) => void) => window.desktop?.onUpdateStatus?.(listener) ?? (() => {});
+export const showDesktopNotification = async (payload: { title: string; body: string; conversationType: "channel" | "direct" | null; conversationId: string | null }) => (await window.desktop?.showNotification?.(payload)) === true;
+export const onDesktopNotificationOpen = (listener: (route: { conversationType: "channel" | "direct"; conversationId: string }) => void) => window.desktop?.onNotificationOpen?.(listener) ?? (() => {});

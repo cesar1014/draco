@@ -11,8 +11,8 @@ import { RemoteAudioSink } from "@/components/RemoteAudioSink";
 import { ScreenShareModal } from "@/components/ScreenShareModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { VoiceStage } from "@/components/VoiceStage";
-import { Welcome } from "@/components/Welcome";
 import { resumeAudio } from "@/rtc/SpeakingDetector";
+import { onDesktopNotificationOpen } from "@/desktop";
 import { useStore } from "@/state/store";
 
 /** Tecla de push-to-talk não vale enquanto a pessoa está escrevendo. */
@@ -43,7 +43,6 @@ export function App() {
   const dismissNotice = useStore((state) => state.dismissNotice);
   const channels = useStore((state) => state.channels);
   const activeChannelId = useStore((state) => state.activeChannelId);
-  const guilds = useStore((state) => state.guilds);
   const activeDirectId = useStore((state) => state.activeDirectId);
   const activeGuildId = useStore((state) => state.activeGuildId);
   const account = useStore((state) => state.account);
@@ -69,6 +68,16 @@ export function App() {
       window.removeEventListener("keydown", unlock);
     };
   }, []);
+
+  useEffect(() => onDesktopNotificationOpen((route) => {
+    const state = useStore.getState();
+    if (route.conversationType === "direct") {
+      if (state.directThreads.some((thread) => thread.id === route.conversationId)) void state.selectDirect(route.conversationId);
+      return;
+    }
+    const channel = state.channels.find((item) => item.id === route.conversationId);
+    if (channel) { state.selectGuild(channel.guildId); state.selectChannel(channel.id); }
+  }), []);
 
   useEffect(() => {
     document.documentElement.dataset.lite = liteMode ? "on" : "off";
@@ -151,21 +160,16 @@ export function App() {
    * desenhar, então ela dá lugar à tela que explica os dois caminhos. Os avisos e
    * as janelas continuam montados: o convite recusado é relatado por ali.
    */
-  const empty = guilds.length === 0;
-
   return (
     <div
       className="app"
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-members={membersOpen ? "open" : "closed"}
-      data-empty={empty}
+      data-empty="false"
     >
       {reconnecting && <div className="banner">Conexão perdida. Reconectando…</div>}
 
-      {empty ? (
-        <Welcome />
-      ) : (
-        <>
+      <>
           <GuildRail />
           <ChannelSidebar />
           {/* Um véu para as duas gavetas do celular: fecha a que estiver aberta. */}
@@ -192,8 +196,7 @@ export function App() {
           </main>
 
           {activeGuildId && <MembersPanel />}
-        </>
-      )}
+      </>
 
       {/* Fora da área de conteúdo: o som não pode depender do que está na tela. */}
       <RemoteAudioSink />

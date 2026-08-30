@@ -7,6 +7,29 @@ export interface AuthReply {
   account?: Account;
 }
 
+export interface ConnectedSession {
+  id: string;
+  clientType: "web" | "desktop" | "mobile" | "unknown";
+  deviceName: string;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+}
+
+export interface SessionsReply extends AuthReply {
+  currentSessionId?: string | null;
+  sessions?: ConnectedSession[];
+}
+
+const storedToken = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem("draco:session") ?? "null");
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+};
+
 async function post(path: string, body: unknown, token?: string | null): Promise<AuthReply> {
   try {
     const response = await fetch(path, {
@@ -47,6 +70,40 @@ export const requestOwnPasswordChange = (token: string | null) =>
 
 export const completePasswordReset = (token: string, password: string) =>
   post("/api/auth/password/complete", { token, password });
+
+export async function listConnectedSessions(): Promise<SessionsReply> {
+  try {
+    const response = await fetch("/api/auth/sessions", {
+      headers: { Authorization: `Bearer ${storedToken() ?? ""}` },
+    });
+    return await response.json() as SessionsReply;
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+export async function revokeConnectedSession(sessionId: string): Promise<AuthReply> {
+  try {
+    const response = await fetch(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${storedToken() ?? ""}` },
+    });
+    return await response.json() as AuthReply;
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+export const revokeAllConnectedSessions = () => post("/api/auth/sessions/revoke-all", {}, storedToken());
+
+export async function loadPlatformHealth(): Promise<{ ok: boolean; metrics?: Record<string, any> }> {
+  try {
+    const response = await fetch("/api/admin/health", { headers: { Authorization: `Bearer ${storedToken() ?? ""}` } });
+    return await response.json() as { ok: boolean; metrics?: Record<string, any> };
+  } catch {
+    return { ok: false };
+  }
+}
 
 export function describeAuthError(code?: string): string {
   switch (code) {

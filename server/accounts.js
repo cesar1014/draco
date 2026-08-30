@@ -28,6 +28,18 @@ function appOrigin(env) {
   return (env.ORIGIN?.split(",")[0]?.trim() || "http://localhost:5173").replace(/\/+$/, "");
 }
 
+function clientMetadata(headers = {}) {
+  const userAgent = typeof headers["user-agent"] === "string" ? headers["user-agent"].slice(0, 180) : "Dispositivo desconhecido";
+  const desktop = /DracoDesktop/i.test(userAgent);
+  const mobile = /Android|iPhone|iPad/i.test(userAgent);
+  const browser = /Edg\//.test(userAgent) ? "Edge" : /Firefox\//.test(userAgent) ? "Firefox" : /Chrome\//.test(userAgent) ? "Chrome" : /Safari\//.test(userAgent) ? "Safari" : "Navegador";
+  const platform = /Windows/i.test(userAgent) ? "Windows" : /Android/i.test(userAgent) ? "Android" : /iPhone|iPad/i.test(userAgent) ? "iPhone/iPad" : /Mac OS/i.test(userAgent) ? "macOS" : /Linux/i.test(userAgent) ? "Linux" : "Dispositivo";
+  return {
+    clientType: desktop ? "desktop" : mobile ? "mobile" : "web",
+    deviceName: desktop ? `${platform} · Draco Desktop` : `${platform} · ${browser}`,
+  };
+}
+
 export function createAccountService({ repository, auth, mailer, colorForName, env = process.env } = {}) {
   const accounts = repository ?? createAccountRepository();
   const origin = appOrigin(env);
@@ -132,7 +144,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return accounts.useOrBootstrapAddress(account.userId, addressHash);
   }
 
-  async function login({ email: rawEmail, password }, rawAddress) {
+  async function login({ email: rawEmail, password }, rawAddress, headers = {}) {
     const email = normalizeEmail(rawEmail);
     const account = email ? accounts.accountByEmail(email) : null;
     // Mesmo trabalho de hash quando o e-mail não existe reduz a diferença de
@@ -172,6 +184,13 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
       }
     }
     const issued = auth.issue(account.userId, account.sessionVersion);
+    accounts.createSession({
+      id: issued.sessionId,
+      userId: account.userId,
+      tokenHash: hashActionToken(issued.token),
+      ...clientMetadata(headers),
+      expiresAt: auth.verify(issued.token).expiresAt,
+    });
     return { ok: true, token: issued.token, account: publicAccount(account) };
   }
 
@@ -188,6 +207,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     ) {
       return null;
     }
+    if (signed.sessionId && !accounts.activeSession(signed.sessionId, signed.userId)) return null;
     const addressHash = auth.fingerprintAddress(rawAddress);
     if (!addressHash || !useOrBootstrapAddress(account, addressHash)) return null;
     return { ...signed, account };
@@ -235,7 +255,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return { ok: true };
   }
 
-  async function completePassword(rawToken, password, rawAddress) {
+  async function completePassword(rawToken, password, rawAddress, headers = {}) {
     if (!validPassword(password)) return { ok: false, error: "bad-password-format" };
     const addressHash = auth.fingerprintAddress(rawAddress);
     if (!addressHash) return { ok: false, error: "address-unavailable" };
@@ -254,7 +274,38 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const account = accounts.setPassword(token.user_id, passwordHash);
     accounts.trustAddress(account.userId, addressHash);
     const issued = auth.issue(account.userId, account.sessionVersion);
+    accounts.createSession({
+      id: issued.sessionId,
+      userId: account.userId,
+      tokenHash: hashActionToken(issued.token),
+      ...clientMetadata(headers),
+      expiresAt: auth.verify(issued.token).expiresAt,
+    });
     return { ok: true, token: issued.token, account: publicAccount(account) };
+  }
+
+  function listSessions(token, rawAddress) {
+    const authenticated = session(token, rawAddress);
+    if (!authenticated) return { ok: false, error: "not-authenticated" };
+    return {
+      ok: true,
+      currentSessionId: authenticated.sessionId,
+      sessions: accounts.listSessions(authenticated.userId),
+    };
+  }
+
+  function revokeSession(token, rawAddress, sessionId) {
+    const authenticated = session(token, rawAddress);
+    if (!authenticated) return { ok: false, error: "not-authenticated" };
+    if (typeof sessionId !== "string" || sessionId.length > 64) return { ok: false, error: "bad-request" };
+    return { ok: accounts.revokeSession(authenticated.userId, sessionId) };
+  }
+
+  function revokeAllSessions(token, rawAddress) {
+    const authenticated = session(token, rawAddress);
+    if (!authenticated) return { ok: false, error: "not-authenticated" };
+    accounts.revokeAllSessions(authenticated.userId);
+    return { ok: true };
   }
 
   async function bootstrapSystemAdmin() {
@@ -287,8 +338,14 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     requestPassword,
     requestOwnPassword,
     completePassword,
+    listSessions,
+    revokeSession,
+    revokeAllSessions,
     bootstrapSystemAdmin,
     publicAccount,
     emailReady: Boolean(mailer?.ready),
+    close: () => {
+      if (accounts.database?.open) accounts.database.close();
+    },
   };
 }

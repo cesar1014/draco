@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CloseIcon, PlusIcon } from "@/components/Icons";
+import { CloseIcon, HashIcon, PlusIcon, SpeakerIcon, TrashIcon } from "@/components/Icons";
 import { useStore } from "@/state/store";
-import type { GuildPermission, Role } from "@/types";
+import type { GuildPermission, Role, RosterEntry } from "@/types";
 
 const PERMISSION_LABEL: Record<GuildPermission, string> = {
   view_channels: "Ver canais",
@@ -12,7 +12,19 @@ const PERMISSION_LABEL: Record<GuildPermission, string> = {
   create_invites: "Criar convites",
   ban_members: "Banir membros",
   manage_roles: "Gerenciar cargos",
+  manage_messages: "Gerenciar mensagens",
+  moderate_members: "Aplicar timeout e expulsar",
+  mention_everyone: "Mencionar cargos e todos",
+  view_audit_log: "Ver registro de auditoria",
 };
+
+const PERMISSION_GROUPS: Array<[string, GuildPermission[]]> = [
+  ["Geral", ["view_channels"]],
+  ["Texto", ["send_messages", "manage_messages", "mention_everyone"]],
+  ["Voz", ["connect", "speak"]],
+  ["Moderação", ["manage_channels", "create_invites", "ban_members", "moderate_members"]],
+  ["Administração", ["manage_roles", "view_audit_log"]],
+];
 
 const relative = (at: number): string => {
   const days = Math.round((at - Date.now()) / 86_400_000);
@@ -34,6 +46,15 @@ const USES: Array<[string, number | null]> = [
   ["5 pessoas", 5],
 ];
 
+function shiftedIds(items: Array<{ id: string }>, id: string, offset: -1 | 1): string[] | null {
+  const index = items.findIndex((item) => item.id === id);
+  const target = index + offset;
+  if (index < 0 || target < 0 || target >= items.length) return null;
+  const copy = [...items];
+  [copy[index], copy[target]] = [copy[target], copy[index]];
+  return copy.map((item) => item.id);
+}
+
 /**
  * Administração do servidor: convites, membros e banimentos.
  *
@@ -44,17 +65,25 @@ const USES: Array<[string, number | null]> = [
 export function GuildAdminModal() {
   const admin = useStore((state) => state.admin);
   const guilds = useStore((state) => state.guilds);
+  const channels = useStore((state) => state.channels);
   const selfId = useStore((state) => state.selfId);
   const closeAdmin = useStore((state) => state.closeAdmin);
   const createInvite = useStore((state) => state.createInvite);
   const revokeInvite = useStore((state) => state.revokeInvite);
   const banMember = useStore((state) => state.banMember);
   const unbanMember = useStore((state) => state.unbanMember);
+  const kickMember = useStore((state) => state.kickMember);
+  const timeoutMember = useStore((state) => state.timeoutMember);
+  const removeTimeout = useStore((state) => state.removeTimeout);
   const leaveGuild = useStore((state) => state.leaveGuild);
   const createRole = useStore((state) => state.createRole);
   const updateRole = useStore((state) => state.updateRole);
   const deleteRole = useStore((state) => state.deleteRole);
   const assignRole = useStore((state) => state.assignRole);
+  const createChannel = useStore((state) => state.createChannel);
+  const deleteChannel = useStore((state) => state.deleteChannel);
+  const reorderChannels = useStore((state) => state.reorderChannels);
+  const reorderRoles = useStore((state) => state.reorderRoles);
   const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
 
   const [expiresInHours, setExpires] = useState<number | null>(null);
@@ -63,6 +92,10 @@ export function GuildAdminModal() {
   const [roleName, setRoleName] = useState("");
   const [roleColor, setRoleColor] = useState("#5B6CFF");
   const [rolePermissions, setRolePermissions] = useState<GuildPermission[]>([]);
+  const [section, setSection] = useState<"overview" | "roles" | "members" | "channels" | "invites" | "bans" | "audit">("overview");
+  const [channelName, setChannelName] = useState("");
+  const [channelType, setChannelType] = useState<"text" | "voice">("text");
+  const [permissionChannelId, setPermissionChannelId] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -84,6 +117,11 @@ export function GuildAdminModal() {
   const canInvite = admin.permissions.includes("create_invites");
   const canBan = admin.permissions.includes("ban_members");
   const canRoles = admin.permissions.includes("manage_roles");
+  const canChannels = admin.permissions.includes("manage_channels");
+  const canModerate = admin.permissions.includes("moderate_members");
+  const canAudit = admin.permissions.includes("view_audit_log");
+  const guildChannels = channels.filter((channel) => channel.guildId === admin.guildId);
+  const editableRoles = admin.roles.filter((role) => !role.isDefault);
 
   /**
    * O link inteiro, não só o código: é o que se cola numa conversa. A origem vem
@@ -117,10 +155,32 @@ export function GuildAdminModal() {
           </button>
         </header>
 
-        <div className="modal-body">
+        <div className="admin-layout">
+          <nav className="admin-nav" aria-label="Seções do servidor">
+            <button type="button" data-active={section === "overview"} onClick={() => setSection("overview")}>Visão geral</button>
+            {canRoles && <button type="button" data-active={section === "roles"} onClick={() => setSection("roles")}>Cargos</button>}
+            <button type="button" data-active={section === "members"} onClick={() => setSection("members")}>Membros <span>{admin.roster.length}</span></button>
+            {canChannels && <button type="button" data-active={section === "channels"} onClick={() => setSection("channels")}>Canais <span>{guildChannels.length}</span></button>}
+            {canInvite && <button type="button" data-active={section === "invites"} onClick={() => setSection("invites")}>Convites <span>{admin.invites.length}</span></button>}
+            {canBan && <button type="button" data-active={section === "bans"} onClick={() => setSection("bans")}>Banimentos <span>{admin.bans.length}</span></button>}
+            {canAudit && <button type="button" data-active={section === "audit"} onClick={() => setSection("audit")}>Registro de auditoria</button>}
+          </nav>
+
+          <div className="modal-body admin-content">
           {admin.error && <p className="status-warn">{admin.error}</p>}
 
-          {canInvite && <section className="settings-section">
+          {section === "overview" && (
+            <section className="settings-section admin-overview">
+              <span className="admin-guild-mark" style={{ background: guild?.color }}>{guild?.initials}</span>
+              <div>
+                <h3>{guild?.name}</h3>
+                <p className="hint">{admin.roster.length} membros · {guildChannels.length} canais · servidor privado</p>
+                <p className="hint">As regras de acesso são definidas pelos cargos e permissões deste servidor.</p>
+              </div>
+            </section>
+          )}
+
+          {section === "invites" && canInvite && <section className="settings-section">
             <h3>Convidar</h3>
             <p className="hint">
               Quem abrir o link entra neste servidor. Sem convite, ele fica só entre quem já está.
@@ -205,7 +265,7 @@ export function GuildAdminModal() {
             )}
           </section>}
 
-          {canRoles && (
+          {section === "roles" && canRoles && (
             <section className="settings-section">
               <h3>Cargos e permissões</h3>
               <p className="hint">Crie um cargo, escolha o que ele pode fazer e atribua aos membros.</p>
@@ -213,24 +273,40 @@ export function GuildAdminModal() {
                 <input value={roleName} onChange={(event) => setRoleName(event.target.value)} maxLength={32} placeholder="Nome do cargo" />
                 <input type="color" value={roleColor} onChange={(event) => setRoleColor(event.target.value)} title="Cor do cargo" />
               </div>
-              <div className="permission-grid">
-                {admin.availablePermissions.map((permission) => (
-                  <label key={permission}>
-                    <input type="checkbox" checked={rolePermissions.includes(permission)} onChange={(event) => setRolePermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} />
-                    <span>{PERMISSION_LABEL[permission]}</span>
-                  </label>
-                ))}
-              </div>
+              <PermissionGrid available={admin.availablePermissions} value={rolePermissions} onChange={setRolePermissions} />
               <button type="button" className="primary-button" disabled={roleName.trim().length < 2 || admin.busy} onClick={() => void createRole(roleName, roleColor, rolePermissions).then((error) => { if (!error) { setRoleName(""); setRolePermissions([]); } })}>Criar cargo</button>
               <div className="role-list">
-                {admin.roles.filter((role) => !role.isDefault).map((role) => (
-                  <RoleEditor key={role.id} role={role} available={admin.availablePermissions} onSave={updateRole} onDelete={deleteRole} />
+                {editableRoles.map((role, index) => (
+                  <RoleEditor
+                    key={role.id}
+                    role={role}
+                    available={admin.availablePermissions}
+                    onSave={updateRole}
+                    onDelete={deleteRole}
+                    memberCount={Object.values(admin.memberRoles).filter((ids) => ids.includes(role.id)).length}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < editableRoles.length - 1}
+                    onMove={(offset) => {
+                      const ids = shiftedIds(editableRoles, role.id, offset);
+                      if (ids) void reorderRoles(ids);
+                    }}
+                  />
+                ))}
+                {admin.roles.filter((role) => role.isDefault).map((role) => (
+                  <article key={role.id} className="role-editor role-default">
+                    <div className="role-editor-summary">
+                      <span className="role-color" style={{ background: role.color ?? "var(--text-faint)" }} />
+                      <strong>{role.name}</strong>
+                      <small>{admin.roster.length} membros</small>
+                    </div>
+                    <p className="hint">Cargo base protegido. Todos os membros recebem estas permissões.</p>
+                  </article>
                 ))}
               </div>
             </section>
           )}
 
-          <section className="settings-section">
+          {section === "members" && <section className="settings-section">
             <h3>Membros — {admin.roster.length}</h3>
             <ul className="admin-list">
               {admin.roster.map((entry) => (
@@ -248,6 +324,10 @@ export function GuildAdminModal() {
                       Banir
                     </button>
                   )}
+                  {canModerate && entry.id !== selfId && entry.id !== guild?.ownerId && <>
+                    <button type="button" className="link-button" disabled={admin.busy} onClick={() => void timeoutMember(entry.id, 10 * 60 * 1000)}>Timeout 10 min</button>
+                    <button type="button" className="link-button danger" disabled={admin.busy} onClick={() => void kickMember(entry.id)}>Expulsar</button>
+                  </>}
                   {canRoles && admin.roles.filter((role) => !role.isDefault).map((role) => (
                     <label key={role.id} className="member-role" title={`Cargo ${role.name}`}>
                       <input type="checkbox" checked={(admin.memberRoles[entry.id] ?? []).includes(role.id)} onChange={(event) => void assignRole(entry.id, role.id, event.target.checked)} />
@@ -257,11 +337,49 @@ export function GuildAdminModal() {
                 </li>
               ))}
             </ul>
-          </section>
+          </section>}
 
-          {canBan && admin.bans.length > 0 && (
+          {section === "channels" && canChannels && (
+            <section className="settings-section">
+              <h3>Canais</h3>
+              <p className="hint">Crie e remova canais usando as permissões reais do servidor.</p>
+              <div className="admin-channel-create">
+                <select value={channelType} onChange={(event) => setChannelType(event.target.value as "text" | "voice")}>
+                  <option value="text">Texto</option>
+                  <option value="voice">Voz</option>
+                </select>
+                <input value={channelName} onChange={(event) => setChannelName(event.target.value)} maxLength={32} placeholder="Nome do canal" />
+                <button type="button" className="primary-button" disabled={admin.busy || channelName.trim().length < 2} onClick={() => void createChannel(admin.guildId, channelType, channelName).then((error) => { if (!error) setChannelName(""); })}>Criar</button>
+              </div>
+              <ul className="admin-list admin-channel-list">
+                {guildChannels.map((channel, index) => (
+                  <li key={channel.id}>
+                    {channel.type === "voice" ? <SpeakerIcon size={16} /> : <HashIcon size={16} />}
+                    <span className="admin-name">{channel.name}</span>
+                    <span>{channel.category}</span>
+                    <span className="order-actions">
+                      <button type="button" disabled={index === 0} onClick={() => { const ids = shiftedIds(guildChannels, channel.id, -1); if (ids) void reorderChannels(admin.guildId, ids); }} title="Mover para cima">↑</button>
+                      <button type="button" disabled={index === guildChannels.length - 1} onClick={() => { const ids = shiftedIds(guildChannels, channel.id, 1); if (ids) void reorderChannels(admin.guildId, ids); }} title="Mover para baixo">↓</button>
+                    </span>
+                    <button type="button" className="link-button" onClick={() => setPermissionChannelId(channel.id)}>Permissões</button>
+                    <button type="button" className="link-button danger" onClick={() => void deleteChannel(channel.id)} title={`Apagar ${channel.name}`}><TrashIcon size={15} /></button>
+                  </li>
+                ))}
+              </ul>
+              {permissionChannelId && <ChannelPermissionEditor
+                channelId={permissionChannelId}
+                roles={admin.roles}
+                roster={admin.roster}
+                available={admin.availablePermissions}
+                onClose={() => setPermissionChannelId(null)}
+              />}
+            </section>
+          )}
+
+          {section === "bans" && canBan && (
             <section className="settings-section">
               <h3>Banidos — {admin.bans.length}</h3>
+              {admin.bans.length === 0 && <p className="hint">Nenhuma pessoa está banida deste servidor.</p>}
               <ul className="admin-list">
                 {admin.bans.map((ban) => (
                   <li key={ban.userId}>
@@ -281,8 +399,27 @@ export function GuildAdminModal() {
             </section>
           )}
 
+          {section === "members" && canModerate && admin.timeouts.length > 0 && <section className="settings-section">
+            <h3>Em timeout</h3>
+            <ul className="admin-list">{admin.timeouts.map((timeout) => <li key={timeout.userId}>
+              <span className="admin-name">{timeout.username ?? "Membro"}</span>
+              <span>até {new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(timeout.expiresAt)}</span>
+              <button type="button" className="link-button" onClick={() => void removeTimeout(timeout.userId)}>Remover timeout</button>
+            </li>)}</ul>
+          </section>}
+
+          {section === "audit" && canAudit && <section className="settings-section">
+            <h3>Registro de auditoria</h3>
+            <p className="hint">Ações administrativas, sem conteúdo de mensagens ou dados secretos.</p>
+            {admin.auditLog.length === 0 ? <p className="hint">Ainda não há ações registradas.</p> : <ul className="admin-list audit-list">{admin.auditLog.map((entry) => <li key={entry.id}>
+              <span className="admin-name">{entry.actorUsername ?? "Conta removida"}</span>
+              <span>{entry.action}</span>
+              <time dateTime={new Date(entry.at).toISOString()}>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(entry.at)}</time>
+            </li>)}</ul>}
+          </section>}
+
           {/* Sair fecha o painel junto: ele mostra um servidor que deixou de ser seu. */}
-          {!admin.owner && !systemAdmin && (
+          {section === "overview" && !admin.owner && !systemAdmin && (
             <section className="settings-section">
               <button
                 type="button"
@@ -298,10 +435,59 @@ export function GuildAdminModal() {
               </button>
             </section>
           )}
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+function ChannelPermissionEditor({ channelId, roles, roster, available, onClose }: {
+  channelId: string;
+  roles: Role[];
+  roster: RosterEntry[];
+  available: GuildPermission[];
+  onClose: () => void;
+}) {
+  const overwrites = useStore((state) => state.channelOverwrites[channelId] ?? []);
+  const load = useStore((state) => state.loadChannelPermissions);
+  const save = useStore((state) => state.saveChannelPermissions);
+  const targets = [
+    ...roles.map((role) => ({ value: `role:${role.id}`, label: role.name })),
+    ...roster.map((member) => ({ value: `member:${member.id}`, label: member.username })),
+  ];
+  const [target, setTarget] = useState(targets[0]?.value ?? "");
+  const [draft, setDraft] = useState<Record<string, "inherit" | "allow" | "deny">>({});
+
+  useEffect(() => { void load(channelId); }, [channelId, load]);
+  useEffect(() => {
+    const separator = target.indexOf(":");
+    const targetType = target.slice(0, separator);
+    const targetId = target.slice(separator + 1);
+    const overwrite = overwrites.find((item) => item.targetType === targetType && item.targetId === targetId);
+    setDraft(Object.fromEntries(available.map((permission) => [permission,
+      overwrite?.allow.includes(permission) ? "allow" : overwrite?.deny.includes(permission) ? "deny" : "inherit",
+    ])));
+  }, [available, overwrites, target]);
+
+  const separator = target.indexOf(":");
+  const targetType = target.slice(0, separator) as "role" | "member";
+  const targetId = target.slice(separator + 1);
+  return <div className="permission-editor">
+    <div className="permission-editor-head"><strong>Permissões do canal</strong><button type="button" className="link-button" onClick={onClose}>Fechar</button></div>
+    <select value={target} onChange={(event) => setTarget(event.target.value)}>{targets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+    <div className="permission-overwrite-grid">{available.map((permission) => <label key={permission}>
+      <span>{PERMISSION_LABEL[permission]}</span>
+      <select value={draft[permission] ?? "inherit"} onChange={(event) => setDraft((current) => ({ ...current, [permission]: event.target.value as "inherit" | "allow" | "deny" }))}>
+        <option value="inherit">Herdado</option><option value="allow">Permitido</option><option value="deny">Negado</option>
+      </select>
+    </label>)}</div>
+    <button type="button" className="primary-button" disabled={!targetId} onClick={() => void save(
+      channelId, targetType, targetId,
+      available.filter((permission) => draft[permission] === "allow"),
+      available.filter((permission) => draft[permission] === "deny"),
+    )}>Salvar permissões</button>
+  </div>;
 }
 
 function RoleEditor({
@@ -309,34 +495,70 @@ function RoleEditor({
   available,
   onSave,
   onDelete,
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  memberCount,
 }: {
   role: Role;
   available: GuildPermission[];
   onSave: (id: string, name: string, color: string | null, permissions: GuildPermission[]) => Promise<string | null>;
   onDelete: (id: string) => Promise<string | null>;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (offset: -1 | 1) => void;
+  memberCount: number;
 }) {
   const [name, setName] = useState(role.name);
   const [color, setColor] = useState(role.color ?? "#5B6CFF");
   const [permissions, setPermissions] = useState<GuildPermission[]>(role.permissions);
   return (
     <article className="role-editor">
+      <div className="role-editor-summary">
+        <span className="role-color" style={{ background: color }} />
+        <strong>{role.name}</strong>
+        <small>{memberCount} {memberCount === 1 ? "membro" : "membros"}</small>
+      </div>
       <div className="role-create">
         <input value={name} onChange={(event) => setName(event.target.value)} maxLength={32} />
         <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
       </div>
-      <div className="permission-grid">
-        {available.map((permission) => (
-          <label key={permission}>
-            <input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} />
-            <span>{PERMISSION_LABEL[permission]}</span>
-          </label>
-        ))}
-      </div>
+      <PermissionGrid available={available} value={permissions} onChange={setPermissions} />
       <div className="role-actions">
         <button type="button" className="secondary-button" onClick={() => void onSave(role.id, name, color, permissions)}>Salvar</button>
+        <span className="order-actions" aria-label="Hierarquia do cargo">
+          <button type="button" disabled={!canMoveUp} onClick={() => onMove(-1)} title="Subir cargo">↑</button>
+          <button type="button" disabled={!canMoveDown} onClick={() => onMove(1)} title="Descer cargo">↓</button>
+        </span>
         <button type="button" className="link-button danger" onClick={() => void onDelete(role.id)}>Apagar</button>
       </div>
     </article>
+  );
+}
+
+function PermissionGrid({ available, value, onChange }: {
+  available: GuildPermission[];
+  value: GuildPermission[];
+  onChange: (permissions: GuildPermission[]) => void;
+}) {
+  return (
+    <div className="permission-groups">
+      {PERMISSION_GROUPS.map(([group, permissions]) => {
+        const visible = permissions.filter((permission) => available.includes(permission));
+        if (!visible.length) return null;
+        return <fieldset key={group} className="permission-group">
+          <legend>{group}</legend>
+          <div className="permission-grid">
+            {visible.map((permission) => (
+              <label key={permission} className={["ban_members", "manage_roles"].includes(permission) ? "danger-permission" : undefined}>
+                <input type="checkbox" checked={value.includes(permission)} onChange={(event) => onChange(event.target.checked ? [...value, permission] : value.filter((item) => item !== permission))} />
+                <span>{PERMISSION_LABEL[permission]}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>;
+      })}
+    </div>
   );
 }
 

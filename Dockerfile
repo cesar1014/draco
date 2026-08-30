@@ -1,5 +1,5 @@
 # Imagem de produção: um processo só, servindo a página e a sinalização.
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 # O `better-sqlite3` é nativo, e no Alpine (musl) não há binário pronto pra
 # baixar: sem compilador o `npm ci` falha no meio do build.
@@ -9,7 +9,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/app/data/draco.sqlite

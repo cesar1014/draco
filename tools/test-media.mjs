@@ -465,7 +465,7 @@ const refuseUserMedia = () => {
 function fakeMedia({ display, user = refuseUserMedia, platform = "win32" }) {
   const calls = { display: [], user: [], claims: [], failures: [] };
   // Node 22 passou a expor `navigator` como getter sem setter. Definir a
-  // propriedade deixa o mesmo mock funcionar nele e no Node 20 da estação.
+  // propriedade deixa o mesmo mock funcionar nele e no Node 24 da estação.
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
     writable: true,

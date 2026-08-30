@@ -33,7 +33,20 @@ async function writeState() {
   const chat = channels.find((item) => item.type === "text");
   const call = channels.find((item) => item.type === "voice");
   const extra = state.createChannel(guild.id, "text", "avisos");
-  state.writeSetting("teste:ids", { guildId: guild.id, chatId: chat.id, callId: call.id, extraId: extra.id });
+  const secondExtra = state.createChannel(guild.id, "voice", "reunião");
+  assert.equal(state.reorderChannels(guild.id, [call.id, extra.id, chat.id, secondExtra.id]), true);
+  const firstRole = state.createRole(guild.id, "Moderador", "#6674E8", ["ban_members"]);
+  const secondRole = state.createRole(guild.id, "Organizador", "#3DDC97", ["manage_channels"]);
+  assert.equal(state.reorderRoles(guild.id, [secondRole.id, firstRole.id]), true);
+  state.writeSetting("teste:ids", {
+    guildId: guild.id,
+    chatId: chat.id,
+    callId: call.id,
+    extraId: extra.id,
+    secondExtraId: secondExtra.id,
+    firstRoleId: firstRole.id,
+    secondRoleId: secondRole.id,
+  });
 
   for (let index = 0; index < TOTAL_MESSAGES; index += 1) {
     state.addMessage(chat.id, member, `mensagem-${index}`);
@@ -60,7 +73,7 @@ async function readState() {
   const state = await import("../server/state.js");
   const { createSessionAuthority } = await import("../server/auth.js");
   const { MESSAGE_PAGE } = state;
-  const { guildId, chatId, callId, extraId } = state.readSetting("teste:ids");
+  const { guildId, chatId, callId, extraId, secondExtraId, firstRoleId, secondRoleId } = state.readSetting("teste:ids");
   // O snapshot é por pessoa: cada uma recebe só os servidores de que é membro.
   const current = state.snapshot(userId);
   const recent = current.messages[chatId];
@@ -72,6 +85,16 @@ async function readState() {
   assert.ok(
     !current.channels.some((channel) => channel.id === extraId),
     "canal apagado não volta no boot seguinte",
+  );
+  assert.deepEqual(
+    current.channels.map((channel) => channel.id),
+    [callId, chatId, secondExtraId],
+    "a ordem de canais sobrevive ao reinício",
+  );
+  assert.deepEqual(
+    current.roles[guildId].filter((role) => !role.isDefault).map((role) => role.id),
+    [secondRoleId, firstRoleId],
+    "a hierarquia de cargos sobrevive ao reinício",
   );
 
   // Ninguém mais: outro perfil que chegasse depois começaria sem servidor nenhum.
@@ -142,25 +165,39 @@ async function readState() {
   assert.equal(stored, TOTAL_MESSAGES, "o banco guarda além da página recente");
   assert.deepEqual(tables, [
     "account_login_challenges",
+    "account_sessions",
     "account_tokens",
     "account_trusted_addresses",
     "accounts",
     "app_settings",
+    "attachments",
+    "audit_log",
     "bans",
+    "call_events",
     "channel_permission_overwrites",
     "channels",
+    "direct_message_mentions",
+    "direct_message_reactions",
     "direct_messages",
     "direct_participants",
     "direct_threads",
+    "friend_requests",
+    "friendships",
     "guild_member_roles",
     "guild_members",
     "guild_settings",
     "guilds",
     "invites",
+    "member_timeouts",
+    "message_mentions",
+    "message_reactions",
     "messages",
+    "notifications",
     "profiles",
+    "read_states",
     "roles",
     "schema_migrations",
+    "user_blocks",
     "user_settings",
     "users",
   ]);

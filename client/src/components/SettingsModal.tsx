@@ -15,9 +15,10 @@ import {
   type DenoiseStrength,
 } from "@/rtc/denoise";
 import { runConnectionDiagnostics, VERDICT_LABEL, type DiagnosticsReport } from "@/rtc/diagnostics";
-import { checkDesktopUpdate, openDesktopRelease, type UpdateStatus } from "@/desktop";
+import { checkDesktopUpdate, downloadDesktopUpdate, installDesktopUpdate, isDesktopApp, onDesktopUpdateStatus, openDesktopRelease, type UpdateProgress, type UpdateStatus } from "@/desktop";
 import { playCue } from "@/rtc/sounds";
 import { MAX_PERSON_VOLUME, membersInVoice, micLevel, prefsFor, useStore } from "@/state/store";
+import { listConnectedSessions, loadPlatformHealth, revokeAllConnectedSessions, revokeConnectedSession, type ConnectedSession } from "@/auth";
 
 /** Rótulo de dispositivo vem vazio até a primeira permissão; daí o reserva. */
 function deviceLabel(device: MediaDeviceInfo, index: number, fallback: string): string {
@@ -66,6 +67,7 @@ export function SettingsModal() {
   const settings = useStore((state) => state.settings);
   const devices = useStore((state) => state.devices);
   const ice = useStore((state) => state.ice);
+  const sfuHealth = useStore((state) => state.sfuHealth);
   const members = useStore((state) => state.members);
   const selfId = useStore((state) => state.selfId);
   const voiceChannelId = useStore((state) => state.voiceChannelId);
@@ -88,7 +90,13 @@ export function SettingsModal() {
   const [probing, setProbing] = useState(false);
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<ConnectedSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [platformHealth, setPlatformHealth] = useState<Record<string, any> | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(() =>
+    "Notification" in window ? Notification.permission : "unsupported");
 
   const peers = useMemo(
     () => membersInVoice(members, voiceChannelId).filter((member) => member.id !== selfId),
@@ -144,6 +152,25 @@ export function SettingsModal() {
     };
   }, [tab]);
 
+  useEffect(() => onDesktopUpdateStatus(setUpdateProgress), []);
+
+  useEffect(() => {
+    if (tab !== "account" || account?.guest) return;
+    let active = true;
+    void listConnectedSessions().then((reply) => {
+      if (active && reply.ok) {
+        setSessions(reply.sessions ?? []);
+        setCurrentSessionId(reply.currentSessionId ?? null);
+      }
+    });
+    return () => { active = false; };
+  }, [tab, account?.guest]);
+
+  useEffect(() => {
+    if (tab !== "account" || !account?.isSystemAdmin) return;
+    void loadPlatformHealth().then((reply) => setPlatformHealth(reply.ok ? reply.metrics ?? null : null));
+  }, [tab, account?.isSystemAdmin]);
+
   async function testConnection() {
     setProbing(true);
     setReport(null);
@@ -193,12 +220,36 @@ export function SettingsModal() {
                 {!account?.guest && <> · {account?.email}</>}
                 {account?.isSystemAdmin && <> · administrador global</>}
               </p>
+              {!isDesktopApp() && notificationPermission !== "unsupported" && <button type="button" className="secondary-button" disabled={notificationPermission === "denied"} onClick={() => void Notification.requestPermission().then(setNotificationPermission)}>
+                {notificationPermission === "granted" ? "Notificações do navegador ativadas" : notificationPermission === "denied" ? "Notificações bloqueadas no navegador" : "Ativar notificações do navegador"}
+              </button>}
               {!account?.guest && (
                 <>
                   <p className="hint">A troca de senha exige confirmação pelo seu próprio e-mail. Ao concluir, as sessões antigas são encerradas.</p>
                   <button type="button" className="secondary-button" onClick={() => { setAccountMessage(null); void requestOwnPassword().then((error) => setAccountMessage(error ?? "Enviamos o link de troca para seu e-mail.")); }}>
                     Trocar minha senha
                   </button>
+                  <div className="session-devices">
+                    <h4>Dispositivos conectados</h4>
+                    {sessions.map((session) => <div key={session.id} className="session-device">
+                      <span><strong>{session.deviceName}</strong><small>{session.id === currentSessionId ? "Este dispositivo · agora" : new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" }).format(Math.round((session.lastSeenAt - Date.now()) / 3_600_000), "hour")}</small></span>
+                      <button type="button" className="link-button danger" onClick={() => void revokeConnectedSession(session.id).then((reply) => {
+                        if (!reply.ok) return setAccountMessage("Não foi possível encerrar a sessão.");
+                        if (session.id === currentSessionId) { closeSettings(); logout(); }
+                        else setSessions((current) => current.filter((item) => item.id !== session.id));
+                      })}>Encerrar</button>
+                    </div>)}
+                    <button type="button" className="secondary-button danger" onClick={() => void revokeAllConnectedSessions().then((reply) => { if (reply.ok) { closeSettings(); logout(); } })}>Sair de todos os dispositivos</button>
+                  </div>
+                  {account?.isSystemAdmin && platformHealth && <div className="platform-health">
+                    <h4>Saúde do Draco</h4>
+                    <span><strong>{platformHealth.users?.online ?? 0}</strong><small>online</small></span>
+                    <span><strong>{platformHealth.server?.socketClients ?? 0}</strong><small>sockets</small></span>
+                    <span><strong>{platformHealth.calls?.active ?? 0}</strong><small>calls ativas</small></span>
+                    <span><strong>{platformHealth.chat?.messagesPerMinute ?? 0}</strong><small>mensagens/min</small></span>
+                    <span><strong>{platformHealth.server?.eventLoopP95Ms ?? 0} ms</strong><small>event loop p95</small></span>
+                    <span><strong>{Math.round((platformHealth.database?.sizeBytes ?? 0) / 1024 / 1024)} MB</strong><small>banco</small></span>
+                  </div>}
                 </>
               )}
               {accountMessage && <p className={accountMessage.startsWith("Enviamos") ? "status-ok" : "status-warn"}>{accountMessage}</p>}
@@ -623,6 +674,10 @@ export function SettingsModal() {
                   : "Sem TURN: funciona na maioria das redes domésticas, mas pode falhar em rede corporativa ou 4G."}
               </p>
               {ice?.warning && <p className="status-warn">{ice.warning}</p>}
+              <p className={sfuHealth?.status === "AVAILABLE" ? "status-ok" : "status-warn"}>
+                SFU: {sfuHealth?.status === "AVAILABLE" ? "disponível" : sfuHealth?.status === "DEGRADED" ? "degradado" : "indisponível"}
+                {sfuHealth?.checkedAt ? ` · verificado ${new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" }).format(Math.round((sfuHealth.checkedAt - Date.now()) / 60_000), "minute")}` : ""}
+              </p>
 
               <button
                 type="button"
@@ -652,11 +707,12 @@ export function SettingsModal() {
               {update?.available && (
                 <p className="status-warn">
                   Versão {update.latest} disponível (você tem a {update.current}).{" "}
-                  <button type="button" className="link-button" onClick={() => void openDesktopRelease()}>
-                    Abrir a página de download
-                  </button>
+                  {update.automatic ? <button type="button" className="link-button" onClick={() => void downloadDesktopUpdate()}>Baixar atualização</button> : <button type="button" className="link-button" onClick={() => void openDesktopRelease()}>Abrir a página de download</button>}
                 </p>
               )}
+              {updateProgress?.phase === "downloading" && <p className="hint">Baixando atualização · {updateProgress.percent ?? 0}%</p>}
+              {updateProgress?.phase === "downloaded" && <p className="status-ok">Atualização pronta. <button type="button" className="link-button" onClick={() => void installDesktopUpdate()}>Reiniciar e instalar</button></p>}
+              {updateProgress?.phase === "error" && <p className="status-warn">{updateProgress.message}</p>}
               {update && !update.available && (
                 <p className="hint">Aplicativo atualizado (versão {update.current}).</p>
               )}

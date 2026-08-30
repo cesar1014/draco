@@ -17,20 +17,24 @@
     "app": "npm --prefix desktop start",
     "app:install": "cd desktop && npm install",
     "app:build": "npm --prefix desktop run dist",
-    "test": "npm run typecheck && npm run test:logic && npm run test:accounts && npm run test:server && npm run test:persistence && npm run test:media && npm run test:security",
+    "test": "npm run typecheck && npm run test:logic && npm run test:accounts && npm run test:social && npm run test:server && npm run test:persistence && npm run test:backup && npm run test:media && npm run test:security",
     "typecheck": "tsc --noEmit",
     "test:logic": "node tools/test-server-logic.mjs",
     "test:accounts": "node tools/test-accounts.mjs",
+    "test:social": "node tools/test-social.mjs",
     "test:server": "node tools/test-signaling.mjs",
     "test:persistence": "node tools/test-persistence.mjs",
+    "test:backup": "node tools/test-backup.mjs",
     "test:media": "node tools/test-media.mjs",
-    "test:security": "node tools/test-security.mjs"
+    "test:security": "node tools/test-security.mjs",
+    "db:backup": "node tools/backup-sqlite.mjs",
+    "db:restore": "node tools/restore-sqlite.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "11.7.0",
+    "better-sqlite3": "12.10.0",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
-    "helmet": "8.1.0",
+    "helmet": "8.3.0",
     "nodemailer": "^9.0.6",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -50,6 +54,6 @@
     "vite": "^6.4.3"
   },
   "engines": {
-    "node": ">=20.17.0"
+    "node": ">=24.0.0 <25"
   }
 }

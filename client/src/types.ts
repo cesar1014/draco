@@ -15,6 +15,7 @@ export interface Channel {
   type: "text" | "voice";
   name: string;
   category: string;
+  position: number;
 }
 
 export interface Member {
@@ -40,15 +41,89 @@ export interface Member {
   sfuSessionId: string | null;
   /** Nome de cada trilha publicada no SFU, por slot. É o que se assina. */
   sfuTracks: Partial<Record<MediaSlot, string | null>>;
+  presence: PresenceState;
+  customStatus: string | null;
+  statusExpiresAt: number | null;
 }
 
 export interface Message {
+  sequence: number;
   id: string;
   channelId: string;
   authorId: string;
   username: string;
   color: string;
   content: string;
+  at: number;
+  mentions?: Array<{ type: "user" | "role" | "everyone"; id: string }>;
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  replyToId?: string | null;
+  reply?: MessageReference | null;
+  reactions?: MessageReaction[];
+  attachments?: Attachment[];
+}
+
+export interface Attachment {
+  id: string;
+  filename: string;
+  mime: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "application/pdf";
+  size: number;
+  url: string;
+  width?: number | null;
+  height?: number | null;
+  at: number;
+}
+
+export interface MessageReference {
+  id: string;
+  authorId: string;
+  username: string;
+  content: string | null;
+  deleted: boolean;
+}
+
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  userIds: string[];
+}
+
+export type PresenceMode = "online" | "away" | "dnd" | "invisible";
+export type PresenceState = Exclude<PresenceMode, "invisible"> | "offline";
+
+export interface SocialPerson {
+  id: string;
+  username: string;
+  displayName: string;
+  color: string;
+  avatarUrl: string | null;
+  customStatus: string | null;
+  statusExpiresAt: number | null;
+  since: number;
+}
+
+export interface Relationships {
+  friends: SocialPerson[];
+  incomingRequests: SocialPerson[];
+  outgoingRequests: SocialPerson[];
+  blocked: SocialPerson[];
+}
+
+export interface UnreadState {
+  unread: boolean;
+  mentions: number;
+  lastReadSequence: number;
+}
+
+export interface DracoNotification {
+  id: string;
+  kind: "direct" | "mention" | "friend_request" | "call" | "social";
+  actorId: string | null;
+  conversationType: "channel" | "direct" | null;
+  conversationId: string | null;
+  metadata: Record<string, unknown>;
+  readAt: number | null;
   at: number;
 }
 
@@ -74,8 +149,21 @@ export interface ServerSnapshot {
   history: Record<string, boolean>;
   /** Permissões efetivas da conta em cada servidor. */
   permissions: Record<string, GuildPermission[]>;
+  /** Cargos visíveis e atribuições, agrupados por servidor. */
+  roles: Record<string, Role[]>;
+  memberRoles: Record<string, Record<string, string[]>>;
   directThreads?: DirectThread[];
   directMessages?: Record<string, DirectMessage[]>;
+  relationships?: Relationships;
+  unread?: Record<string, UnreadState>;
+  notifications?: DracoNotification[];
+  sfuHealth?: SfuHealth;
+}
+
+export interface SfuHealth {
+  status: "AVAILABLE" | "DEGRADED" | "UNAVAILABLE";
+  checkedAt: number | null;
+  detail: string;
 }
 
 export interface Account {
@@ -94,7 +182,11 @@ export type GuildPermission =
   | "manage_channels"
   | "create_invites"
   | "ban_members"
-  | "manage_roles";
+  | "manage_roles"
+  | "manage_messages"
+  | "moderate_members"
+  | "mention_everyone"
+  | "view_audit_log";
 
 export interface Role {
   id: string;
@@ -103,6 +195,7 @@ export interface Role {
   color: string | null;
   permissions: GuildPermission[];
   isDefault: boolean;
+  position: number;
 }
 
 export interface DirectThread {
@@ -113,6 +206,7 @@ export interface DirectThread {
 }
 
 export interface DirectMessage {
+  sequence: number;
   id: string;
   threadId: string;
   authorId: string;
@@ -120,6 +214,12 @@ export interface DirectMessage {
   color: string;
   content: string;
   at: number;
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  replyToId?: string | null;
+  reply?: MessageReference | null;
+  reactions?: MessageReaction[];
+  attachments?: Attachment[];
 }
 
 /** Convite ativo de um servidor, como a tela de administração o mostra. */
@@ -138,6 +238,33 @@ export interface BanEntry {
   username: string | null;
   reason: string | null;
   createdAt: number;
+}
+
+export interface TimeoutEntry {
+  userId: string;
+  username: string | null;
+  reason: string | null;
+  expiresAt: number;
+  createdAt: number;
+}
+
+export interface AuditEntry {
+  id: string;
+  actorId: string | null;
+  actorUsername: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  at: number;
+}
+
+export interface ChannelOverwrite {
+  targetType: "role" | "member";
+  targetId: string;
+  allow: GuildPermission[];
+  deny: GuildPermission[];
+  updatedAt: number;
 }
 
 export interface IceConfigResponse {

@@ -1,9 +1,9 @@
 "use strict";
 
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, shell, webContents } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, Notification, session, shell, webContents } = require("electron");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { checkForUpdates, currentVersion } = require("./updater.js");
+const { checkForUpdates, configureAutoUpdater, currentVersion, downloadUpdate, installUpdate, secureUpdatesEnabled } = require("./updater.js");
 
 /**
  * Processo principal do app de desktop.
@@ -40,6 +40,7 @@ const developmentUrl = app.isPackaged ? null : urlFromArgv || process.env.DESKTO
 const APP_URL = (developmentUrl || DEFAULT_URL).trim().replace(/\/+$/, "");
 const APP_ORIGIN = new URL(APP_URL).origin;
 const STATUS_URL = pathToFileURL(path.join(__dirname, "status.html")).href;
+let mainWindow = null;
 
 /** Comparação por origem, não por texto: barra no fim e caminho não podem enganar. */
 function sameOrigin(value) {
@@ -310,6 +311,35 @@ ipcMain.handle("desktop:open-release", async (event) => {
   return openSafeExternal(result.url);
 });
 
+ipcMain.handle("desktop:download-update", async (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "") || !secureUpdatesEnabled()) return { ok: false, error: "unavailable" };
+  return downloadUpdate();
+});
+
+ipcMain.handle("desktop:install-update", (event) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "") || !secureUpdatesEnabled()) return false;
+  return installUpdate();
+});
+
+ipcMain.handle("desktop:notify", (event, payload) => {
+  if (!sameOrigin(event.senderFrame?.url ?? "") || !Notification.isSupported()) return false;
+  if (!payload || typeof payload !== "object") return false;
+  const title = typeof payload.title === "string" ? payload.title.slice(0, 80) : "Draco";
+  const body = typeof payload.body === "string" ? payload.body.slice(0, 240) : "";
+  const conversationType = ["channel", "direct"].includes(payload.conversationType) ? payload.conversationType : null;
+  const conversationId = typeof payload.conversationId === "string" && payload.conversationId.length <= 64 ? payload.conversationId : null;
+  const notification = new Notification({ title, body, icon: path.join(__dirname, "icon.png") });
+  notification.on("click", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    if (conversationType && conversationId) mainWindow.webContents.send("desktop:notification-open", { conversationType, conversationId });
+  });
+  notification.show();
+  return true;
+});
+
 function showError(window, message) {
   void window.loadFile(path.join(__dirname, "status.html"), {
     query: { url: APP_URL, message },
@@ -323,7 +353,7 @@ function createWindow() {
     minWidth: 940,
     minHeight: 560,
     // Mesmo cinza do app: evita o clarão branco enquanto a página não chegou.
-    backgroundColor: "#313338",
+    backgroundColor: "#070a14",
     autoHideMenuBar: true,
     title: "Draco",
     icon: path.join(__dirname, "icon.png"),
@@ -346,6 +376,7 @@ function createWindow() {
   // uma segunda janela de navegar pra onde a principal não pode.
   window.webContents.on("did-create-window", (child) => guardNavigation(child.webContents));
   guardNavigation(window.webContents);
+  configureAutoUpdater(window, log);
 
   window.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
     // `-3` é navegação abortada pelo próprio Chromium (acontece em redirect), e
@@ -355,7 +386,7 @@ function createWindow() {
     showError(window, description);
   });
 
-  void window.loadURL(APP_URL);
+  void window.loadURL(APP_URL, { userAgent: `${window.webContents.getUserAgent()} DracoDesktop/${app.getVersion()}` });
   return window;
 }
 
@@ -368,11 +399,14 @@ function createWindow() {
  * carrega, e não uma navegação vinda de conteúdo remoto.
  */
 function guardNavigation(contents) {
+  contents.once("destroyed", () => pendingCaptures.delete(contents.id));
   contents.on("will-navigate", (event, url) => {
     if (sameOrigin(url) || localStatusPage(url)) return;
     event.preventDefault();
     openSafeExternal(url);
   });
+  mainWindow = window;
+  window.once("closed", () => { if (mainWindow === window) mainWindow = null; });
   contents.setWindowOpenHandler(({ url }) => {
     if (sameOrigin(url)) return { action: "allow" };
     openSafeExternal(url);

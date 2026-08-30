@@ -37,6 +37,8 @@ export function UserPanel() {
           type="button"
           className="panel-button"
           data-off={muted}
+          aria-pressed={muted}
+          aria-label={muted ? "Ativar microfone" : "Desativar microfone"}
           onClick={toggleMute}
           title="Microfone (Ctrl+Shift+M)"
         >
@@ -46,6 +48,8 @@ export function UserPanel() {
           type="button"
           className="panel-button"
           data-off={deafened}
+          aria-pressed={deafened}
+          aria-label={deafened ? "Ativar áudio" : "Desativar áudio"}
           onClick={toggleDeafen}
           title="Ouvido (Ctrl+Shift+D)"
         >

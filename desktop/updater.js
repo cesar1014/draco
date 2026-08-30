@@ -1,6 +1,7 @@
 "use strict";
 
 const { app, net } = require("electron");
+const { autoUpdater } = require("electron-updater");
 
 /**
  * Verificação de atualização do app de desktop.
@@ -25,6 +26,39 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let lastCheck = 0;
 let lastResult = null;
+let updateWindow = null;
+let updateLog = null;
+let secureUpdaterReady = false;
+let downloaded = false;
+
+const secureUpdatesEnabled = () => app.isPackaged && process.env.DRACO_SIGNED_UPDATES === "1";
+
+function publishStatus(status) {
+  if (!updateWindow || updateWindow.isDestroyed()) return;
+  updateWindow.webContents.send("desktop:update-status", status);
+}
+
+function configureAutoUpdater(window, log) {
+  updateWindow = window;
+  updateLog = log;
+  if (!secureUpdatesEnabled() || secureUpdaterReady) return secureUpdatesEnabled();
+  secureUpdaterReady = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("checking-for-update", () => publishStatus({ phase: "checking" }));
+  autoUpdater.on("update-available", (info) => publishStatus({ phase: "available", version: info.version }));
+  autoUpdater.on("update-not-available", () => publishStatus({ phase: "idle" }));
+  autoUpdater.on("download-progress", (progress) => publishStatus({ phase: "downloading", percent: Math.round(progress.percent), bytesPerSecond: progress.bytesPerSecond }));
+  autoUpdater.on("update-downloaded", (info) => {
+    downloaded = true;
+    publishStatus({ phase: "downloaded", version: info.version });
+  });
+  autoUpdater.on("error", (error) => {
+    updateLog?.error("atualização do desktop falhou", { motivo: String(error?.message ?? error).slice(0, 200) });
+    publishStatus({ phase: "error", message: "Não foi possível concluir a atualização." });
+  });
+  return true;
+}
 
 const currentVersion = () => app.getVersion();
 
@@ -113,6 +147,11 @@ function fetchFeed(url) {
  * @returns {Promise<{current: string, latest: string|null, available: boolean, url: string|null, notes: string|null}>}
  */
 async function checkForUpdates({ feed = (!app.isPackaged && process.env.DRACO_UPDATE_FEED) || DEFAULT_FEED } = {}) {
+  if (secureUpdatesEnabled() && secureUpdaterReady) {
+    const result = await autoUpdater.checkForUpdates();
+    const latest = result?.updateInfo?.version ?? null;
+    return { current: currentVersion(), latest, available: Boolean(latest && isNewer(latest, currentVersion())), url: null, notes: result?.updateInfo?.releaseNotes ?? null, automatic: true };
+  }
   const current = currentVersion();
   if (lastResult && Date.now() - lastCheck < CHECK_INTERVAL_MS) return lastResult;
 
@@ -148,4 +187,16 @@ async function checkForUpdates({ feed = (!app.isPackaged && process.env.DRACO_UP
   }
 }
 
-module.exports = { checkForUpdates, currentVersion };
+async function downloadUpdate() {
+  if (!secureUpdatesEnabled() || !secureUpdaterReady) return { ok: false, error: "signed-updates-unavailable" };
+  await autoUpdater.downloadUpdate();
+  return { ok: true };
+}
+
+function installUpdate() {
+  if (!secureUpdatesEnabled() || !secureUpdaterReady || !downloaded) return false;
+  autoUpdater.quitAndInstall(false, true);
+  return true;
+}
+
+module.exports = { checkForUpdates, configureAutoUpdater, currentVersion, downloadUpdate, installUpdate, secureUpdatesEnabled };

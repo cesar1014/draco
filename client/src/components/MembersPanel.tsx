@@ -1,75 +1,86 @@
 import { useMemo } from "react";
 import { Avatar } from "@/components/Avatar";
-import { CloseIcon, SpeakerIcon } from "@/components/Icons";
+import { CameraIcon, CloseIcon, MicOffIcon, ScreenIcon, SpeakerIcon } from "@/components/Icons";
 import { useStore } from "@/state/store";
-import type { Member, RosterEntry } from "@/types";
+import type { Member, Role, RosterEntry } from "@/types";
 
-/**
- * Quem está no servidor, separado entre online e offline.
- *
- * Fica à direita e fechado por padrão. A lista de pessoas é a informação que se
- * consulta de vez em quando ("quem está aí?"), não a que se lê o tempo todo, e
- * antes ela dividia a barra da esquerda com os canais — que são navegação, usada
- * a cada minuto. Trocar de lado devolveu a coluna inteira aos canais.
- *
- * No celular é uma gaveta: a largura não dá pra três colunas, e o mesmo botão do
- * topo abre e fecha.
- */
+const NO_ROLES: Role[] = [];
+const NO_MEMBER_ROLES: Record<string, string[]> = {};
+
 export function MembersPanel() {
   const members = useStore((state) => state.members);
   const roster = useStore((state) => state.roster);
   const channels = useStore((state) => state.channels);
   const activeGuildId = useStore((state) => state.activeGuildId);
+  const roles = useStore((state) => state.roles[activeGuildId] ?? NO_ROLES);
+  const assignments = useStore((state) => state.memberRoles[activeGuildId] ?? NO_MEMBER_ROLES);
   const selfId = useStore((state) => state.selfId);
   const setMembersOpen = useStore((state) => state.setMembersOpen);
   const account = useStore((state) => state.account);
   const openDirect = useStore((state) => state.openDirect);
 
-  /**
-   * Online sai da presença; offline é o elenco do banco menos quem está online.
-   * A ordem do online é a de chegada, que é estável de um jeito que a alfabética
-   * não é: a identidade sobrevive à reconexão, então a lista não se reorganiza
-   * embaixo do cursor de quem estava clicando quando o Wi-Fi de um terceiro caiu.
-   */
-  const { online, offline } = useMemo(() => {
+  const { groups, offline } = useMemo(() => {
     const rosterIds = new Set((roster[activeGuildId] ?? []).map((entry) => entry.id));
-    const present = Object.values(members).filter(
-      (member) => rosterIds.has(member.id) || (member.guest && member.guestGuildId === activeGuildId),
-    ).sort(
-      (a, b) => a.since - b.since || a.username.localeCompare(b.username, "pt-BR"),
-    );
+    const present = Object.values(members)
+      .filter((member) => rosterIds.has(member.id) || (member.guest && member.guestGuildId === activeGuildId))
+      .sort((a, b) => a.since - b.since || a.username.localeCompare(b.username, "pt-BR"));
     const connected = new Set(present.map((member) => member.id));
     const away = (roster[activeGuildId] ?? [])
       .filter((entry) => !connected.has(entry.id))
       .sort((a, b) => a.username.localeCompare(b.username, "pt-BR"));
-    return { online: present, offline: away };
-  }, [members, roster, activeGuildId]);
+
+    const orderedRoles = [...roles].sort((left, right) => right.position - left.position);
+    const defaultRole = orderedRoles.find((role) => role.isDefault);
+    const guestRole: Role = {
+      id: "guests",
+      guildId: activeGuildId,
+      name: "Visitantes",
+      color: null,
+      permissions: [],
+      isDefault: false,
+      position: -1,
+    };
+    const roleFor = (member: Member) => {
+      if (member.guest) return guestRole;
+      const ids = assignments[member.id] ?? [];
+      return orderedRoles.find((role) => !role.isDefault && ids.includes(role.id)) ?? defaultRole;
+    };
+    const grouped = new Map<string, { role: Role | null; people: Member[] }>();
+    for (const member of present) {
+      const role = roleFor(member) ?? null;
+      const key = role?.id ?? "members";
+      const group = grouped.get(key) ?? { role, people: [] };
+      group.people.push(member);
+      grouped.set(key, group);
+    }
+    return {
+      groups: [...grouped.values()].sort((left, right) =>
+        (right.role?.position ?? -2) - (left.role?.position ?? -2)),
+      offline: away,
+    };
+  }, [members, roster, roles, assignments, activeGuildId]);
 
   const startDirect = (userId: string) => {
-    if (account?.guest) return;
-    void openDirect(userId);
+    if (!account?.guest) void openDirect(userId);
   };
 
   return (
-    <aside className="members" aria-label="Membros">
+    <aside className="members" aria-label="Membros deste servidor">
       <header className="members-header">
         <strong>Membros</strong>
-        <button
-          type="button"
-          className="members-close"
-          onClick={() => setMembersOpen(false)}
-          title="Fechar"
-        >
+        <button type="button" className="members-close" onClick={() => setMembersOpen(false)} title="Fechar">
           <CloseIcon size={18} />
         </button>
       </header>
 
       <div className="members-scroll">
-        {online.length > 0 && (
-          <section>
-            <p className="category">Online — {online.length}</p>
+        {groups.map(({ role, people }) => (
+          <section key={role?.id ?? "members"}>
+            <p className="category member-role-heading" style={{ color: role?.color ?? undefined }}>
+              {role?.isDefault ? "Online" : role?.name ?? "Online"} — {people.length}
+            </p>
             <ul className="members-list">
-              {online.map((member) => (
+              {people.map((member) => (
                 <OnlineRow
                   key={member.id}
                   member={member}
@@ -80,7 +91,7 @@ export function MembersPanel() {
               ))}
             </ul>
           </section>
-        )}
+        ))}
 
         {offline.length > 0 && (
           <section>
@@ -93,9 +104,7 @@ export function MembersPanel() {
           </section>
         )}
 
-        {online.length === 0 && offline.length === 0 && (
-          <p className="members-empty">Ninguém por aqui ainda.</p>
-        )}
+        {groups.length === 0 && offline.length === 0 && <p className="members-empty">Ninguém por aqui ainda.</p>}
       </div>
     </aside>
   );
@@ -105,20 +114,26 @@ function OnlineRow({ member, self, room, onDirect }: { member: Member; self: boo
   return (
     <li className="member-row" title={onDirect ? "Abrir mensagem privada" : undefined}>
       <button type="button" className="member-row-button" disabled={!onDirect} onClick={onDirect}>
-        <Avatar member={member} size={26} />
-        <span className="member-name" data-self={self}>{member.username}{member.guest ? " · visitante" : ""}</span>
-        {room && <em className="member-where" title={`Na call em ${room}`}><SpeakerIcon size={11} />{room}</em>}
+        <Avatar member={member} size={28} />
+        <span className="member-copy">
+          <span className="member-name" data-self={self}>{member.username}{member.guest ? " · visitante" : ""}</span>
+          {room && <em className="member-where"><SpeakerIcon size={11} />{room}</em>}
+        </span>
+        <span className="member-state-icons" aria-label="Estado na chamada">
+          {(member.muted || member.deafened) && <MicOffIcon size={12} />}
+          {member.camOn && <CameraIcon size={12} />}
+          {member.screenOn && <ScreenIcon size={12} />}
+        </span>
       </button>
     </li>
   );
 }
 
-/** Quem pertence ao servidor mas não está conectado. */
 function OfflineRow({ entry, onDirect }: { entry: RosterEntry; onDirect: () => void }) {
   return (
     <li className="member-row" data-offline="true">
       <button type="button" className="member-row-button" onClick={onDirect} title="Abrir mensagem privada">
-        <Avatar member={{ ...entry, speaking: false }} size={26} />
+        <Avatar member={{ ...entry, speaking: false }} size={28} />
         <span className="member-name">{entry.username}</span>
       </button>
     </li>

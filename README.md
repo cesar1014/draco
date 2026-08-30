@@ -431,7 +431,7 @@ Draco/
 
 ### Requisitos
 
-- **Node.js 20.17+**
+- **Node.js 24 LTS**
 - npm
 
 ### Instalação
@@ -519,6 +519,7 @@ Duas consequências práticas:
 | `npm run test:logic` | testa backoff do TURN, rate limit e nomes |
 | `npm run test:server` | testa o protocolo de sinalização e a administração |
 | `npm run test:persistence` | testa migrations e persistência após reinício |
+| `npm run test:backup` | testa backup, retenção e restauração SQLite |
 | `npm run test:media` | testa o ciclo de vida das trilhas no SFU |
 | `npm run typecheck` | valida os tipos TypeScript |
 | `npm run icons` | recria assets de ícone |
@@ -539,6 +540,7 @@ As principais opções são:
 PORT=3100
 HOST=127.0.0.1
 DATABASE_PATH=
+BACKUP_RETENTION=7
 ORIGIN=
 SYSTEM_ADMIN_USERNAME=cesar1014
 SYSTEM_ADMIN_EMAIL=xcesaryt@gmail.com
@@ -576,6 +578,20 @@ volume persistente nesse diretório — o que fica lá está descrito em
 guarda no banco, o que basta para uma instância só com disco durável. Preencha quando o disco for
 descartável (plano grátis do Render, por exemplo) ou quando houver mais de uma instância: sem isso,
 cada uma emitiria tokens que a outra recusaria.
+
+### Backup e restauração do SQLite
+
+`npm run db:backup` cria uma cópia consistente em `backups/` usando a API de backup do SQLite,
+inclusive enquanto o banco está em WAL. `BACKUP_RETENTION` controla quantas cópias permanecem.
+
+Para restaurar, primeiro pare o serviço e execute:
+
+```bash
+npm run db:restore -- backups/draco-AAAA-MM-DD.sqlite --confirm-offline
+```
+
+O comando verifica a integridade antes e depois e preserva o banco substituído ao lado do arquivo
+principal. Reinicie o serviço somente depois da confirmação de sucesso.
 
 `TRUSTED_PROXY=1` faz o limite por IP ler o `x-forwarded-for`. Ligue somente quando houver um proxy
 na frente (Fly, Render, Cloudflare, Caddy). Num servidor que recebe conexão direta, qualquer cliente

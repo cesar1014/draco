@@ -65,11 +65,11 @@ export class SessionAuthority {
   }
 
   /** Token novo pra uma identidade. `userId` ausente cria uma. */
-  issue(userId = randomUUID(), sessionVersion = 0) {
+  issue(userId = randomUUID(), sessionVersion = 0, sessionId = randomUUID()) {
     const payload = encode(
-      JSON.stringify({ sub: userId, ver: sessionVersion, exp: Date.now() + TOKEN_TTL_MS }),
+      JSON.stringify({ sub: userId, sid: sessionId, ver: sessionVersion, exp: Date.now() + TOKEN_TTL_MS }),
     );
-    return { userId, token: `${VERSION}.${payload}.${sign(this.#secret, payload)}` };
+    return { userId, sessionId, token: `${VERSION}.${payload}.${sign(this.#secret, payload)}` };
   }
 
   /**
@@ -96,7 +96,8 @@ export class SessionAuthority {
     if (typeof claims.exp !== "number" || claims.exp <= Date.now()) return null;
 
     const sessionVersion = Number.isInteger(claims.ver) && claims.ver >= 0 ? claims.ver : 0;
-    return { userId: claims.sub, sessionVersion, expiresAt: claims.exp };
+    const sessionId = typeof claims.sid === "string" && /^[0-9a-f-]{36}$/i.test(claims.sid) ? claims.sid : null;
+    return { userId: claims.sub, sessionId, sessionVersion, expiresAt: claims.exp };
   }
 
   /**
@@ -106,7 +107,7 @@ export class SessionAuthority {
    */
   renewIfNeeded(session) {
     if (session.expiresAt - Date.now() > RENEW_BEFORE_MS) return null;
-    return this.issue(session.userId, session.sessionVersion);
+    return this.issue(session.userId, session.sessionVersion, session.sessionId ?? undefined);
   }
 }
 

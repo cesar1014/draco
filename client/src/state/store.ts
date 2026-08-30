@@ -45,6 +45,7 @@ import type { CallEngine, RemoteTrackRef, TrackProfile } from "@/rtc/engine";
 import { loadIceConfig, setIceConfigProvider } from "@/rtc/iceConfig";
 import { forgetStats, type PeerStats } from "@/rtc/stats";
 import { playCue, setSoundVolume, setSoundsEnabled } from "@/rtc/sounds";
+import { isDesktopApp, showDesktopNotification } from "@/desktop";
 import {
   acceptInvite,
   banMember,
@@ -64,8 +65,21 @@ import {
   loadDirect,
   openDirect,
   requestIceConfig,
+  requestFriend,
+  changeFriendship,
+  updatePresence as updatePresenceRequest,
+  markRead,
+  mutateMessage,
+  kickMember as kickGuildMember,
+  timeoutMember as timeoutGuildMember,
+  removeMemberTimeout,
+  loadChannelPermissions as loadChannelPermissionsRequest,
+  saveChannelPermissions as saveChannelPermissionsRequest,
+  reorderChannels as reorderGuildChannels,
+  reorderRoles as reorderGuildRoles,
   revokeInvite,
   sendDirect,
+  sendChannel,
   sfuJoin,
   sfuPublish,
   sfuRenegotiate,
@@ -94,6 +108,14 @@ import {
   type RosterEntry,
   type ServerSnapshot,
   type Role,
+  type Relationships,
+  type PresenceMode,
+  type DracoNotification,
+  type UnreadState,
+  type TimeoutEntry,
+  type AuditEntry,
+  type ChannelOverwrite,
+  type SfuHealth,
 } from "@/types";
 
 /**
@@ -199,6 +221,10 @@ const STATS_INTERVAL_MS = 1000;
 const RESTART_COOLDOWN_MS = 5000;
 /** Depois disto a call não volta sozinha: insistir só esconde o problema real. */
 const MAX_RESTARTS = 3;
+
+const EMPTY_RELATIONSHIPS: Relationships = {
+  friends: [], incomingRequests: [], outgoingRequests: [], blocked: [],
+};
 
 function readJson(key: string): unknown {
   try {
@@ -318,9 +344,17 @@ interface Store {
   roster: Record<string, RosterEntry[]>;
   messages: Record<string, Message[]>;
   permissions: Record<string, GuildPermission[]>;
+  roles: Record<string, Role[]>;
+  memberRoles: Record<string, Record<string, string[]>>;
   directThreads: DirectThread[];
   directMessages: Record<string, DirectMessage[]>;
   activeDirectId: string;
+  replyingTo: Message | null;
+  relationships: Relationships;
+  unread: Record<string, UnreadState>;
+  notifications: DracoNotification[];
+  channelOverwrites: Record<string, ChannelOverwrite[]>;
+  sfuHealth: SfuHealth | null;
   /**
    * Por canal: ainda existe conversa antes da mais antiga que temos. Vem do
    * servidor e é o que decide se rolar até o topo pede mais ou para ali.
@@ -415,10 +449,20 @@ interface Store {
   selectChannel: (channelId: string) => void;
   setSidebarOpen: (open: boolean) => void;
   setMembersOpen: (open: boolean) => void;
-  sendChat: (content: string) => void;
+  sendChat: (content: string) => Promise<Message | null>;
   openDirect: (userId: string) => Promise<string | null>;
   selectDirect: (threadId: string) => Promise<void>;
-  sendDirect: (content: string) => void;
+  sendDirect: (content: string) => Promise<DirectMessage | null>;
+  setReplyingTo: (message: Message | null) => void;
+  editMessage: (scope: "chat" | "direct", messageId: string, content: string) => Promise<string | null>;
+  deleteMessage: (scope: "chat" | "direct", messageId: string) => Promise<string | null>;
+  reactMessage: (scope: "chat" | "direct", messageId: string, emoji: string) => Promise<string | null>;
+  requestFriend: (username: string) => Promise<string | null>;
+  changeFriendship: (
+    action: "accept" | "reject" | "cancel" | "remove" | "block" | "unblock",
+    userId: string,
+  ) => Promise<string | null>;
+  updatePresence: (mode: PresenceMode, status: string | null, expiresAt?: number | null) => Promise<string | null>;
   loadOlderMessages: (channelId: string) => Promise<void>;
   joinVoice: (channelId: string) => Promise<void>;
   leaveVoice: () => void;
@@ -455,16 +499,23 @@ interface Store {
   joinByInvite: (code: string) => Promise<string | null>;
   createChannel: (guildId: string, type: "text" | "voice", name: string) => Promise<string | null>;
   deleteChannel: (channelId: string) => Promise<string | null>;
+  reorderChannels: (guildId: string, orderedIds: string[]) => Promise<string | null>;
   openAdmin: (guildId: string) => Promise<void>;
   closeAdmin: () => void;
   createInvite: (options?: { maxUses?: number | null; expiresInHours?: number | null }) => Promise<string | null>;
   revokeInvite: (code: string) => Promise<void>;
   banMember: (userId: string, reason?: string) => Promise<string | null>;
   unbanMember: (userId: string) => Promise<void>;
+  kickMember: (userId: string, reason?: string) => Promise<string | null>;
+  timeoutMember: (userId: string, durationMs: number, reason?: string) => Promise<string | null>;
+  removeTimeout: (userId: string) => Promise<string | null>;
+  loadChannelPermissions: (channelId: string) => Promise<void>;
+  saveChannelPermissions: (channelId: string, targetType: "role" | "member", targetId: string, allow: GuildPermission[], deny: GuildPermission[]) => Promise<string | null>;
   createRole: (name: string, color: string | null, permissions: GuildPermission[]) => Promise<string | null>;
   updateRole: (roleId: string, name: string, color: string | null, permissions: GuildPermission[]) => Promise<string | null>;
   deleteRole: (roleId: string) => Promise<string | null>;
   assignRole: (userId: string, roleId: string, assigned: boolean) => Promise<string | null>;
+  reorderRoles: (orderedIds: string[]) => Promise<string | null>;
 }
 
 /**
@@ -479,6 +530,8 @@ export interface AdminState {
   roster: RosterEntry[];
   invites: Invite[];
   bans: BanEntry[];
+  timeouts: TimeoutEntry[];
+  auditLog: AuditEntry[];
   permissions: GuildPermission[];
   roles: Role[];
   memberRoles: Record<string, string[]>;
@@ -762,6 +815,7 @@ export const useStore = create<Store>()((set, get) => {
     // A resposta do `voice:join` é a informação mais recente sobre o caminho:
     // credenciais podem ter mudado desde o `identify`.
     sfuAvailable = reply.sfu === true;
+    if (reply.sfuHealth) set({ sfuHealth: reply.sfuHealth });
 
     remember(reply.peers);
     set({
@@ -861,8 +915,14 @@ export const useStore = create<Store>()((set, get) => {
     messages: snapshot.messages,
     history: snapshot.history ?? {},
     permissions: snapshot.permissions ?? {},
+    roles: snapshot.roles ?? {},
+    memberRoles: snapshot.memberRoles ?? {},
     directThreads: snapshot.directThreads ?? [],
     directMessages: snapshot.directMessages ?? {},
+    relationships: snapshot.relationships ?? EMPTY_RELATIONSHIPS,
+    unread: snapshot.unread ?? {},
+    notifications: snapshot.notifications ?? [],
+    sfuHealth: snapshot.sfuHealth ?? null,
     loadingHistory: null,
   });
 
@@ -977,6 +1037,29 @@ export const useStore = create<Store>()((set, get) => {
           [message.channelId]: [...(state.messages[message.channelId] ?? []), message],
         },
       }));
+      const selfId = get().selfId;
+      if (message.authorId !== selfId && get().activeChannelId !== message.channelId) {
+        set((state) => ({
+          unread: {
+            ...state.unread,
+            [`channel:${message.channelId}`]: {
+              ...(state.unread[`channel:${message.channelId}`] ?? { mentions: 0, lastReadSequence: 0 }),
+              unread: true,
+            },
+          },
+        }));
+      } else if (get().activeChannelId === message.channelId) {
+        void markRead(s, "channel", message.channelId, message.sequence);
+      }
+    });
+
+    s.on("chat:updated", (message) => {
+      set((state) => ({
+        messages: {
+          ...state.messages,
+          [message.channelId]: (state.messages[message.channelId] ?? []).map((item) => item.id === message.id ? message : item),
+        },
+      }));
     });
 
     s.on("direct:thread", (thread) => {
@@ -1001,6 +1084,47 @@ export const useStore = create<Store>()((set, get) => {
             : state.directThreads,
         };
       });
+      const selfId = get().selfId;
+      if (message.authorId !== selfId && get().activeDirectId !== message.threadId) {
+        set((state) => ({
+          unread: {
+            ...state.unread,
+            [`direct:${message.threadId}`]: {
+              ...(state.unread[`direct:${message.threadId}`] ?? { mentions: 0, lastReadSequence: 0 }),
+              unread: true,
+            },
+          },
+        }));
+      } else if (get().activeDirectId === message.threadId) {
+        void markRead(s, "direct", message.threadId, message.sequence);
+      }
+    });
+
+    s.on("direct:updated", (message) => {
+      set((state) => ({
+        directMessages: {
+          ...state.directMessages,
+          [message.threadId]: (state.directMessages[message.threadId] ?? []).map((item) => item.id === message.id ? message : item),
+        },
+      }));
+    });
+
+    s.on("relationship:update", (relationships) => set({ relationships }));
+    s.on("notification:new", (notification) => {
+      set((state) => ({ notifications: [notification, ...state.notifications].slice(0, 100) }));
+      if (document.visibilityState === "visible" || get().members[get().selfId ?? ""]?.presence === "dnd") return;
+      const title = notification.kind === "friend_request" ? "Nova solicitação de amizade" : "Nova notificação";
+      const body = String(notification.metadata.username ?? "Draco");
+      if (isDesktopApp()) {
+        void showDesktopNotification({ title, body, conversationType: notification.conversationType, conversationId: notification.conversationId });
+        return;
+      }
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(title, { body });
+      }
+    });
+    s.on("sfu:health", (sfuHealth) => {
+      set({ sfuHealth, notice: sfuHealth.status === "UNAVAILABLE" ? "O servidor de mídia está indisponível. A chamada tentará se recuperar sem trocar o modo dos participantes." : null });
     });
 
     s.on("voice:peer-joined", ({ channelId, member }) => {
@@ -1050,6 +1174,12 @@ export const useStore = create<Store>()((set, get) => {
       set({ notice: "O canal de voz em que você estava foi apagado." });
     });
 
+    s.on("voice:moderated", ({ channelId }) => {
+      if (get().voiceChannelId !== channelId) return;
+      get().leaveVoice();
+      set({ notice: "Você foi removido da chamada durante uma restrição temporária." });
+    });
+
     s.on("guild:member-joined", ({ guildId, member }) => {
       set((state) => {
         const current = state.roster[guildId] ?? [];
@@ -1079,7 +1209,18 @@ export const useStore = create<Store>()((set, get) => {
       );
     });
 
-    s.on("role:changed", ({ guildId }) => {
+    s.on("channels:reordered", ({ guildId, channels }) => {
+      set((state) => ({
+        channels: [...state.channels.filter((channel) => channel.guildId !== guildId), ...channels]
+          .sort((left, right) => left.position - right.position),
+      }));
+    });
+
+    s.on("role:changed", ({ guildId, roles, memberRoles }) => {
+      set((state) => ({
+        roles: { ...state.roles, [guildId]: roles },
+        memberRoles: { ...state.memberRoles, [guildId]: memberRoles },
+      }));
       if (get().admin?.guildId === guildId) void get().openAdmin(guildId);
     });
 
@@ -1100,6 +1241,24 @@ export const useStore = create<Store>()((set, get) => {
           roster,
           admin: state.admin?.guildId === guildId ? null : state.admin,
           notice: `Você não faz mais parte de ${guild?.name ?? "um servidor"}.`,
+        };
+      });
+      ensureSelection();
+    });
+
+    s.on("guild:kicked", ({ guildId }) => {
+      const guild = get().guilds.find((item) => item.id === guildId);
+      const channelIds = new Set(get().channels.filter((channel) => channel.guildId === guildId).map((channel) => channel.id));
+      if (channelIds.has(get().voiceChannelId ?? "")) get().leaveVoice();
+      set((state) => {
+        const roster = { ...state.roster };
+        delete roster[guildId];
+        return {
+          guilds: state.guilds.filter((item) => item.id !== guildId),
+          channels: state.channels.filter((channel) => channel.guildId !== guildId),
+          roster,
+          admin: state.admin?.guildId === guildId ? null : state.admin,
+          notice: `Você foi removido de ${guild?.name ?? "um servidor"}.`,
         };
       });
       ensureSelection();
@@ -1157,9 +1316,17 @@ export const useStore = create<Store>()((set, get) => {
     roster: {},
     messages: {},
     permissions: {},
+    roles: {},
+    memberRoles: {},
     directThreads: [],
     directMessages: {},
+    relationships: EMPTY_RELATIONSHIPS,
+    unread: {},
+    notifications: [],
+    channelOverwrites: {},
+    sfuHealth: null,
     activeDirectId: "",
+    replyingTo: null,
     history: {},
     loadingHistory: null,
 
@@ -1283,7 +1450,13 @@ export const useStore = create<Store>()((set, get) => {
         permissions: {},
         directThreads: [],
         directMessages: {},
+        relationships: EMPTY_RELATIONSHIPS,
+        unread: {},
+        notifications: [],
+        channelOverwrites: {},
+        sfuHealth: null,
         activeDirectId: "",
+        replyingTo: null,
         activeGuildId: "",
         activeChannelId: "",
       });
@@ -1296,6 +1469,12 @@ export const useStore = create<Store>()((set, get) => {
 
     selectChannel(channelId) {
       set({ activeChannelId: channelId, activeDirectId: "", sidebarOpen: false });
+      const messages = get().messages[channelId] ?? [];
+      const latest = messages[messages.length - 1];
+      if (latest && socket) {
+        void markRead(socket, "channel", channelId, latest.sequence);
+        set((state) => ({ unread: { ...state.unread, [`channel:${channelId}`]: { unread: false, mentions: 0, lastReadSequence: state.unread[`channel:${channelId}`]?.lastReadSequence ?? 0 } } }));
+      }
     },
 
     setSidebarOpen(open) {
@@ -1306,11 +1485,13 @@ export const useStore = create<Store>()((set, get) => {
       set({ membersOpen: open });
     },
 
-    sendChat(content) {
+    async sendChat(content) {
       const channelId = get().activeChannelId;
       const trimmed = content.trim();
-      if (!trimmed || !channelId) return;
-      socket?.emit("chat:send", { channelId, content: trimmed });
+      if (!socket || !trimmed || !channelId) return null;
+      const response = await sendChannel(socket, channelId, trimmed, get().replyingTo?.id ?? null);
+      if (response.ok) set({ replyingTo: null });
+      return response.ok && response.message && "channelId" in response.message ? response.message : null;
     },
 
     async openDirect(userId) {
@@ -1332,18 +1513,73 @@ export const useStore = create<Store>()((set, get) => {
       const s = socket;
       if (!s) return;
       set({ activeDirectId: threadId, activeChannelId: "", sidebarOpen: false });
-      if (get().directMessages[threadId]) return;
-      const reply = await loadDirect(s, threadId);
-      if (reply.ok) {
-        set((state) => ({ directMessages: { ...state.directMessages, [threadId]: reply.messages ?? [] } }));
+      const cached = get().directMessages[threadId];
+      let loaded = cached;
+      if (!cached) {
+        const reply = await loadDirect(s, threadId);
+        if (reply.ok) {
+          loaded = reply.messages ?? [];
+          set((state) => ({ directMessages: { ...state.directMessages, [threadId]: loaded! } }));
+        }
+      }
+      const latest = (loaded ?? []).at(-1);
+      if (latest) {
+        void markRead(s, "direct", threadId, latest.sequence);
+        set((state) => ({ unread: { ...state.unread, [`direct:${threadId}`]: { unread: false, mentions: 0, lastReadSequence: latest.sequence } } }));
       }
     },
 
-    sendDirect(content) {
+    async sendDirect(content) {
       const threadId = get().activeDirectId;
       const trimmed = content.trim();
-      if (!socket || !threadId || !trimmed) return;
-      void sendDirect(socket, threadId, trimmed);
+      if (!socket || !threadId || !trimmed) return null;
+      const response = await sendDirect(socket, threadId, trimmed, get().replyingTo?.id ?? null);
+      if (response.ok) set({ replyingTo: null });
+      return response.ok && response.message && "threadId" in response.message ? response.message : null;
+    },
+
+    setReplyingTo(message) {
+      set({ replyingTo: message });
+    },
+
+    async editMessage(scope, messageId, content) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await mutateMessage(socket, scope, "edit", messageId, content);
+      return reply.ok ? null : describeSocketError(reply.error);
+    },
+
+    async deleteMessage(scope, messageId) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await mutateMessage(socket, scope, "delete", messageId);
+      return reply.ok ? null : describeSocketError(reply.error);
+    },
+
+    async reactMessage(scope, messageId, emoji) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await mutateMessage(socket, scope, "react", messageId, emoji);
+      return reply.ok ? null : describeSocketError(reply.error);
+    },
+
+    async requestFriend(username) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await requestFriend(socket, username.trim());
+      if (!reply.ok) return describeSocketError(reply.error);
+      if (reply.relationships) set({ relationships: reply.relationships });
+      return null;
+    },
+
+    async changeFriendship(action, userId) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await changeFriendship(socket, action, userId);
+      if (!reply.ok) return describeSocketError(reply.error);
+      if (reply.relationships) set({ relationships: reply.relationships });
+      return null;
+    },
+
+    async updatePresence(mode, status, expiresAt = null) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await updatePresenceRequest(socket, mode, status?.trim() || null, expiresAt);
+      return reply.ok ? null : describeSocketError(reply.error);
     },
 
     async loadOlderMessages(channelId) {
@@ -1821,6 +2057,8 @@ export const useStore = create<Store>()((set, get) => {
           roster: [],
           invites: [],
           bans: [],
+          timeouts: [],
+          auditLog: [],
           permissions: [],
           roles: [],
           memberRoles: {},
@@ -1847,6 +2085,8 @@ export const useStore = create<Store>()((set, get) => {
           roster: reply.roster ?? [],
           invites: reply.invites ?? [],
           bans: reply.bans ?? [],
+          timeouts: reply.timeouts ?? [],
+          auditLog: reply.auditLog ?? [],
           permissions: reply.permissions ?? [],
           roles: reply.roles ?? [],
           memberRoles: reply.memberRoles ?? {},
@@ -1950,6 +2190,61 @@ export const useStore = create<Store>()((set, get) => {
       });
     },
 
+    async kickMember(userId, reason) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await kickGuildMember(s, admin.guildId, userId, reason);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, roster: admin.roster.filter((entry) => entry.id !== userId) } });
+      return null;
+    },
+
+    async timeoutMember(userId, durationMs, reason) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await timeoutGuildMember(s, admin.guildId, userId, durationMs, reason);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, timeouts: reply.timeouts ?? admin.timeouts } });
+      return null;
+    },
+
+    async removeTimeout(userId) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s || !admin) return "Sem conexão com o servidor.";
+      const reply = await removeMemberTimeout(s, admin.guildId, userId);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set({ admin: { ...admin, timeouts: reply.timeouts ?? admin.timeouts } });
+      return null;
+    },
+
+    async loadChannelPermissions(channelId) {
+      if (!socket) return;
+      const reply = await loadChannelPermissionsRequest(socket, channelId);
+      if (reply.ok) set((state) => ({ channelOverwrites: { ...state.channelOverwrites, [channelId]: reply.overwrites ?? [] } }));
+    },
+
+    async saveChannelPermissions(channelId, targetType, targetId, allow, deny) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await saveChannelPermissionsRequest(socket, channelId, targetType, targetId, allow, deny);
+      if (!reply.ok) return describeSocketError(reply.error);
+      set((state) => ({ channelOverwrites: { ...state.channelOverwrites, [channelId]: reply.overwrites ?? [] } }));
+      return null;
+    },
+    async reorderChannels(guildId, orderedIds) {
+      const s = socket;
+      if (!s) return "Sem conexão.";
+      const reply = await reorderGuildChannels(s, guildId, orderedIds);
+      if (!reply.ok || !reply.channels) return describeSocketError(reply.error);
+      set((state) => ({
+        channels: [...state.channels.filter((channel) => channel.guildId !== guildId), ...reply.channels!]
+          .sort((left, right) => left.position - right.position),
+      }));
+      return null;
+    },
+
     async createRole(name, color, permissions) {
       const s = socket;
       const admin = get().admin;
@@ -1994,6 +2289,18 @@ export const useStore = create<Store>()((set, get) => {
       const reply = await assignGuildRole(s, admin.guildId, userId, roleId, assigned);
       if (!reply.ok) return describeSocketError(reply.error);
       set({ admin: { ...admin, memberRoles: reply.memberRoles ?? admin.memberRoles, error: null } });
+      return null;
+    },
+    async reorderRoles(orderedIds) {
+      const admin = get().admin;
+      const s = socket;
+      if (!admin || !s) return "Sem conexão.";
+      const reply = await reorderGuildRoles(s, admin.guildId, orderedIds);
+      if (!reply.ok || !reply.roles) return describeSocketError(reply.error);
+      set((state) => ({
+        roles: { ...state.roles, [admin.guildId]: reply.roles! },
+        admin: state.admin ? { ...state.admin, roles: reply.roles!, error: null } : null,
+      }));
       return null;
     },
   };

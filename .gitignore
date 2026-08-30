@@ -3,9 +3,12 @@ dist/
 desktop/out/
 # Barra na frente: sem ela isto casaria com `server/data/`, que é código.
 /data/
+/backups/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite.before-restore-*
+*.sqlite.restore-*.partial
 .env
 .env.*
 !.env.example
@@ -18,6 +21,7 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+.claude/
 
 # Anotações locais, fora do repositório
 NOVO DISCORD.MD

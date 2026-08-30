@@ -3,6 +3,7 @@ import { HashIcon, MenuIcon, SendIcon } from "@/components/Icons";
 import { MembersToggle } from "@/components/MembersToggle";
 import { MessageGroup, groupMessages } from "@/components/MessageGroup";
 import { useStore } from "@/state/store";
+import { ATTACHMENT_ACCEPT, uploadAttachments, validateAttachments } from "@/attachments";
 
 /** Distância do fim em que ainda se considera que a pessoa está acompanhando. */
 const PINNED_SLACK_PX = 80;
@@ -22,10 +23,17 @@ export function ChatView({ channelId }: { channelId: string }) {
   const loadOlderMessages = useStore((state) => state.loadOlderMessages);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
   const guest = useStore((state) => state.account?.guest === true);
+  const replyingTo = useStore((state) => state.replyingTo);
+  const setReplyingTo = useStore((state) => state.setReplyingTo);
+  const lastReadSequence = useStore((state) => state.unread[`channel:${channelId}`]?.lastReadSequence ?? 0);
 
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   /** Quem subiu pra ler algo antigo não deve ser arrastado pra baixo. */
   const pinned = useRef(true);
   /**
@@ -37,6 +45,8 @@ export function ChatView({ channelId }: { channelId: string }) {
 
   const channel = channels.find((item) => item.id === channelId);
   const groups = useMemo(() => groupMessages(messages ?? []), [messages]);
+  const firstUnreadGroup = useMemo(() => groups.findIndex((group) =>
+    group.messages.some((message) => message.sequence > lastReadSequence)), [groups, lastReadSequence]);
 
   const requestOlder = () => {
     const element = scroller.current;
@@ -85,17 +95,42 @@ export function ChatView({ channelId }: { channelId: string }) {
     requestOlder();
   }
 
-  function submit() {
-    if (!draft.trim()) return;
-    sendChat(draft);
+  async function submit() {
+    if (sending || (!draft.trim() && files.length === 0)) return;
+    setSending(true);
+    setUploadStatus(null);
+    const content = draft.trim() || (files.length === 1 ? `Anexo: ${files[0].name}` : `${files.length} anexos`);
+    const message = await sendChat(content);
+    if (!message) {
+      setUploadStatus("Não foi possível enviar a mensagem.");
+      setSending(false);
+      return;
+    }
     setDraft("");
     pinned.current = true;
+    const selected = files;
+    setFiles([]);
+    if (fileInput.current) fileInput.current.value = "";
+    try {
+      if (selected.length) await uploadAttachments("channel", message, selected, (done, total) => setUploadStatus(`Enviando anexos: ${done}/${total}`));
+      setUploadStatus(null);
+    } catch (error) {
+      setUploadStatus(error instanceof Error ? error.message : "Não foi possível enviar os anexos.");
+    } finally {
+      setSending(false);
+    }
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
-    submit();
+    void submit();
+  }
+
+  function chooseFiles(next: File[]) {
+    const error = validateAttachments(next);
+    setUploadStatus(error);
+    if (!error) setFiles(next);
   }
 
   return (
@@ -129,27 +164,34 @@ export function ChatView({ channelId }: { channelId: string }) {
           </div>
         )}
 
-        {groups.map((group) => (
-          <MessageGroup key={group.key} group={group} />
-        ))}
+        {groups.map((group, index) => {
+          return <div key={group.key}>{index === firstUnreadGroup && lastReadSequence > 0 && <div className="new-messages-line"><span>Novas mensagens</span></div>}<MessageGroup group={group} /></div>;
+        })}
       </div>
 
       <div className="composer" data-readonly={guest}>
+        {replyingTo && <div className="composer-reply"><span>Respondendo a <strong>@{replyingTo.username}</strong></span><button type="button" onClick={() => setReplyingTo(null)}>×</button></div>}
+        {files.length > 0 && <div className="composer-files">{files.map((file) => <span key={`${file.name}:${file.size}`}>{file.name}</span>)}</div>}
+        {uploadStatus && <p className="composer-status" role="status">{uploadStatus}</p>}
+        <label className="composer-attach" title="Adicionar imagens ou PDF" aria-label="Adicionar anexos">
+          <span aria-hidden="true">＋</span>
+          <input ref={fileInput} type="file" accept={ATTACHMENT_ACCEPT} multiple disabled={guest || sending} onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
+        </label>
         <textarea
           ref={composer}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder={guest ? "Visitantes podem ler, mas não enviar mensagens" : `Conversar em #${channel?.name ?? "canal"}`}
-          disabled={guest}
+          disabled={guest || sending}
           rows={1}
           maxLength={2000}
         />
         <button
           type="button"
           className="composer-send"
-          onClick={submit}
-          disabled={guest || !draft.trim()}
+          onClick={() => void submit()}
+          disabled={guest || sending || (!draft.trim() && files.length === 0)}
           title="Enviar"
         >
           <SendIcon size={18} />

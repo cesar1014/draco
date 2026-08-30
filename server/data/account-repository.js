@@ -188,19 +188,48 @@ export class AccountRepository {
         SELECT user_id FROM direct_participants WHERE thread_id = ? ORDER BY user_id
       `),
       listDirectMessages: database.prepare(`
-        SELECT dm.id, dm.thread_id, dm.author_id, dm.content, dm.created_at,
+        SELECT dm.sequence, dm.id, dm.thread_id, dm.author_id, dm.content, dm.created_at,
+               dm.edited_at, dm.deleted_at, dm.reply_to_id,
                a.username, p.color
         FROM direct_messages dm
         JOIN accounts a ON a.user_id = dm.author_id
         JOIN profiles p ON p.user_id = dm.author_id
-        WHERE dm.thread_id = ? AND dm.deleted_at IS NULL
+        WHERE dm.thread_id = ?
         ORDER BY dm.sequence DESC LIMIT ?
       `),
       insertDirectMessage: database.prepare(`
-        INSERT INTO direct_messages (id, thread_id, author_id, content, created_at)
-        VALUES (@id, @threadId, @authorId, @content, @now)
+        INSERT INTO direct_messages (id, thread_id, author_id, content, reply_to_id, created_at)
+        VALUES (@id, @threadId, @authorId, @content, @replyToId, @now)
       `),
       touchThread: database.prepare("UPDATE direct_threads SET updated_at = ? WHERE id = ?"),
+      insertSession: database.prepare(`
+        INSERT INTO account_sessions (
+          id, user_id, token_hash, client_type, device_name,
+          created_at, last_seen_at, expires_at
+        ) VALUES (@id, @userId, @tokenHash, @clientType, @deviceName, @now, @now, @expiresAt)
+      `),
+      activeSession: database.prepare(`
+        SELECT id, user_id, client_type, device_name, created_at, last_seen_at, expires_at
+        FROM account_sessions
+        WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?
+      `),
+      touchSession: database.prepare(`
+        UPDATE account_sessions SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL
+      `),
+      listSessions: database.prepare(`
+        SELECT id, client_type, device_name, created_at, last_seen_at, expires_at
+        FROM account_sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+        ORDER BY last_seen_at DESC
+      `),
+      revokeSession: database.prepare(`
+        UPDATE account_sessions SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+      `),
+      revokeAllSessions: database.prepare(`
+        UPDATE account_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
+      `),
+      bumpSessionVersion: database.prepare(`
+        UPDATE accounts SET session_version = session_version + 1, updated_at = ? WHERE user_id = ?
+      `),
     };
 
     this.createAccountTransaction = database.transaction((account) => {
@@ -381,27 +410,34 @@ export class AccountRepository {
 
   listDirectMessages(threadId, limit = 50) {
     return this.statements.listDirectMessages.all(threadId, limit).reverse().map((row) => ({
+      sequence: row.sequence,
       id: row.id,
       threadId: row.thread_id,
       authorId: row.author_id,
       username: row.username,
       color: row.color,
-      content: row.content,
+      content: row.deleted_at ? "" : row.content,
       at: row.created_at,
+      editedAt: row.edited_at ?? null,
+      deletedAt: row.deleted_at ?? null,
+      replyToId: row.reply_to_id ?? null,
     }));
   }
 
-  addDirectMessage(threadId, authorId, content) {
+  addDirectMessage(threadId, authorId, content, replyToId = null) {
     const message = {
       id: randomUUID(),
       threadId,
       authorId,
       content,
+      replyToId,
       now: Date.now(),
     };
     this.addDirectMessageTransaction(message);
+    const sequence = this.database.prepare("SELECT sequence FROM direct_messages WHERE id = ?").get(message.id).sequence;
     const account = this.accountById(authorId);
     return {
+      sequence,
       id: message.id,
       threadId,
       authorId,
@@ -409,7 +445,45 @@ export class AccountRepository {
       color: this.database.prepare("SELECT color FROM profiles WHERE user_id = ?").get(authorId).color,
       content,
       at: message.now,
+      editedAt: null,
+      deletedAt: null,
+      replyToId,
     };
+  }
+
+  createSession(session) {
+    this.statements.insertSession.run({ ...session, now: Date.now() });
+  }
+
+  activeSession(id, userId) {
+    const row = this.statements.activeSession.get(id, userId, Date.now());
+    if (!row) return null;
+    if (Date.now() - row.last_seen_at > 60_000) this.statements.touchSession.run(Date.now(), id);
+    return row;
+  }
+
+  listSessions(userId) {
+    return this.statements.listSessions.all(userId, Date.now()).map((row) => ({
+      id: row.id,
+      clientType: row.client_type,
+      deviceName: row.device_name,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      expiresAt: row.expires_at,
+    }));
+  }
+
+  revokeSession(userId, sessionId) {
+    return this.statements.revokeSession.run(Date.now(), sessionId, userId).changes > 0;
+  }
+
+  revokeAllSessions(userId) {
+    const now = Date.now();
+    this.database.transaction(() => {
+      this.statements.revokeAllSessions.run(now, userId);
+      this.statements.bumpSessionVersion.run(now, userId);
+    })();
+    return this.accountById(userId);
   }
 
   close() {

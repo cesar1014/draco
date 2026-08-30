@@ -16,6 +16,13 @@ import type {
   IceConfigResponse,
   ServerSnapshot,
   SignalPayload,
+  Relationships,
+  PresenceMode,
+  DracoNotification,
+  TimeoutEntry,
+  AuditEntry,
+  ChannelOverwrite,
+  SfuHealth,
 } from "@/types";
 
 /**
@@ -29,18 +36,30 @@ interface ServerEvents {
   "member:state": (member: Member) => void;
   "member:left": (payload: { id: string }) => void;
   "chat:message": (message: Message) => void;
+  "chat:updated": (message: Message) => void;
   "voice:peer-joined": (payload: { channelId: string; member: Member }) => void;
   "voice:peer-left": (payload: { channelId: string; memberId: string }) => void;
   "voice:channel-closed": (payload: { channelId: string }) => void;
+  "voice:moderated": (payload: { channelId: string }) => void;
   "rtc:signal": (payload: SignalPayload & { from: string }) => void;
   "channel:created": (payload: { channel: Channel }) => void;
   "channel:deleted": (payload: { guildId: string; channelId: string }) => void;
+  "channels:reordered": (payload: { guildId: string; channels: Channel[] }) => void;
   "guild:member-joined": (payload: { guildId: string; member: RosterEntry }) => void;
   "guild:member-left": (payload: { guildId: string; userId: string }) => void;
   "guild:banned": (payload: { guildId: string }) => void;
-  "role:changed": (payload: { guildId: string }) => void;
+  "guild:kicked": (payload: { guildId: string }) => void;
+  "role:changed": (payload: {
+    guildId: string;
+    roles: Role[];
+    memberRoles: Record<string, string[]>;
+  }) => void;
   "direct:thread": (thread: DirectThread) => void;
   "direct:message": (message: DirectMessage) => void;
+  "direct:updated": (message: DirectMessage) => void;
+  "relationship:update": (relationships: Relationships) => void;
+  "notification:new": (notification: DracoNotification) => void;
+  "sfu:health": (health: SfuHealth) => void;
 }
 
 export interface VoiceFlags {
@@ -75,6 +94,7 @@ export interface VoiceJoinReply {
   channelId?: string;
   peers?: Member[];
   sfu?: boolean;
+  sfuHealth?: SfuHealth;
 }
 
 export interface ChatHistoryReply {
@@ -112,6 +132,7 @@ export interface GuildReply extends Ack {
 
 export interface ChannelReply extends Ack {
   channel?: Channel;
+  channels?: Channel[];
 }
 
 export interface InviteReply extends Ack {
@@ -133,6 +154,8 @@ export interface AdminReply extends Ack {
   roles?: Role[];
   memberRoles?: Record<string, string[]>;
   availablePermissions?: GuildPermission[];
+  timeouts?: TimeoutEntry[];
+  auditLog?: AuditEntry[];
 }
 
 export interface RoleReply extends Ack {
@@ -141,10 +164,32 @@ export interface RoleReply extends Ack {
   memberRoles?: Record<string, string[]>;
 }
 
+export interface ModerationReply extends Ack {
+  expiresAt?: number;
+  timeouts?: TimeoutEntry[];
+}
+
+export interface OverwriteReply extends Ack {
+  overwrites?: ChannelOverwrite[];
+}
+
 export interface DirectReply extends Ack {
   thread?: DirectThread;
   messages?: DirectMessage[];
   message?: DirectMessage;
+}
+
+export interface MessageReply extends Ack {
+  message?: Message | DirectMessage;
+}
+
+export interface RelationshipReply extends Ack {
+  relationships?: Relationships;
+  profile?: {
+    presenceMode: PresenceMode;
+    customStatus: string | null;
+    statusExpiresAt: number | null;
+  };
 }
 
 interface SfuPublishReply extends SfuReply {
@@ -165,7 +210,10 @@ interface ClientEvents {
     payload: { refresh: boolean },
     ack: (reply: { ok: boolean; error?: string; config?: IceConfigResponse }) => void,
   ) => void;
-  "chat:send": (payload: { channelId: string; content: string }) => void;
+  "chat:send": (payload: { channelId: string; content: string; replyToId?: string | null }, ack: (reply: MessageReply) => void) => void;
+  "chat:edit": (payload: { messageId: string; content: string }, ack: (reply: MessageReply) => void) => void;
+  "chat:delete": (payload: { messageId: string }, ack: (reply: MessageReply) => void) => void;
+  "chat:react": (payload: { messageId: string; emoji: string }, ack: (reply: MessageReply) => void) => void;
   "chat:history": (
     payload: { channelId: string; beforeId: string },
     ack: (reply: ChatHistoryReply) => void,
@@ -200,6 +248,7 @@ interface ClientEvents {
     ack: (reply: ChannelReply) => void,
   ) => void;
   "channel:delete": (payload: { channelId: string }, ack: (reply: Ack) => void) => void;
+  "channel:reorder": (payload: { guildId: string; orderedIds: string[] }, ack: (reply: ChannelReply) => void) => void;
   "invite:create": (
     payload: { guildId: string; maxUses?: number | null; expiresInHours?: number | null },
     ack: (reply: InviteReply) => void,
@@ -218,6 +267,10 @@ interface ClientEvents {
     payload: { guildId: string; userId: string },
     ack: (reply: BanReply) => void,
   ) => void;
+  "member:kick": (payload: { guildId: string; userId: string; reason?: string }, ack: (reply: Ack) => void) => void;
+  "member:timeout": (payload: { guildId: string; userId: string; durationMs: number; reason?: string }, ack: (reply: ModerationReply) => void) => void;
+  "member:timeout-remove": (payload: { guildId: string; userId: string }, ack: (reply: ModerationReply) => void) => void;
+  "channel:permissions": (payload: { channelId: string; operation: "list" | "set"; targetType?: "role" | "member"; targetId?: string; allow?: GuildPermission[]; deny?: GuildPermission[] }, ack: (reply: OverwriteReply) => void) => void;
   "role:create": (
     payload: { guildId: string; name: string; color?: string | null; permissions: GuildPermission[] },
     ack: (reply: RoleReply) => void,
@@ -231,9 +284,29 @@ interface ClientEvents {
     payload: { guildId: string; userId: string; roleId: string; assigned: boolean },
     ack: (reply: RoleReply) => void,
   ) => void;
+  "role:reorder": (payload: { guildId: string; orderedIds: string[] }, ack: (reply: RoleReply) => void) => void;
   "direct:open": (payload: { userId: string }, ack: (reply: DirectReply) => void) => void;
   "direct:history": (payload: { threadId: string }, ack: (reply: DirectReply) => void) => void;
-  "direct:send": (payload: { threadId: string; content: string }, ack: (reply: DirectReply) => void) => void;
+  "direct:send": (payload: { threadId: string; content: string; replyToId?: string | null }, ack: (reply: DirectReply) => void) => void;
+  "direct:edit": (payload: { messageId: string; content: string }, ack: (reply: MessageReply) => void) => void;
+  "direct:delete": (payload: { messageId: string }, ack: (reply: MessageReply) => void) => void;
+  "direct:react": (payload: { messageId: string; emoji: string }, ack: (reply: MessageReply) => void) => void;
+  "friend:request": (payload: { username: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:accept": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:reject": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:cancel": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:remove": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:block": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:unblock": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "presence:update": (
+    payload: { mode: PresenceMode; status: string | null; expiresAt: number | null },
+    ack: (reply: RelationshipReply) => void,
+  ) => void;
+  "notification:read": (payload: { id: string }, ack: (reply: Ack) => void) => void;
+  "read:mark": (
+    payload: { type: "channel" | "direct"; id: string; sequence: number },
+    ack: (reply: Ack) => void,
+  ) => void;
 }
 
 export type AppSocket = Socket<ServerEvents, ClientEvents>;
@@ -352,6 +425,9 @@ export const createChannel = (
 export const deleteChannel = (socket: AppSocket, channelId: string) =>
   ask<Ack>((resolve) => socket.emit("channel:delete", { channelId }, resolve));
 
+export const reorderChannels = (socket: AppSocket, guildId: string, orderedIds: string[]) =>
+  ask<ChannelReply>((resolve) => socket.emit("channel:reorder", { guildId, orderedIds }, resolve));
+
 export const createInvite = (
   socket: AppSocket,
   guildId: string,
@@ -369,6 +445,27 @@ export const banMember = (socket: AppSocket, guildId: string, userId: string, re
 
 export const unbanMember = (socket: AppSocket, guildId: string, userId: string) =>
   ask<BanReply>((resolve) => socket.emit("member:unban", { guildId, userId }, resolve));
+
+export const kickMember = (socket: AppSocket, guildId: string, userId: string, reason?: string) =>
+  ask<Ack>((resolve) => socket.emit("member:kick", { guildId, userId, reason }, resolve));
+
+export const timeoutMember = (socket: AppSocket, guildId: string, userId: string, durationMs: number, reason?: string) =>
+  ask<ModerationReply>((resolve) => socket.emit("member:timeout", { guildId, userId, durationMs, reason }, resolve));
+
+export const removeMemberTimeout = (socket: AppSocket, guildId: string, userId: string) =>
+  ask<ModerationReply>((resolve) => socket.emit("member:timeout-remove", { guildId, userId }, resolve));
+
+export const loadChannelPermissions = (socket: AppSocket, channelId: string) =>
+  ask<OverwriteReply>((resolve) => socket.emit("channel:permissions", { channelId, operation: "list" }, resolve));
+
+export const saveChannelPermissions = (
+  socket: AppSocket,
+  channelId: string,
+  targetType: "role" | "member",
+  targetId: string,
+  allow: GuildPermission[],
+  deny: GuildPermission[],
+) => ask<OverwriteReply>((resolve) => socket.emit("channel:permissions", { channelId, operation: "set", targetType, targetId, allow, deny }, resolve));
 
 export const createRole = (
   socket: AppSocket,
@@ -398,14 +495,51 @@ export const assignRole = (
   assigned: boolean,
 ) => ask<RoleReply>((resolve) => socket.emit("role:assign", { guildId, userId, roleId, assigned }, resolve));
 
+export const reorderRoles = (socket: AppSocket, guildId: string, orderedIds: string[]) =>
+  ask<RoleReply>((resolve) => socket.emit("role:reorder", { guildId, orderedIds }, resolve));
+
 export const openDirect = (socket: AppSocket, userId: string) =>
   ask<DirectReply>((resolve) => socket.emit("direct:open", { userId }, resolve));
 
 export const loadDirect = (socket: AppSocket, threadId: string) =>
   ask<DirectReply>((resolve) => socket.emit("direct:history", { threadId }, resolve));
 
-export const sendDirect = (socket: AppSocket, threadId: string, content: string) =>
-  ask<DirectReply>((resolve) => socket.emit("direct:send", { threadId, content }, resolve));
+export const sendChannel = (socket: AppSocket, channelId: string, content: string, replyToId?: string | null) =>
+  ask<MessageReply>((resolve) => socket.emit("chat:send", { channelId, content, replyToId }, resolve));
+
+export const sendDirect = (socket: AppSocket, threadId: string, content: string, replyToId?: string | null) =>
+  ask<DirectReply>((resolve) => socket.emit("direct:send", { threadId, content, replyToId }, resolve));
+
+export const mutateMessage = (
+  socket: AppSocket,
+  scope: "chat" | "direct",
+  action: "edit" | "delete" | "react",
+  messageId: string,
+  value?: string,
+) => ask<MessageReply>((resolve) => {
+  if (action === "edit") socket.emit(`${scope}:edit`, { messageId, content: value ?? "" }, resolve);
+  else if (action === "react") socket.emit(`${scope}:react`, { messageId, emoji: value ?? "" }, resolve);
+  else socket.emit(`${scope}:delete`, { messageId }, resolve);
+});
+
+export const requestFriend = (socket: AppSocket, username: string) =>
+  ask<RelationshipReply>((resolve) => socket.emit("friend:request", { username }, resolve));
+
+export const changeFriendship = (
+  socket: AppSocket,
+  action: "accept" | "reject" | "cancel" | "remove" | "block" | "unblock",
+  userId: string,
+) => ask<RelationshipReply>((resolve) => socket.emit(`friend:${action}`, { userId }, resolve));
+
+export const updatePresence = (
+  socket: AppSocket,
+  mode: PresenceMode,
+  status: string | null,
+  expiresAt: number | null,
+) => ask<RelationshipReply>((resolve) => socket.emit("presence:update", { mode, status, expiresAt }, resolve));
+
+export const markRead = (socket: AppSocket, type: "channel" | "direct", id: string, sequence: number) =>
+  ask<Ack>((resolve) => socket.emit("read:mark", { type, id, sequence }, resolve));
 
 /** Códigos do servidor traduzidos pra algo que a pessoa na tela entenda. */
 export function describeSocketError(code: string | undefined): string {

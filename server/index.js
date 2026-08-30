@@ -16,7 +16,11 @@ import { createMailer } from "./mail.js";
 import { resolveIceConfig } from "./ice.js";
 import { RateLimiter } from "./security.js";
 import { attachSignaling } from "./signaling.js";
-import { colorForName, readSetting, writeSetting } from "./state.js";
+import { closeState, colorForName, listMembers, readSetting, writeSetting } from "./state.js";
+import { Telemetry } from "./telemetry.js";
+import { ObjectStorage } from "./object-storage.js";
+import { AttachmentRepository } from "./data/attachment-repository.js";
+import { CommunicationRepository } from "./data/communication-repository.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = join(here, "..", "dist");
@@ -55,6 +59,8 @@ const allowedOrigins = (process.env.ORIGIN ?? "")
  */
 const originIsOpen = allowedOrigins.length === 0;
 const externallySecure = useHttps || (!isDev && allowedOrigins.some((origin) => origin.startsWith("https://")));
+const objectStorage = new ObjectStorage(process.env);
+const objectStorageOrigin = objectStorage.ready ? new URL(objectStorage.publicBase).origin : null;
 
 /**
  * Um pedido sem `Origin` não é um navegador de outro site: é o próprio app de
@@ -131,7 +137,7 @@ app.use(
         "form-action": ["'self'"],
         "script-src": ["'self'"],
         "style-src": ["'self'", "'unsafe-inline'"],
-        "img-src": ["'self'", "data:", "blob:"],
+        "img-src": ["'self'", "data:", "blob:", ...(objectStorageOrigin ? [objectStorageOrigin] : [])],
         "media-src": ["'self'", "blob:", "mediastream:"],
         "font-src": ["'self'", "data:"],
         "worker-src": ["'self'", "blob:"],
@@ -199,6 +205,9 @@ const { auth, source: secretSource } = createSessionAuthority({ readSetting, wri
 const mailer = createMailer(process.env);
 const accountService = createAccountService({ auth, mailer, colorForName, env: process.env });
 const accountLimiter = new RateLimiter();
+const telemetry = new Telemetry();
+const attachments = new AttachmentRepository(accountService.repository.database);
+const communication = new CommunicationRepository(accountService.repository.database);
 
 function bearer(req) {
   const value = req.headers.authorization;
@@ -235,7 +244,7 @@ app.get("/api/config", (_req, res) => {
 });
 
 app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body, req.ip)));
-app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body, req.ip)));
+app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body, req.ip, req.headers)));
 app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token, req.ip)));
 app.post(
   "/api/auth/login-address/confirm",
@@ -244,6 +253,56 @@ app.post(
     perSec: 0.1,
   }),
 );
+app.get("/api/admin/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const authenticated = accountService.session(bearer(req), req.ip);
+  if (!authenticated?.account?.isSystemAdmin) return res.status(403).json({ ok: false, error: "forbidden" });
+  return res.json({ ok: true, metrics: telemetry.snapshot(io, accountService.repository.database, listMembers().filter((member) => !member.guest).length) });
+});
+app.post("/api/attachments/presign", accountRoute((req) => {
+  const authenticated = accountService.session(bearer(req), req.ip);
+  if (!authenticated) return { ok: false, error: "not-authenticated" };
+  if (!objectStorage.ready) return { ok: false, error: "storage-unavailable" };
+  const scope = req.body?.scope;
+  const messageId = req.body?.messageId;
+  if (!["channel", "direct"].includes(scope) || typeof messageId !== "string" || messageId.length > 64) return { ok: false, error: "bad-request" };
+  const valid = objectStorage.validate(req.body?.filename, req.body?.mime, req.body?.size);
+  if (!valid.ok) return valid;
+  const storageKey = objectStorage.createKey(authenticated.userId, valid.filename);
+  const attachment = attachments.create({
+    scope, messageId, ownerId: authenticated.userId,
+    filename: valid.filename, mime: valid.mime, size: valid.size,
+    storageKey, publicUrl: objectStorage.publicUrl(storageKey),
+  });
+  if (!attachment) return { ok: false, error: "not-author" };
+  return {
+    ok: true,
+    attachmentId: attachment.id,
+    uploadUrl: objectStorage.presign("PUT", storageKey),
+    headers: { "Content-Type": valid.mime },
+  };
+}, { burst: 8, perSec: 0.3 }));
+
+app.post("/api/attachments/complete", accountRoute(async (req) => {
+  const authenticated = accountService.session(bearer(req), req.ip);
+  if (!authenticated) return { ok: false, error: "not-authenticated" };
+  const pending = attachments.pending(req.body?.attachmentId, authenticated.userId);
+  if (!pending || pending.uploaded_at) return { ok: false, error: "no-attachment" };
+  const verified = await objectStorage.verify(pending.storage_key, pending.mime_type, pending.byte_size);
+  if (!verified) {
+    attachments.removePending(pending.id, authenticated.userId);
+    return { ok: false, error: "attachment-invalid" };
+  }
+  attachments.complete(pending.id, authenticated.userId);
+  if (pending.message_id) {
+    const message = communication.channelMessage(pending.message_id);
+    if (message) io.to(`channel:${message.channelId}`).emit("chat:updated", message);
+  } else if (pending.direct_message_id) {
+    const message = communication.directMessage(pending.direct_message_id);
+    if (message) io.to(`direct:${message.threadId}`).emit("direct:updated", message);
+  }
+  return { ok: true };
+}, { burst: 12, perSec: 0.5 }));
 app.post(
   "/api/auth/password/request",
   accountRoute((req) => accountService.requestPassword(req.body?.email), { burst: 4, perSec: 0.03 }),
@@ -254,7 +313,19 @@ app.post(
 );
 app.post(
   "/api/auth/password/complete",
-  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password, req.ip)),
+  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password, req.ip, req.headers)),
+);
+app.get(
+  "/api/auth/sessions",
+  accountRoute((req) => accountService.listSessions(bearer(req), req.ip), { burst: 20, perSec: 1 }),
+);
+app.delete(
+  "/api/auth/sessions/:sessionId",
+  accountRoute((req) => accountService.revokeSession(bearer(req), req.ip, req.params.sessionId), { burst: 10, perSec: 0.5 }),
+);
+app.post(
+  "/api/auth/sessions/revoke-all",
+  accountRoute((req) => accountService.revokeAllSessions(bearer(req), req.ip), { burst: 3, perSec: 0.05 }),
 );
 
 /**
@@ -310,7 +381,7 @@ const io = new SocketServer(server, {
 });
 
 const adminBootstrap = await accountService.bootstrapSystemAdmin();
-attachSignaling(io, process.env, { auth, accountService });
+attachSignaling(io, process.env, { auth, accountService, telemetry });
 
 server.listen(port, host, async () => {
   const scheme = credentials ? "https" : "http";
@@ -340,3 +411,34 @@ server.listen(port, host, async () => {
   }
   console.log("");
 });
+
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info("encerramento iniciado", { sinal: signal });
+
+  const forceExit = setTimeout(() => {
+    log.error("encerramento excedeu o limite", { sinal: signal });
+    process.exit(1);
+  }, 15_000);
+  forceExit.unref();
+
+  try {
+    await new Promise((resolve) => io.close(resolve));
+    accountService.close();
+    telemetry.close();
+    closeState();
+    clearTimeout(forceExit);
+    log.info("encerramento concluído", { sinal: signal });
+    process.exitCode = 0;
+  } catch (error) {
+    clearTimeout(forceExit);
+    log.error("falha ao encerrar", { sinal: signal, motivo: reason(error) });
+    process.exitCode = 1;
+  }
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

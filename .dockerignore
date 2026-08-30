@@ -1,7 +1,9 @@
 node_modules
 dist
+backups
 desktop
 .git
+.claude
 .env
 server/certs
 brand

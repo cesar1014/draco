@@ -132,6 +132,12 @@ try {
   assert.equal(loginFromB.ok, true);
   assert.equal(service.session(loginFromB.token, IP_B)?.account.username, "Ana");
   assert.equal(service.session(loginFromB.token, IP_C), null);
+  const connected = service.listSessions(login.token, IP_A);
+  assert.equal(connected.ok, true);
+  assert.equal(connected.sessions.length >= 2, true, "lista dispositivos conectados sem fingerprint invasivo");
+  const otherSession = connected.sessions.find((session) => session.id !== connected.currentSessionId);
+  assert.equal(service.revokeSession(login.token, IP_A, otherSession.id).ok, true);
+  assert.equal(service.session(loginFromB.token, IP_B), null, "encerrar um dispositivo revoga só aquela sessão");
   assert.equal(
     repository.database
       .prepare("SELECT address_hash FROM account_trusted_addresses WHERE user_id = ? LIMIT 1")

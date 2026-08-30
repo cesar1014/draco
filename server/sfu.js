@@ -56,3 +56,45 @@ export const newTracks = (config, sessionId, body) =>
 
 export const renegotiate = (config, sessionId, sessionDescription) =>
   call(config, "PUT", `/sessions/${sessionId}/renegotiate`, { sessionDescription });
+
+export function createSfuHealth(config, { intervalMs = 60_000 } = {}) {
+  let status = config ? "DEGRADED" : "UNAVAILABLE";
+  let failures = 0;
+  let checkedAt = null;
+  let detail = config ? "aguardando verificação" : "credenciais ausentes";
+  let running = null;
+
+  const markSuccess = () => {
+    status = "AVAILABLE";
+    failures = 0;
+    checkedAt = Date.now();
+    detail = "API respondeu";
+  };
+  const markFailure = (error) => {
+    failures += 1;
+    checkedAt = Date.now();
+    status = failures >= 3 ? "UNAVAILABLE" : "DEGRADED";
+    detail = error instanceof Error ? error.message.slice(0, 160) : "falha desconhecida";
+  };
+  const probe = () => {
+    if (!config || running) return running;
+    running = createSession(config)
+      .then(() => markSuccess())
+      .catch((error) => markFailure(error))
+      .finally(() => { running = null; });
+    return running;
+  };
+  const timer = config ? setInterval(() => void probe(), intervalMs) : null;
+  timer?.unref?.();
+  if (config) void probe();
+
+  return {
+    snapshot: () => ({ status, checkedAt, detail }),
+    available: () => status === "AVAILABLE",
+    configured: () => Boolean(config),
+    markSuccess,
+    markFailure,
+    probe,
+    close: () => timer && clearInterval(timer),
+  };
+}

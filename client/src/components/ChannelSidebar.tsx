@@ -1,14 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChannelCreateModal } from "@/components/GuildAdmin";
 import { BrandMark, CloseIcon, GearIcon, HashIcon, PlusIcon, SpeakerIcon, TrashIcon } from "@/components/Icons";
 import { UserPanel } from "@/components/UserPanel";
 import { VoiceChannelMembers } from "@/components/VoiceChannelMembers";
 import { VoiceStrip } from "@/components/VoiceStrip";
+import { Popover } from "@/components/Popover";
+import { useDismiss } from "@/hooks/useDismiss";
 import { useStore } from "@/state/store";
 import type { Channel, GuildPermission } from "@/types";
 
 /** Referência estável: um `[]` criado dentro do seletor força renderizações sem fim. */
 const NO_PERMISSIONS: GuildPermission[] = [];
+const COLLAPSED_KEY = "draco:collapsed-categories";
 
 export function ChannelSidebar() {
   const guilds = useStore((state) => state.guilds);
@@ -23,13 +26,29 @@ export function ChannelSidebar() {
   const openAdmin = useStore((state) => state.openAdmin);
   const deleteChannel = useStore((state) => state.deleteChannel);
   const directThreads = useStore((state) => state.directThreads);
+  const members = useStore((state) => state.members);
   const activeDirectId = useStore((state) => state.activeDirectId);
   const selectDirect = useStore((state) => state.selectDirect);
   const openDirect = useStore((state) => state.openDirect);
   const permissions = useStore((state) => state.permissions[activeGuildId] ?? NO_PERMISSIONS);
   const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
+  const unread = useStore((state) => state.unread);
 
   const [creating, setCreating] = useState(false);
+  const [context, setContext] = useState<{ anchor: HTMLElement; channel: Channel } | null>(null);
+  const contextMenu = useRef<HTMLDivElement>(null);
+  useDismiss(contextMenu, () => setContext(null));
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "{}") as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
+  }, [collapsed]);
 
   const guild = guilds.find((item) => item.id === activeGuildId);
   /**
@@ -76,8 +95,12 @@ export function ChannelSidebar() {
           </button>
           {directThreads.map((thread) => (
             <button key={thread.id} type="button" className="channel direct-channel" data-active={thread.id === activeDirectId} onClick={() => void selectDirect(thread.id)}>
-              <span className="direct-avatar" style={{ background: thread.peer.color }}>{thread.peer.username.slice(0, 2).toUpperCase()}</span>
-              <span className="channel-name">{thread.peer.username}</span>
+              <span className="direct-avatar" data-online={members[thread.peer.id]?.presence !== undefined && members[thread.peer.id]?.presence !== "offline"} style={{ background: thread.peer.color }}>{thread.peer.username.slice(0, 2).toUpperCase()}</span>
+              <span className="direct-copy">
+                <span className="channel-name">{thread.peer.username}</span>
+                <small>{members[thread.peer.id]?.voiceChannelId ? "Em uma chamada" : thread.lastContent ?? "Nenhuma mensagem ainda"}{thread.lastAt && !members[thread.peer.id]?.voiceChannelId ? ` · ${new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(thread.lastAt)}` : ""}</small>
+              </span>
+              {unread[`direct:${thread.id}`]?.unread && <span className="unread-badge">{unread[`direct:${thread.id}`].mentions || ""}</span>}
             </button>
           ))}
           {directThreads.length === 0 && <p className="members-empty">Clique em alguém da lista de membros para conversar.</p>}
@@ -96,7 +119,7 @@ export function ChannelSidebar() {
             type="button"
             className="sidebar-action"
             onClick={() => void openAdmin(activeGuildId)}
-            title="Convites e membros"
+            title="Configurações do servidor"
           >
             <GearIcon size={16} />
           </button>
@@ -114,8 +137,18 @@ export function ChannelSidebar() {
       <div className="channel-scroll">
         {groups.map(([category, list]) => (
           <section key={category}>
-            <p className="category">{category}</p>
-            {list.map((channel) => {
+            <button
+              type="button"
+              className="category category-toggle"
+              aria-expanded={!collapsed[`${activeGuildId}:${category}`]}
+              onClick={() => {
+                const key = `${activeGuildId}:${category}`;
+                setCollapsed((current) => ({ ...current, [key]: !current[key] }));
+              }}
+            >
+              <span aria-hidden="true">⌄</span>{category}
+            </button>
+            {!collapsed[`${activeGuildId}:${category}`] && list.map((channel) => {
               const voice = channel.type === "voice";
               return (
                 <div key={channel.id} className="channel-slot">
@@ -124,6 +157,10 @@ export function ChannelSidebar() {
                     className="channel"
                     data-active={channel.id === activeChannelId}
                     data-connected={channel.id === voiceChannelId}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setContext({ anchor: event.currentTarget, channel });
+                    }}
                     onClick={() =>
                       voice && channel.id !== voiceChannelId
                         ? void joinVoice(channel.id)
@@ -132,6 +169,7 @@ export function ChannelSidebar() {
                   >
                     {voice ? <SpeakerIcon size={18} /> : <HashIcon size={18} />}
                     <span className="channel-name">{channel.name}</span>
+                    {!voice && unread[`channel:${channel.id}`]?.unread && <span className="channel-unread" data-mentions={unread[`channel:${channel.id}`].mentions > 0}>{unread[`channel:${channel.id}`].mentions || ""}</span>}
                   </button>
                   {/* Aparece no hover da linha: um ícone de lixeira por canal,
                       sempre visível, transformaria a lista num campo minado. */}
@@ -159,6 +197,22 @@ export function ChannelSidebar() {
           </button>
         )}
       </div>
+
+      <Popover anchor={context?.anchor ?? null} width={210}>
+        <div ref={contextMenu} className="person-menu navigation-menu" role="menu">
+          <strong>{context?.channel.type === "voice" ? "Canal de voz" : "Canal de texto"}</strong>
+          <button type="button" role="menuitem" onClick={() => {
+            if (!context) return;
+            context.channel.type === "voice" ? void joinVoice(context.channel.id) : selectChannel(context.channel.id);
+            setContext(null);
+          }}>Abrir {context?.channel.name}</button>
+          {managed && <button type="button" role="menuitem" onClick={() => { void openAdmin(activeGuildId); setContext(null); }}>Configurações do servidor</button>}
+          {owner && <button type="button" role="menuitem" className="danger" onClick={() => {
+            if (context) void deleteChannel(context.channel.id);
+            setContext(null);
+          }}>Excluir canal</button>}
+        </div>
+      </Popover>
 
       <VoiceStrip />
       <UserPanel />

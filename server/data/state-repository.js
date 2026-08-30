@@ -32,6 +32,7 @@ function mapRole(row) {
     color: row.color ?? null,
     permissions: JSON.parse(row.permissions_json ?? "[]"),
     isDefault: row.is_default === 1,
+    position: row.position,
   };
 }
 
@@ -42,18 +43,23 @@ function mapChannel(row) {
     type: row.type,
     name: row.name,
     category: row.category,
+    position: row.position,
   };
 }
 
 function mapMessage(row) {
   return {
+    sequence: row.sequence,
     id: row.id,
     channelId: row.channel_id,
     authorId: row.author_id,
     username: row.username_snapshot,
     color: row.color_snapshot,
-    content: row.content,
+    content: row.deleted_at ? "" : row.content,
     at: row.created_at,
+    editedAt: row.edited_at ?? null,
+    deletedAt: row.deleted_at ?? null,
+    replyToId: row.reply_to_id ?? null,
   };
 }
 
@@ -67,7 +73,7 @@ export class StateRepository {
         ORDER BY position, id
       `),
       listChannels: database.prepare(`
-        SELECT id, guild_id, type, name, category
+        SELECT id, guild_id, type, name, category, position
         FROM channels
         ORDER BY position, id
       `),
@@ -84,12 +90,14 @@ export class StateRepository {
             color_snapshot,
             content,
             created_at,
+            edited_at,
+            deleted_at,
+            reply_to_id,
             ROW_NUMBER() OVER (
               PARTITION BY channel_id
               ORDER BY sequence DESC
             ) AS row_number
           FROM messages
-          WHERE deleted_at IS NULL
         )
         SELECT
           sequence,
@@ -99,7 +107,10 @@ export class StateRepository {
           username_snapshot,
           color_snapshot,
           content,
-          created_at
+          created_at,
+          edited_at,
+          deleted_at,
+          reply_to_id
         FROM ranked
         WHERE row_number <= ?
         ORDER BY channel_id, sequence
@@ -107,7 +118,7 @@ export class StateRepository {
       messageSequence: database.prepare(`
         SELECT sequence
         FROM messages
-        WHERE id = ? AND channel_id = ? AND deleted_at IS NULL
+        WHERE id = ? AND channel_id = ?
       `),
       listMessagesBefore: database.prepare(`
         SELECT
@@ -118,9 +129,12 @@ export class StateRepository {
           username_snapshot,
           color_snapshot,
           content,
-          created_at
+          created_at,
+          edited_at,
+          deleted_at,
+          reply_to_id
         FROM messages
-        WHERE channel_id = ? AND deleted_at IS NULL AND sequence < ?
+        WHERE channel_id = ? AND sequence < ?
         ORDER BY sequence DESC
         LIMIT ?
       `),
@@ -139,7 +153,7 @@ export class StateRepository {
         ON CONFLICT(id) DO NOTHING
       `),
       listRoles: database.prepare(`
-        SELECT id, guild_id, name, color, permissions_json, is_default
+        SELECT id, guild_id, name, color, permissions_json, is_default, position
         FROM roles WHERE guild_id = ? ORDER BY is_default DESC, position, id
       `),
       listPermissionsForUser: database.prepare(`
@@ -163,11 +177,14 @@ export class StateRepository {
         SET name = @name, color = @color, permissions_json = @permissions, updated_at = @now
         WHERE id = @id AND guild_id = @guildId AND is_default = 0
       `),
+      setRolePosition: database.prepare(`
+        UPDATE roles SET position = ?, updated_at = ? WHERE id = ? AND guild_id = ? AND is_default = 0
+      `),
       deleteRole: database.prepare(`
         DELETE FROM roles WHERE id = ? AND guild_id = ? AND is_default = 0
       `),
       findRole: database.prepare(`
-        SELECT id, guild_id, name, color, permissions_json, is_default
+        SELECT id, guild_id, name, color, permissions_json, is_default, position
         FROM roles WHERE id = ? AND guild_id = ?
       `),
       assignRole: database.prepare(`
@@ -235,9 +252,10 @@ export class StateRepository {
           username_snapshot,
           color_snapshot,
           content,
+          reply_to_id,
           created_at
         )
-        VALUES (@id, @channelId, @authorId, @username, @color, @content, @at)
+        VALUES (@id, @channelId, @authorId, @username, @color, @content, @replyToId, @at)
       `),
       pruneMessages: database.prepare(`
         DELETE FROM messages
@@ -290,6 +308,12 @@ export class StateRepository {
       // --- canais -------------------------------------------------------------
       nextChannelPosition: database.prepare(
         "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM channels WHERE guild_id = ?",
+      ),
+      listChannelIds: database.prepare(
+        "SELECT id FROM channels WHERE guild_id = ? ORDER BY position, id",
+      ),
+      setChannelPosition: database.prepare(
+        "UPDATE channels SET position = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
       ),
       deleteChannel: database.prepare("DELETE FROM channels WHERE id = ?"),
       countChannelsOfType: database.prepare(
@@ -345,8 +369,9 @@ export class StateRepository {
     });
 
     this.addMessageTransaction = database.transaction((message, retention) => {
-      this.statements.insertMessage.run(message);
+      const sequence = Number(this.statements.insertMessage.run(message).lastInsertRowid);
       this.statements.pruneMessages.run(message.channelId, retention);
+      return sequence;
     });
 
     /**
@@ -423,6 +448,22 @@ export class StateRepository {
       this.statements.insertBan.run({ ...ban, now });
       this.statements.deleteGuildMember.run(ban.guildId, ban.userId);
     });
+
+    this.reorderRolesTransaction = database.transaction((guildId, orderedIds, now) => {
+      const current = this.statements.listRoles.all(guildId).filter((row) => row.is_default === 0).map((row) => row.id);
+      if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return false;
+      if (orderedIds.some((id) => !current.includes(id))) return false;
+      orderedIds.forEach((id, index) => this.statements.setRolePosition.run(index + 1, now, id, guildId));
+      return true;
+    });
+
+    this.reorderChannelsTransaction = database.transaction((guildId, orderedIds, now) => {
+      const current = this.statements.listChannelIds.all(guildId).map((row) => row.id);
+      if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return false;
+      if (orderedIds.some((id) => !current.includes(id))) return false;
+      orderedIds.forEach((id, index) => this.statements.setChannelPosition.run(index, now, id, guildId));
+      return true;
+    });
   }
 
   listGuilds() {
@@ -483,7 +524,7 @@ export class StateRepository {
   }
 
   addMessage(message, retention) {
-    this.addMessageTransaction(message, retention);
+    return this.addMessageTransaction(message, retention);
   }
 
   // --- servidores ------------------------------------------------------------
@@ -573,6 +614,10 @@ export class StateRepository {
       : this.statements.unassignRole.run(params).changes > 0;
   }
 
+  reorderRoles(guildId, orderedIds) {
+    return this.reorderRolesTransaction(guildId, orderedIds, Date.now());
+  }
+
   leaveGuild(guildId, userId) {
     this.statements.deleteGuildMember.run(guildId, userId);
   }
@@ -594,6 +639,10 @@ export class StateRepository {
 
   deleteChannel(channelId) {
     this.statements.deleteChannel.run(channelId);
+  }
+
+  reorderChannels(guildId, orderedIds) {
+    return this.reorderChannelsTransaction(guildId, orderedIds, Date.now());
   }
 
   // --- convites --------------------------------------------------------------
@@ -669,6 +718,8 @@ export class StateRepository {
   }
 
   close() {
+    if (!this.database.open) return;
+    this.database.pragma("wal_checkpoint(TRUNCATE)");
     this.database.close();
   }
 }

@@ -13,7 +13,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io as connect } from "socket.io-client";
 import { createAccountRepository } from "../server/data/account-repository.js";
-import { hashPassword } from "../server/passwords.js";
+import { hashActionToken, hashPassword } from "../server/passwords.js";
 import { SessionAuthority } from "../server/auth.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,6 +32,8 @@ const seeded = [
   ["55555555-5555-4555-8555-555555555555", "elena@teste.local", "Elena"],
 ];
 const passwordHash = await hashPassword(PASSWORD);
+const authority = new SessionAuthority(SESSION_SECRET);
+const tokens = {};
 const accountRepository = createAccountRepository({ databasePath });
 for (const [userId, email, username] of seeded) {
   accountRepository.createAccount({
@@ -42,10 +44,18 @@ for (const [userId, email, username] of seeded) {
     verifiedAt: Date.now(),
     color: "#5b6cff",
   });
+  const issued = authority.issue(userId, 1);
+  tokens[username] = issued.token;
+  accountRepository.createSession({
+    id: issued.sessionId,
+    userId,
+    tokenHash: hashActionToken(issued.token),
+    clientType: "web",
+    deviceName: "Teste",
+    expiresAt: authority.verify(issued.token).expiresAt,
+  });
 }
 accountRepository.close();
-const authority = new SessionAuthority(SESSION_SECRET);
-const tokens = Object.fromEntries(seeded.map(([userId, , username]) => [username, authority.issue(userId, 1).token]));
 
 let passed = 0;
 let failed = 0;
@@ -224,7 +234,38 @@ try {
   check("dono cria cargo com permissão", role.role?.name, "Organizador");
   check("membro sem cargo não cria canal", (await emit(c, "channel:create", { guildId: homeId, type: "text", name: "negado" })).error, "missing-permission");
   check("cargo pode ser atribuído a um membro", (await emit(a, "role:assign", { guildId: homeId, userId: joinB.selfId, roleId: role.role.id, assigned: true })).ok, true);
-  check("permissão do cargo libera criar canal", (await emit(b, "channel:create", { guildId: homeId, type: "text", name: "equipe" })).ok, true);
+  const teamChannel = await emit(b, "channel:create", { guildId: homeId, type: "text", name: "equipe" });
+  check("permissão do cargo libera criar canal", teamChannel.ok, true);
+
+  const secondRole = await emit(a, "role:create", {
+    guildId: homeId,
+    name: "Moderador",
+    color: "#33AA77",
+    permissions: ["ban_members"],
+  });
+  const reorderedRoles = await emit(a, "role:reorder", {
+    guildId: homeId,
+    orderedIds: [secondRole.role.id, role.role.id],
+  });
+  check(
+    "hierarquia de cargos é persistida pelo servidor",
+    reorderedRoles.roles.filter((item) => !item.isDefault).map((item) => item.id),
+    [secondRole.role.id, role.role.id],
+  );
+  check(
+    "membro sem permissão não reordena cargos",
+    (await emit(c, "role:reorder", { guildId: homeId, orderedIds: [role.role.id, secondRole.role.id] })).error,
+    "missing-permission",
+  );
+
+  const channelOrder = [voice, text, teamChannel.channel.id, extra];
+  const reorderedChannels = await emit(a, "channel:reorder", { guildId: homeId, orderedIds: channelOrder });
+  check("ordem de canais é persistida pelo servidor", reorderedChannels.channels.map((item) => item.id), channelOrder);
+  check(
+    "membro sem permissão não reordena canais",
+    (await emit(c, "channel:reorder", { guildId: homeId, orderedIds: channelOrder })).error,
+    "missing-permission",
+  );
 
   // Mensagem privada para outra conta e para si mesmo.
   const selfThread = await emit(a, "direct:open", { userId: idA });
@@ -273,6 +314,37 @@ try {
     (await emit(b, "chat:history", { channelId: text })).error,
     "bad-request",
   );
+
+  // Mutação de mensagem sempre usa a identidade do socket, nunca um userId do payload.
+  await sleep(1000);
+  const chatCreated = await emit(a, "chat:send", { channelId: text, content: "mensagem mutável" });
+  check("enviar mensagem responde com o registro persistido", chatCreated.message?.content, "mensagem mutável");
+  check("outro autor não edita mensagem", (await emit(b, "chat:edit", { messageId: chatCreated.message.id, content: "invadida" })).error, "missing-permission");
+  check("autor edita mensagem", (await emit(a, "chat:edit", { messageId: chatCreated.message.id, content: "mensagem editada" })).message?.content, "mensagem editada");
+  const replied = await emit(b, "chat:send", { channelId: text, content: "resposta", replyToId: chatCreated.message.id });
+  check("reply referencia a mensagem original", replied.message?.reply?.id, chatCreated.message.id);
+  check("reação é normalizada e contada", (await emit(b, "chat:react", { messageId: chatCreated.message.id, emoji: "👍" })).message?.reactions?.[0]?.count, 1);
+  check("a mesma reação alterna para removida", (await emit(b, "chat:react", { messageId: chatCreated.message.id, emoji: "👍" })).message?.reactions?.length, 0);
+  check("outro autor sem permissão não apaga", (await emit(b, "chat:delete", { messageId: chatCreated.message.id })).error, "missing-permission");
+  await sleep(500);
+  check("autor faz soft-delete", Boolean((await emit(a, "chat:delete", { messageId: chatCreated.message.id })).message?.deletedAt), true);
+
+  const denied = await emit(a, "channel:permissions", {
+    channelId: text,
+    operation: "set",
+    targetType: "member",
+    targetId: idC,
+    allow: [],
+    deny: ["view_channels"],
+  });
+  check("owner define overwrite negativo por usuário", denied.ok, true);
+  const hiddenChat = collect(c, "chat:message");
+  await emit(a, "chat:send", { channelId: text, content: "conteúdo restrito" });
+  await sleep(100);
+  check("overwrite impede vazamento em tempo real", hiddenChat.length, 0);
+  check("overwrite também bloqueia histórico", (await emit(c, "chat:history", { channelId: text, beforeId: message.id })).error, "no-channel");
+  await emit(a, "channel:permissions", { channelId: text, operation: "set", targetType: "member", targetId: idC, allow: [], deny: [] });
+  check("membro sem permissão não aplica timeout", (await emit(c, "member:timeout", { guildId: homeId, userId: idB, durationMs: 300000 })).error, "missing-permission");
 
   // --- entrar em voz -------------------------------------------------------
   const joinVoiceA = await emit(a, "voice:join", { channelId: voice });
