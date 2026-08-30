@@ -417,6 +417,7 @@ const {
   screenDegradation,
 } = await bundle(join(root, "client", "src", "rtc", "MediaManager.ts"));
 const { preferLowLatency } = await bundle(join(root, "client", "src", "rtc", "engine.ts"));
+const { normalizeUpdateStatus } = await bundle(join(root, "client", "src", "desktop.ts"));
 
 await test("padrão de tela prioriza fluidez sem esconder as opções maiores", async () => {
   assert.equal(DEFAULT_SCREEN_OPTIONS.resolution, "720");
@@ -432,6 +433,21 @@ await test("receptor da tela pede buffer mínimo quando o navegador permite", as
   preferLowLatency(receiver);
   assert.equal(receiver.playoutDelayHint, 0);
   assert.equal(receiver.jitterBufferTarget, 0);
+});
+
+await test("build 1.2 de teste oferece a 1.0 oficial em vez de tratá-la como downgrade", async () => {
+  const legacy = normalizeUpdateStatus({
+    current: "1.2.0",
+    latest: "1.0.0",
+    available: false,
+    url: "https://github.com/cesar1014/draco/releases/tag/v1.0.0",
+    notes: null,
+  });
+  assert.equal(legacy.available, true);
+  assert.equal(
+    normalizeUpdateStatus({ ...legacy, current: "1.0.0", available: false }).available,
+    false,
+  );
 });
 
 const namedError = (name) => Object.assign(new Error(name), { name });
