@@ -89,7 +89,7 @@ const LIMITS = {
    * segura o abuso é a reposição lenta — meia ação por segundo não deixa ninguém
    * criar mil servidores, e cada uma delas escreve no banco.
    */
-  admin: { burst: 15, perSec: 0.5 },
+  admin: { burst: 25, perSec: 0.5 },
   // Aceitar convite é apertado por outro motivo: tentar códigos até acertar um
   // é o único caminho pra entrar num servidor sem ser convidado.
   invite: { burst: 5, perSec: 0.1 },
