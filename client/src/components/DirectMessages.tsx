@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { MenuIcon, SendIcon } from "@/components/Icons";
 import { MessageGroup, groupMessages } from "@/components/MessageGroup";
 import { useStore } from "@/state/store";
-import type { Message } from "@/types";
+import type { DirectMessage, Message } from "@/types";
+
+/** Evita um snapshot novo do Zustand enquanto a conversa ainda está carregando. */
+const NO_DIRECT_MESSAGES: DirectMessage[] = [];
 
 export function DirectMessages({ threadId }: { threadId: string }) {
   const thread = useStore((state) => state.directThreads.find((item) => item.id === threadId));
-  const direct = useStore((state) => state.directMessages[threadId] ?? []);
+  const direct = useStore((state) => state.directMessages[threadId] ?? NO_DIRECT_MESSAGES);
   const sendDirect = useStore((state) => state.sendDirect);
   const setSidebarOpen = useStore((state) => state.setSidebarOpen);
   const [draft, setDraft] = useState("");

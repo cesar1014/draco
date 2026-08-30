@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import "@/styles/app.css";
 import { App } from "@/App";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { SelfTestPage } from "@/dev/SelfTestPage";
 
 /**
@@ -10,4 +11,12 @@ import { SelfTestPage } from "@/dev/SelfTestPage";
  */
 const selfTest = new URLSearchParams(window.location.search).has("selftest");
 
-createRoot(document.getElementById("root")!).render(selfTest ? <SelfTestPage /> : <App />);
+createRoot(document.getElementById("root")!).render(
+  selfTest ? (
+    <SelfTestPage />
+  ) : (
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
+  ),
+);

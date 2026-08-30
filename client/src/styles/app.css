@@ -385,6 +385,47 @@ input[type="range"]:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* Último recurso para falhas de renderização: nunca deixar somente o fundo. */
+.fatal-error {
+  display: grid;
+  min-height: 100%;
+  padding: 24px;
+  place-items: center;
+  background: var(--bg);
+}
+
+.fatal-error-card {
+  width: min(100%, 520px);
+  padding: clamp(28px, 6vw, 48px);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.fatal-error-card svg {
+  color: var(--brand-2);
+}
+
+.fatal-error-card h1 {
+  margin-top: 20px;
+  font-size: clamp(22px, 4vw, 30px);
+}
+
+.fatal-error-card p {
+  margin: 12px 0 24px;
+  color: var(--text-dim);
+}
+
+.fatal-error-card button {
+  padding: 12px 18px;
+  border-radius: var(--radius-sm);
+  background: var(--brand);
+  color: #fff;
+  font-weight: 700;
+}
+
 /* Luz ambiente. Fica no fundo, não recebe eventos e usa só `transform`. */
 .app::before {
   content: "";

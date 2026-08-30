@@ -5,7 +5,10 @@ import { UserPanel } from "@/components/UserPanel";
 import { VoiceChannelMembers } from "@/components/VoiceChannelMembers";
 import { VoiceStrip } from "@/components/VoiceStrip";
 import { useStore } from "@/state/store";
-import type { Channel } from "@/types";
+import type { Channel, GuildPermission } from "@/types";
+
+/** Referência estável: um `[]` criado dentro do seletor força renderizações sem fim. */
+const NO_PERMISSIONS: GuildPermission[] = [];
 
 export function ChannelSidebar() {
   const guilds = useStore((state) => state.guilds);
@@ -23,7 +26,7 @@ export function ChannelSidebar() {
   const activeDirectId = useStore((state) => state.activeDirectId);
   const selectDirect = useStore((state) => state.selectDirect);
   const openDirect = useStore((state) => state.openDirect);
-  const permissions = useStore((state) => state.permissions[activeGuildId] ?? []);
+  const permissions = useStore((state) => state.permissions[activeGuildId] ?? NO_PERMISSIONS);
   const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
 
   const [creating, setCreating] = useState(false);
