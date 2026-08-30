@@ -56,6 +56,25 @@ export interface UpdateStatus {
   notes: string | null;
 }
 
+const OFFICIAL_RESET_VERSION = "1.0.0";
+const LEGACY_DESKTOP_VERSIONS = new Set(["1.1.0", "1.2.0"]);
+
+/**
+ * Antes da primeira versão oficial houve builds de teste numerados 1.1/1.2.
+ * Numericamente eles parecem mais novos que 1.0, então o comparador nativo
+ * antigo não ofereceria a troca. A página publicada conhece essa transição e
+ * marca somente esses dois builds como legados.
+ */
+export function normalizeUpdateStatus(status: UpdateStatus): UpdateStatus {
+  if (
+    status.latest === OFFICIAL_RESET_VERSION &&
+    LEGACY_DESKTOP_VERSIONS.has(status.current)
+  ) {
+    return { ...status, available: true };
+  }
+  return status;
+}
+
 /**
  * O que o app oferece à página.
  *
@@ -148,7 +167,8 @@ export function reportCaptureFailure(report: CaptureFailure): void {
  */
 export async function checkDesktopUpdate(): Promise<UpdateStatus | null> {
   try {
-    return (await window.desktop?.checkUpdate?.()) ?? null;
+    const status = (await window.desktop?.checkUpdate?.()) ?? null;
+    return status ? normalizeUpdateStatus(status) : null;
   } catch {
     return null;
   }

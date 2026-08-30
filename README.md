@@ -349,6 +349,8 @@ A verificação fica na aba **Conexão** das configurações: ela compara a vers
 
 A **1.0.0 oficial** exige o instalador novo. Ela inclui a correção do áudio da tela inteira no Windows, a tela de Início, o caminho de baixa latência e uma versão do Electron sem alertas conhecidos na auditoria de dependências. O site recebe mudanças de interface e servidor automaticamente; recursos nativos continuam exigindo o instalador novo.
 
+Os builds de teste 1.1.0 e 1.2.0 são tratados explicitamente como anteriores à 1.0.0 oficial. Assim, a aba **Conexão** oferece a release oficial mesmo que o número experimental pareça maior.
+
 ---
 
 ## Tecnologias
