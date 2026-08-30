@@ -21,7 +21,33 @@ try {
   });
 
   assert.deepEqual(
-    await service.register({ email: "ana@example.com", username: "Ana", password: "senha-super-segura" }),
+    await service.register({
+      email: "menor@example.com",
+      username: "Menor",
+      age: 17,
+      password: "senha-super-segura",
+      passwordConfirmation: "senha-super-segura",
+    }),
+    { ok: false, error: "adult-required" },
+  );
+  assert.deepEqual(
+    await service.register({
+      email: "ana@example.com",
+      username: "Ana",
+      age: 18,
+      password: "senha-super-segura",
+      passwordConfirmation: "senha-diferente-aqui",
+    }),
+    { ok: false, error: "password-mismatch" },
+  );
+  assert.deepEqual(
+    await service.register({
+      email: "ana@example.com",
+      username: "Ana",
+      age: 18,
+      password: "senha-super-segura",
+      passwordConfirmation: "senha-super-segura",
+    }),
     { ok: true },
   );
   assert.equal(
@@ -35,7 +61,16 @@ try {
   const login = await service.login({ email: "ANA@example.com", password: "senha-super-segura" });
   assert.equal(login.ok, true);
   assert.equal(service.session(login.token)?.account.username, "Ana");
-  assert.equal((await service.register({ email: "ana@example.com", username: "Outra", password: "senha-super-segura" })).error, "email-taken");
+  assert.equal(
+    (await service.register({
+      email: "ana@example.com",
+      username: "Outra",
+      age: 30,
+      password: "senha-super-segura",
+      passwordConfirmation: "senha-super-segura",
+    })).error,
+    "email-taken",
+  );
 
   assert.deepEqual(await service.requestOwnPassword(login.token), { ok: true });
   const resetToken = new URL(sent.at(-1).action).searchParams.get("token");

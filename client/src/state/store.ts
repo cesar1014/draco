@@ -108,7 +108,9 @@ let socket: AppSocket | null = null;
 let engine: CallEngine | null = null;
 let detector: SpeakingDetector | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
-let identity: { token: string | null; guest?: never } | { token?: never; guest: { username: string; inviteCode: string; token?: string } } = {
+let identity:
+  | { token: string | null; guest?: never }
+  | { token?: never; guest: { username: string; inviteCode: string; age: number; token?: string } } = {
   token: null,
 };
 let lastConnectError: string | null = null;
@@ -391,8 +393,14 @@ interface Store {
   // --- ações --------------------------------------------------------------
   bootstrap: () => Promise<void>;
   connect: (email: string, password: string) => Promise<void>;
-  connectGuest: (username: string, inviteCode: string) => Promise<void>;
-  register: (email: string, username: string, password: string) => Promise<string | null>;
+  connectGuest: (username: string, inviteCode: string, age: number) => Promise<void>;
+  register: (
+    email: string,
+    username: string,
+    age: number,
+    password: string,
+    passwordConfirmation: string,
+  ) => Promise<string | null>;
   verifyEmail: (token: string) => Promise<string | null>;
   requestPassword: (email: string) => Promise<string | null>;
   completePassword: (token: string, password: string) => Promise<string | null>;
@@ -879,7 +887,13 @@ export const useStore = create<Store>()((set, get) => {
       void (async () => {
         const fresh = get().status !== "ready";
         const reply = identity.guest
-          ? await identifyGuest(s, identity.guest.username, identity.guest.inviteCode, identity.guest.token)
+          ? await identifyGuest(
+              s,
+              identity.guest.username,
+              identity.guest.inviteCode,
+              identity.guest.age,
+              identity.guest.token,
+            )
           : await identify(s, identity.token ?? readSessionToken());
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
@@ -1200,14 +1214,16 @@ export const useStore = create<Store>()((set, get) => {
       await startConnection();
     },
 
-    async connectGuest(username, inviteCode) {
+    async connectGuest(username, inviteCode, age) {
       clearSessionToken();
-      identity = { guest: { username: username.trim(), inviteCode: inviteCode.trim().toUpperCase() } };
+      identity = {
+        guest: { username: username.trim(), inviteCode: inviteCode.trim().toUpperCase(), age },
+      };
       await startConnection();
     },
 
-    async register(email, username, password) {
-      const reply = await registerAccount(email, username, password);
+    async register(email, username, age, password, passwordConfirmation) {
+      const reply = await registerAccount(email, username, age, password, passwordConfirmation);
       return reply.ok ? null : describeAuthError(reply.error);
     },
 

@@ -173,10 +173,21 @@ try {
   await emit(c, "invite:accept", { code: homeInvite.code });
 
   // Visitante entra só pelo convite, sem criar conta e sem poder escrever.
+  const underageVisitor = connect(URL, { transports: ["websocket"] });
+  await waitFor(underageVisitor, "connect");
+  check(
+    "visitante menor de idade é recusado",
+    (await emit(underageVisitor, "identify", {
+      guest: { username: "Visitante menor", inviteCode: homeInvite.code, age: 17 },
+    })).error,
+    "adult-required",
+  );
+  underageVisitor.close();
+
   const visitor = connect(URL, { transports: ["websocket"] });
   await waitFor(visitor, "connect");
   const guestJoin = await emit(visitor, "identify", {
-    guest: { username: "Visitante", inviteCode: homeInvite.code },
+    guest: { username: "Visitante", inviteCode: homeInvite.code, age: 18 },
   });
   check("link permite entrada temporária sem conta", [guestJoin.ok, guestJoin.account?.guest], [true, true]);
   check("visitante vê somente o servidor do convite", guestJoin.state.guilds.map((guild) => guild.id), [homeId]);

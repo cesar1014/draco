@@ -12,6 +12,7 @@ import {
   sanitizeReason,
   sanitizeRoleName,
   sanitizeUsername,
+  validAdultAge,
 } from "./security.js";
 import { GUILD_PERMISSIONS, sanitizePermissions } from "./permissions.js";
 import { createSession, newTracks, renegotiate, sfuConfig } from "./sfu.js";
@@ -271,7 +272,11 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
         guestToken = payload.guest.token;
         ({ member } = addGuest(socket.id, reconnectGuest.username, reconnectGuest.guildId, reconnectGuest.userId));
         userId = member.id;
-      } else if (guestName && inviteCode) {
+      } else if (payload?.guest) {
+        if (!validAdultAge(payload.guest.age)) {
+          return reply({ ok: false, error: "adult-required" });
+        }
+        if (!guestName || !inviteCode) return reply({ ok: false, error: "bad-request" });
         if (!allow("invite")) return reply({ ok: false, error: "rate-limited" });
         const invite = acceptGuestInvite(inviteCode);
         if (!invite.ok) return reply(invite);

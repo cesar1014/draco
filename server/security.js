@@ -43,6 +43,14 @@ export function sanitizeUsername(raw) {
   return cleaned.length >= 2 ? cleaned : null;
 }
 
+/**
+ * O cadastro pede apenas a idade declarada, não a data de nascimento. Depois de
+ * confirmar 18+, o número não é persistido: isso aplica a regra sem guardar um
+ * dado pessoal que o aplicativo não precisa usar novamente.
+ */
+export const validAdultAge = (raw) =>
+  Number.isInteger(raw) && raw >= 18 && raw <= 120;
+
 export function sanitizeMessage(raw) {
   if (typeof raw !== "string" || raw.length > MAX_MESSAGE * 4) return null;
   const cleaned = stripControlChars(raw, { allowNewlines: true }).trim().slice(0, MAX_MESSAGE);

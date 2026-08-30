@@ -8,7 +8,7 @@ import {
   validPassword,
   verifyPassword,
 } from "./passwords.js";
-import { sanitizeUsername } from "./security.js";
+import { sanitizeUsername, validAdultAge } from "./security.js";
 
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 const RESET_TTL = 60 * 60 * 1000;
@@ -69,12 +69,20 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return { ok: true };
   }
 
-  async function register({ email: rawEmail, username: rawUsername, password }) {
+  async function register({
+    email: rawEmail,
+    username: rawUsername,
+    age,
+    password,
+    passwordConfirmation,
+  }) {
     const email = normalizeEmail(rawEmail);
     const username = sanitizeUsername(rawUsername);
     if (!email) return { ok: false, error: "bad-email" };
     if (!username) return { ok: false, error: "bad-username" };
+    if (!validAdultAge(age)) return { ok: false, error: "adult-required" };
     if (!validPassword(password)) return { ok: false, error: "bad-password-format" };
+    if (password !== passwordConfirmation) return { ok: false, error: "password-mismatch" };
     if (!mailer?.ready) return { ok: false, error: "email-unavailable" };
     if (accounts.accountByEmail(email)) return { ok: false, error: "email-taken" };
     if (accounts.accountByUsername(username)) return { ok: false, error: "username-taken" };

@@ -157,7 +157,7 @@ interface SfuSubscribeReply extends SfuReply {
 
 interface ClientEvents {
   identify: (
-    payload: { token?: string | null; guest?: { username?: string; inviteCode?: string; token?: string } },
+    payload: { token?: string | null; guest?: { username?: string; inviteCode?: string; age?: number; token?: string } },
     ack: (reply: IdentifyReply) => void,
   ) => void;
   "chat:send": (payload: { channelId: string; content: string }) => void;
@@ -279,9 +279,15 @@ export const identify = (
     socket.emit("identify", { token }, resolve),
   );
 
-export const identifyGuest = (socket: AppSocket, username: string, inviteCode: string, token?: string) =>
+export const identifyGuest = (
+  socket: AppSocket,
+  username: string,
+  inviteCode: string,
+  age: number,
+  token?: string,
+) =>
   new Promise<IdentifyReply>((resolve) =>
-    socket.emit("identify", { guest: { username, inviteCode, token } }, resolve),
+    socket.emit("identify", { guest: { username, inviteCode, age, token } }, resolve),
   );
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
@@ -427,6 +433,8 @@ export function describeSocketError(code: string | undefined): string {
       return "Esse convite já foi usado o número máximo de vezes.";
     case "banned":
       return "Você não pode entrar nesse servidor.";
+    case "adult-required":
+      return "O Draco é exclusivo para pessoas com 18 anos ou mais.";
     case "cannot-ban-self":
       return "Você não pode banir a si mesmo.";
     // Silêncio, não recusa: o servidor não respondeu no prazo. Em hospedagem
