@@ -141,7 +141,9 @@ async function readState() {
   assert.equal(migrations, readdirSync(join(root, "server", "data", "migrations")).length);
   assert.equal(stored, TOTAL_MESSAGES, "o banco guarda além da página recente");
   assert.deepEqual(tables, [
+    "account_login_challenges",
     "account_tokens",
+    "account_trusted_addresses",
     "accounts",
     "app_settings",
     "bans",

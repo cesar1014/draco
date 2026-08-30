@@ -293,7 +293,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService } 
           expiresAt: Date.now() + 60 * 60 * 1000,
         });
       } else {
-        const authenticated = accountService.session(payload?.token);
+        const authenticated = accountService.session(payload?.token, address);
         if (!authenticated) return reply({ ok: false, error: "not-authenticated" });
         account = authenticated.account;
         identified = true;

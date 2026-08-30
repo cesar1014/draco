@@ -203,20 +203,27 @@ app.get("/api/config", (_req, res) => {
   res.json({ auth: "accounts", emailReady: accountService.emailReady, guestInvites: true });
 });
 
-app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body)));
-app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body)));
+app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body, req.ip)));
+app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body, req.ip)));
 app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token)));
+app.post(
+  "/api/auth/login-address/confirm",
+  accountRoute((req) => accountService.confirmLoginAddress(req.body?.token), {
+    burst: 6,
+    perSec: 0.1,
+  }),
+);
 app.post(
   "/api/auth/password/request",
   accountRoute((req) => accountService.requestPassword(req.body?.email), { burst: 4, perSec: 0.03 }),
 );
 app.post(
   "/api/auth/password/change-request",
-  accountRoute((req) => accountService.requestOwnPassword(bearer(req)), { burst: 4, perSec: 0.03 }),
+  accountRoute((req) => accountService.requestOwnPassword(bearer(req), req.ip), { burst: 4, perSec: 0.03 }),
 );
 app.post(
   "/api/auth/password/complete",
-  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password)),
+  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password, req.ip)),
 );
 
 /**

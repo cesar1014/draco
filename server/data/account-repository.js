@@ -83,6 +83,54 @@ export class AccountRepository {
       makeSystemAdmin: database.prepare(`
         UPDATE accounts SET is_system_admin = 1, updated_at = ? WHERE user_id = ?
       `),
+      trustedAddress: database.prepare(`
+        SELECT 1 FROM account_trusted_addresses
+        WHERE user_id = ? AND address_hash = ?
+      `),
+      countTrustedAddresses: database.prepare(`
+        SELECT COUNT(*) AS total FROM account_trusted_addresses WHERE user_id = ?
+      `),
+      touchTrustedAddress: database.prepare(`
+        UPDATE account_trusted_addresses SET last_used_at = ?
+        WHERE user_id = ? AND address_hash = ?
+      `),
+      trustAddress: database.prepare(`
+        INSERT INTO account_trusted_addresses (
+          user_id, address_hash, trusted_at, last_used_at
+        ) VALUES (@userId, @addressHash, @now, @now)
+        ON CONFLICT(user_id, address_hash) DO UPDATE SET last_used_at = excluded.last_used_at
+      `),
+      trimTrustedAddresses: database.prepare(`
+        DELETE FROM account_trusted_addresses
+        WHERE user_id = @userId
+          AND address_hash NOT IN (
+            SELECT address_hash FROM account_trusted_addresses
+            WHERE user_id = @userId
+            ORDER BY last_used_at DESC
+            LIMIT 20
+          )
+      `),
+      expireLoginChallenges: database.prepare(`
+        UPDATE account_login_challenges SET used_at = @now
+        WHERE user_id = @userId AND used_at IS NULL
+      `),
+      insertLoginChallenge: database.prepare(`
+        INSERT INTO account_login_challenges (
+          token_hash, user_id, address_hash, expires_at, created_at
+        ) VALUES (@tokenHash, @userId, @addressHash, @expiresAt, @now)
+      `),
+      loginChallenge: database.prepare(`
+        SELECT token_hash, user_id, address_hash, expires_at, used_at
+        FROM account_login_challenges WHERE token_hash = ?
+      `),
+      consumeLoginChallenge: database.prepare(`
+        UPDATE account_login_challenges SET used_at = @now
+        WHERE token_hash = @tokenHash AND used_at IS NULL AND expires_at > @now
+      `),
+      cleanLoginChallenges: database.prepare(`
+        DELETE FROM account_login_challenges
+        WHERE expires_at < @cutoff OR (used_at IS NOT NULL AND used_at < @cutoff)
+      `),
       sharedGuild: database.prepare(`
         SELECT 1
         FROM guild_members mine
@@ -164,6 +212,38 @@ export class AccountRepository {
       this.statements.expireTokens.run(token);
       this.statements.insertToken.run(token);
     });
+    this.trustAddressTransaction = database.transaction((trusted) => {
+      this.statements.trustAddress.run(trusted);
+      this.statements.trimTrustedAddresses.run(trusted);
+    });
+    this.useOrBootstrapAddressTransaction = database.transaction((userId, addressHash, now) => {
+      if (this.statements.trustedAddress.get(userId, addressHash)) {
+        this.statements.touchTrustedAddress.run(now, userId, addressHash);
+        return true;
+      }
+      // Uma transação só impede que dois IPs simultâneos sejam ambos tratados
+      // como o primeiro endereço de uma conta migrada.
+      if (this.statements.countTrustedAddresses.get(userId).total !== 0) return false;
+      this.trustAddressTransaction({ userId, addressHash, now });
+      return true;
+    });
+    this.createLoginChallengeTransaction = database.transaction((challenge) => {
+      this.statements.expireLoginChallenges.run(challenge);
+      this.statements.cleanLoginChallenges.run({ cutoff: challenge.now - 24 * 60 * 60 * 1000 });
+      this.statements.insertLoginChallenge.run(challenge);
+    });
+    this.consumeLoginChallengeTransaction = database.transaction((tokenHash, now) => {
+      const challenge = this.statements.loginChallenge.get(tokenHash);
+      if (!challenge || challenge.used_at || challenge.expires_at <= now) return null;
+      const consumed = this.statements.consumeLoginChallenge.run({ tokenHash, now }).changes > 0;
+      if (!consumed) return null;
+      this.trustAddressTransaction({
+        userId: challenge.user_id,
+        addressHash: challenge.address_hash,
+        now,
+      });
+      return challenge;
+    });
     this.createThreadTransaction = database.transaction((left, right, now) => {
       const pair = [...new Set([left, right])].sort();
       const pairKey = pair.join(":");
@@ -244,6 +324,29 @@ export class AccountRepository {
   setPassword(userId, passwordHash) {
     this.statements.setPassword.run({ userId, passwordHash, now: Date.now() });
     return this.accountById(userId);
+  }
+
+  /** Retorna falso sem alterar nada quando o endereço ainda não foi confirmado. */
+  useOrBootstrapAddress(userId, addressHash) {
+    return this.useOrBootstrapAddressTransaction(userId, addressHash, Date.now());
+  }
+
+  trustAddress(userId, addressHash) {
+    this.trustAddressTransaction({ userId, addressHash, now: Date.now() });
+  }
+
+  createLoginChallenge({ tokenHash, userId, addressHash, expiresAt }) {
+    this.createLoginChallengeTransaction({
+      tokenHash,
+      userId,
+      addressHash,
+      expiresAt,
+      now: Date.now(),
+    });
+  }
+
+  consumeLoginChallenge(tokenHash) {
+    return this.consumeLoginChallengeTransaction(tokenHash, Date.now());
   }
 
   sharesGuild(left, right) {

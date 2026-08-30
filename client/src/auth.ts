@@ -36,6 +36,9 @@ export const registerAccount = (
 
 export const verifyAccountEmail = (token: string) => post("/api/auth/verify", { token });
 
+export const confirmLoginAddress = (token: string) =>
+  post("/api/auth/login-address/confirm", { token });
+
 export const requestPasswordReset = (email: string) =>
   post("/api/auth/password/request", { email });
 
@@ -67,6 +70,10 @@ export function describeAuthError(code?: string): string {
       return "Confirme o e-mail antes de entrar.";
     case "email-verification-sent":
       return "Enviamos um novo link de confirmação para esse e-mail.";
+    case "new-ip-verification-sent":
+      return "Novo IP detectado. Enviamos um link de confirmação para seu e-mail; confirme e tente entrar novamente.";
+    case "address-unavailable":
+      return "Não foi possível identificar o endereço desta conexão.";
     case "email-unavailable":
       return "O envio de e-mail ainda não foi configurado no servidor.";
     case "email-failed":

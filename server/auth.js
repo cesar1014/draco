@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 
 /**
  * Identidade assinada pelo servidor.
@@ -43,6 +44,24 @@ export class SessionAuthority {
 
   constructor(secret) {
     this.#secret = secret;
+  }
+
+  /**
+   * Identificador estável do endereço sem guardar o IP em texto puro. O HMAC,
+   * ao contrário de um SHA simples, não permite testar uma lista de IPs contra
+   * um banco vazado sem conhecer também o segredo de sessão do servidor.
+   */
+  fingerprintAddress(rawAddress) {
+    if (typeof rawAddress !== "string") return null;
+    let address = rawAddress.trim().toLowerCase();
+    if (address.startsWith("::ffff:") && isIP(address.slice(7)) === 4) {
+      address = address.slice(7);
+    }
+    if (!isIP(address)) return null;
+    return createHmac("sha256", this.#secret)
+      .update("draco:trusted-address:v1\0")
+      .update(address)
+      .digest("base64url");
   }
 
   /** Token novo pra uma identidade. `userId` ausente cria uma. */

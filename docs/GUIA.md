@@ -183,7 +183,7 @@ SMTP_PASS=senha-do-smtp
 EMAIL_FROM=Draco <noreply@exemplo.com>
 ```
 
-Reinicie depois de editar o `.env`. Cada amigo maior de 18 anos informa a idade, confirma a senha, cria a própria conta e confirma o próprio e-mail. A idade declarada só é validada durante a entrada e não fica guardada no banco.
+Reinicie depois de editar o `.env`. Cada amigo maior de 18 anos informa a idade, confirma a senha, cria a própria conta e confirma o próprio e-mail. A idade declarada só é validada durante a entrada e não fica guardada no banco. Quando a senha correta aparece em um IP ainda não reconhecido, o servidor envia outro link de uso único e só libera aquele endereço depois da confirmação; sem SMTP, portanto, novos IPs não são liberados.
 
 ### O que muda pra quem entra
 
