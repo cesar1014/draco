@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ChannelCreateModal } from "@/components/GuildAdmin";
-import { CloseIcon, GearIcon, HashIcon, PlusIcon, SpeakerIcon, TrashIcon } from "@/components/Icons";
+import { BrandMark, CloseIcon, GearIcon, HashIcon, PlusIcon, SpeakerIcon, TrashIcon } from "@/components/Icons";
 import { UserPanel } from "@/components/UserPanel";
 import { VoiceChannelMembers } from "@/components/VoiceChannelMembers";
 import { VoiceStrip } from "@/components/VoiceStrip";
@@ -57,6 +57,17 @@ export function ChannelSidebar() {
           <button type="button" className="sidebar-close" onClick={() => setSidebarOpen(false)} title="Fechar"><CloseIcon size={18} /></button>
         </header>
         <div className="channel-scroll direct-list">
+          <button
+            type="button"
+            className="channel direct-channel"
+            data-active={!activeDirectId}
+            onClick={() => {
+              useStore.setState({ activeDirectId: "", activeChannelId: "" });
+              setSidebarOpen(false);
+            }}
+          >
+            <BrandMark size={22} /><span className="channel-name">Início</span>
+          </button>
           <button type="button" className="channel add-channel" onClick={() => selfId && void openDirect(selfId)}>
             <PlusIcon size={16} /><span className="channel-name">Mensagem para mim</span>
           </button>

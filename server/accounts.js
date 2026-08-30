@@ -113,7 +113,6 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
       passwordHash: await hashPassword(password),
       color: colorForName(username),
     });
-    accounts.trustAddress(account.userId, addressHash);
     try {
       await actionMail(account, "verify_email");
     } catch (error) {
@@ -138,7 +137,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const account = email ? accounts.accountByEmail(email) : null;
     // Mesmo trabalho de hash quando o e-mail não existe reduz a diferença de
     // tempo que denunciaria quais endereços estão cadastrados.
-    const fallback = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const fallback = "scrypt$32768$8$3$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const valid = await verifyPassword(password, account?.passwordHash ?? fallback);
     if (!account || !valid || account.disabledAt) return { ok: false, error: "login-failed" };
     if (!account.emailVerifiedAt) {
@@ -200,7 +199,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return challenge ? { ok: true } : { ok: false, error: "token-invalid" };
   }
 
-  async function verifyEmail(rawToken) {
+  async function verifyEmail(rawToken, rawAddress) {
     const tokenHash = hashActionToken(rawToken);
     const token = accounts.token(tokenHash);
     if (
@@ -213,6 +212,8 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     }
     if (!accounts.consumeToken(tokenHash)) return { ok: false, error: "token-invalid" };
     accounts.verifyEmail(token.user_id);
+    const addressHash = auth.fingerprintAddress(rawAddress);
+    if (addressHash) accounts.trustAddress(token.user_id, addressHash);
     return { ok: true };
   }
 

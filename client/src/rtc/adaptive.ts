@@ -26,8 +26,8 @@ const LOSS_DOWN = 4;
 const LOSS_UP = 1;
 const RTT_DOWN = 300;
 
-/** Amostras seguidas boas antes de subir um degrau. A ~2 s cada, uns 16 segundos. */
-const CALM_SAMPLES = 8;
+/** Amostras seguidas boas antes de subir um degrau. A ~1 s cada, uns 16 segundos. */
+const CALM_SAMPLES = 16;
 /** Depois de descer, ignora as próximas amostras: a rede ainda está se acomodando. */
 const COOLDOWN_SAMPLES = 3;
 

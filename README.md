@@ -8,8 +8,8 @@
 
 **Web · Mobile/PWA · Windows Desktop**
 
-[![Status](https://img.shields.io/badge/status-em%20desenvolvimento-8b5cf6?style=for-the-badge)](#)
-[![Desktop](https://img.shields.io/badge/desktop-v1.2.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
+[![Status](https://img.shields.io/badge/status-v1.0.0-22C55E?style=for-the-badge)](#)
+[![Desktop](https://img.shields.io/badge/desktop-v1.0.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=111827)](#)
 [![Electron](https://img.shields.io/badge/Electron-Windows-47848F?style=for-the-badge&logo=electron&logoColor=white)](#)
 [![WebRTC](https://img.shields.io/badge/WebRTC-malha%20%C2%B7%20SFU-22C55E?style=for-the-badge)](#)
@@ -113,6 +113,7 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 - Cargos com permissões de canal, convite, moderação e gerenciamento de cargos
 - Conversa anterior carregada ao rolar para cima
 - Interface responsiva para desktop e celular
+- Tela de Início com servidores, presença separada por servidor e conversas recentes
 - PWA para adicionar à tela inicial
 - Sons de entrada/saída configuráveis
 - Modo leve para PCs mais antigos
@@ -130,7 +131,7 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 - Limite de tamanho, formato e frequência de eventos
 - Rate limit por IP e por identidade, que sobrevive a reconexões
 - Cabeçalhos de segurança e CSP compatível com WebRTC
-- Credenciais de TURN e SFU nunca chegam ao cliente
+- Segredos permanentes de TURN/SFU ficam no servidor; credencial TURN temporária só é entregue após identificação
 - Renderer do Electron isolado e em sandbox
 
 </td>
@@ -346,7 +347,7 @@ Alguns exemplos:
 
 A verificação fica na aba **Conexão** das configurações: ela compara a versão instalada com a última release publicada no repositório e, se houver uma nova, oferece o link. O endereço não vem da página, e sim do processo principal, que só aceita links do próprio repositório de releases.
 
-A **1.2.0** exige instalador novo. A ponte com a página passou a expor a verificação de versão, e a reserva da fonte de captura passou a ser por janela em vez de global. Quem continuar na 1.1.0 segue funcionando: o compartilhamento de tela é idêntico, e o que a versão antiga não expõe é tratado como ausente — ela simplesmente não mostra nada sobre atualização.
+A **1.0.0 oficial** exige o instalador novo. Ela inclui a correção do áudio da tela inteira no Windows, a tela de Início, o caminho de baixa latência e uma versão do Electron sem alertas conhecidos na auditoria de dependências. O site recebe mudanças de interface e servidor automaticamente; recursos nativos continuam exigindo o instalador novo.
 
 ---
 
@@ -484,7 +485,7 @@ npm run app:build
 O instalador é gerado em:
 
 ```text
-desktop/out/draco-setup-1.2.0.exe
+desktop/out/draco-setup-1.0.0.exe
 ```
 
 A versão vem de `desktop/package.json`.
@@ -534,6 +535,7 @@ As principais opções são:
 
 ```env
 PORT=3100
+HOST=127.0.0.1
 DATABASE_PATH=
 ORIGIN=
 SYSTEM_ADMIN_USERNAME=cesar1014
@@ -698,6 +700,7 @@ Para produção, o ideal é usar:
 - `ORIGIN` restringindo a origem aceita;
 - `SESSION_SECRET` quando o disco não for durável;
 - `TRUSTED_PROXY=1` quando houver proxy na frente;
+- `HOST=127.0.0.1` quando Caddy/nginx estiver na mesma máquina;
 - volume persistente para o arquivo SQLite;
 - credenciais do SFU quando as calls passarem de umas quatro pessoas com vídeo.
 

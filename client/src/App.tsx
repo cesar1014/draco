@@ -4,6 +4,7 @@ import { ChatView } from "@/components/ChatView";
 import { DirectMessages } from "@/components/DirectMessages";
 import { GuildAdminModal } from "@/components/GuildAdmin";
 import { GuildRail } from "@/components/GuildRail";
+import { Home } from "@/components/Home";
 import { JoinScreen } from "@/components/JoinScreen";
 import { MembersPanel } from "@/components/MembersPanel";
 import { RemoteAudioSink } from "@/components/RemoteAudioSink";
@@ -181,13 +182,13 @@ export function App() {
           <main className="content">
             {activeDirectId ? (
               <DirectMessages threadId={activeDirectId} />
+            ) : !activeGuildId ? (
+              <Home />
             ) : channel?.type === "voice" ? (
               <VoiceStage channelId={channel.id} />
             ) : channel ? (
               <ChatView channelId={channel.id} />
-            ) : (
-              <div className="content-empty">Escolha um canal à esquerda.</div>
-            )}
+            ) : <div className="content-empty">Escolha um canal à esquerda.</div>}
           </main>
 
           {activeGuildId && <MembersPanel />}

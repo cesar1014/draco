@@ -42,7 +42,7 @@ import {
   type DenoiseStrength,
 } from "@/rtc/denoise";
 import type { CallEngine, RemoteTrackRef, TrackProfile } from "@/rtc/engine";
-import { loadIceConfig } from "@/rtc/iceConfig";
+import { loadIceConfig, setIceConfigProvider } from "@/rtc/iceConfig";
 import { forgetStats, type PeerStats } from "@/rtc/stats";
 import { playCue, setSoundVolume, setSoundsEnabled } from "@/rtc/sounds";
 import {
@@ -63,6 +63,7 @@ import {
   loadGuildAdmin,
   loadDirect,
   openDirect,
+  requestIceConfig,
   revokeInvite,
   sendDirect,
   sfuJoin,
@@ -191,7 +192,9 @@ const SETTINGS_KEY = "draco:settings";
 const SCREEN_KEY = "draco:screen";
 const PEOPLE_KEY = "draco:people";
 const SESSION_KEY = "draco:session";
-const STATS_INTERVAL_MS = 2000;
+// Reagir em um segundo impede a fila de envio de crescer por vários segundos
+// antes de a adaptação reduzir o teto.
+const STATS_INTERVAL_MS = 1000;
 /** Espaço entre duas tentativas de refazer a call por queda de mídia. */
 const RESTART_COOLDOWN_MS = 5000;
 /** Depois disto a call não volta sozinha: insistir só esconde o problema real. */
@@ -913,6 +916,7 @@ export const useStore = create<Store>()((set, get) => {
           identity = { guest: { ...identity.guest, token: reply.guestToken } };
         }
         sfuAvailable = reply.sfu === true;
+        setIceConfigProvider((refresh) => requestIceConfig(s, refresh));
 
         set({
           status: "ready",
@@ -922,7 +926,9 @@ export const useStore = create<Store>()((set, get) => {
           reconnecting: false,
           ...fromSnapshot(reply.state),
         });
-        ensureSelection();
+        // O primeiro login chega no Início. Numa reconexão, preserva e valida o
+        // servidor/canal em que a pessoa já estava.
+        if (!fresh) ensureSelection();
         // Só na entrada de verdade: reconexão de socket não é um login novo.
         if (fresh) playCue("login");
 
@@ -1262,6 +1268,7 @@ export const useStore = create<Store>()((set, get) => {
       get().leaveVoice();
       socket?.disconnect();
       socket = null;
+      setIceConfigProvider(null);
       clearSessionToken();
       identity = { token: null };
       set({
@@ -1536,6 +1543,7 @@ export const useStore = create<Store>()((set, get) => {
         await engine?.setLocalTrack("screenAudio", audio);
         await setProfile("screen", {
           maxBitrate: screenBitrate(options),
+          maxFramerate: options.frameRate,
           degradationPreference: screenDegradation(options.content),
         });
         set({
@@ -1565,6 +1573,7 @@ export const useStore = create<Store>()((set, get) => {
         await media.applyScreenOptions(options);
         await setProfile("screen", {
           maxBitrate: screenBitrate(options),
+          maxFramerate: options.frameRate,
           degradationPreference: screenDegradation(options.content),
         });
       } catch (error) {

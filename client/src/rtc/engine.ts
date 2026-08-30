@@ -16,6 +16,8 @@ import type { MediaSlot } from "@/types";
 
 export interface TrackProfile {
   maxBitrate: number;
+  /** Teto de quadros no encoder; evita que uma fila atrasada tente recuperar rajadas. */
+  maxFramerate?: number;
   /** Só vale pra vídeo. */
   degradationPreference?: RTCDegradationPreference;
   /** Divisor de resolução. `1` é o tamanho capturado. */
@@ -72,6 +74,7 @@ export async function applyProfile(
     // `setParameters` inteiro quando aparecem ali, inclusive o teto de banda.
     if (track.kind === "video") {
       params.encodings[0].scaleResolutionDownBy = profile.scaleResolutionDownBy ?? 1;
+      if (profile.maxFramerate) params.encodings[0].maxFramerate = profile.maxFramerate;
       if (profile.degradationPreference) {
         params.degradationPreference = profile.degradationPreference;
       }
@@ -79,5 +82,27 @@ export async function applyProfile(
     await sender.setParameters(params);
   } catch {
     // Sender sem parâmetros ainda: a próxima transição de estado repete.
+  }
+}
+
+/**
+ * Pede ao Chromium a menor fila de reprodução possível para a tela. As duas
+ * propriedades ainda não fazem parte de todos os navegadores; atribuição
+ * protegida mantém o comportamento normal onde elas não existem.
+ */
+export function preferLowLatency(receiver: RTCRtpReceiver): void {
+  const tunable = receiver as RTCRtpReceiver & {
+    playoutDelayHint?: number;
+    jitterBufferTarget?: number;
+  };
+  try {
+    tunable.playoutDelayHint = 0;
+  } catch {
+    // Navegador sem suporte ou receptor ainda não inicializado.
+  }
+  try {
+    tunable.jitterBufferTarget = 0;
+  } catch {
+    // O WebRTC continua com o buffer automático do navegador.
   }
 }

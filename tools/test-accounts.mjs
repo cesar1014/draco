@@ -83,7 +83,7 @@ try {
     { ok: true },
   );
   const storedPassword = repository.accountByEmail("ana@example.com").passwordHash;
-  assert.match(storedPassword, /^scrypt\$/u, "o banco recebe um hash scrypt");
+  assert.match(storedPassword, /^scrypt\$32768\$8\$3\$/u, "o banco recebe o custo scrypt oficial");
   assert.equal(storedPassword.includes("Senha-super-segura"), false, "o banco não recebe a senha original");
   assert.equal(
     (await service.login({ email: "ana@example.com", password: "Senha-super-segura" }, IP_A)).error,
@@ -91,7 +91,7 @@ try {
   );
   assert.equal(sent.length, 2, "o login não confirmado reenvia um link novo");
   const verifyToken = new URL(sent.at(-1).action).searchParams.get("token");
-  assert.deepEqual(await service.verifyEmail(verifyToken), { ok: true });
+  assert.deepEqual(await service.verifyEmail(verifyToken, IP_A), { ok: true });
 
   const login = await service.login(
     { email: "ANA@example.com", password: "Senha-super-segura" },

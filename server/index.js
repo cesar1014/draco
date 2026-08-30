@@ -13,7 +13,7 @@ import { createAccountService } from "./accounts.js";
 import { createSessionAuthority } from "./auth.js";
 import { logger, reason } from "./log.js";
 import { createMailer } from "./mail.js";
-import { resolveIceConfig, invalidateIceCache } from "./ice.js";
+import { resolveIceConfig } from "./ice.js";
 import { RateLimiter } from "./security.js";
 import { attachSignaling } from "./signaling.js";
 import { colorForName, readSetting, writeSetting } from "./state.js";
@@ -34,6 +34,7 @@ const useHttps = process.argv.includes("--https");
  */
 const isDev = process.argv.includes("--dev");
 const port = isDev ? DEV_API_PORT : Number(process.env.PORT ?? DEV_API_PORT);
+const host = isDev ? "0.0.0.0" : (process.env.HOST ?? "0.0.0.0");
 
 /**
  * Origens aceitas pelo Socket.IO. Uma lista, não um valor: publicar costuma
@@ -53,6 +54,7 @@ const allowedOrigins = (process.env.ORIGIN ?? "")
  * das contas continua obrigatória mesmo quando a origem não foi restringida.
  */
 const originIsOpen = allowedOrigins.length === 0;
+const externallySecure = useHttps || (!isDev && allowedOrigins.some((origin) => origin.startsWith("https://")));
 
 /**
  * Um pedido sem `Origin` não é um navegador de outro site: é o próprio app de
@@ -133,7 +135,7 @@ app.use(
         "media-src": ["'self'", "blob:", "mediastream:"],
         "font-src": ["'self'", "data:"],
         "worker-src": ["'self'", "blob:"],
-        "connect-src": ["'self'", "ws:", "wss:"],
+        "connect-src": isDev ? ["'self'", "ws:", "wss:"] : ["'self'"],
         // Sem HTTPS o navegador tentaria promover o websocket e a call não subiria
         // em `http://localhost` nem na rede local.
         ...(useHttps ? { "upgrade-insecure-requests": [] } : {}),
@@ -147,11 +149,40 @@ app.use(
     crossOriginEmbedderPolicy: false,
     // HSTS só faz sentido em domínio com certificado de verdade: no
     // autoassinado da rede local ele prenderia o aparelho num HTTPS quebrado.
-    hsts: useHttps && !isDev,
+    hsts: externallySecure,
   }),
 );
 
+app.use((_req, res, next) => {
+  res.set("Permissions-Policy", "camera=(self), microphone=(self), display-capture=(self), fullscreen=(self)");
+  next();
+});
+
+// Rotas JSON recusam corpo com tipo ambíguo. Sem isso um proxy ou cliente pode
+// fazer o parser e a validação discordarem sobre o mesmo conteúdo.
+app.use("/api", (req, res, next) => {
+  if (["POST", "PUT", "PATCH"].includes(req.method) && !req.is("application/json")) {
+    return res.status(415).json({ error: "unsupported-media-type" });
+  }
+  next();
+});
+
 app.use(express.json({ limit: "16kb" }));
+
+app.use((error, req, res, next) => {
+  if (!error || !req.path.startsWith("/api")) return next(error);
+  if (error.type === "entity.too.large") return res.status(413).json({ error: "payload-too-large" });
+  if (error instanceof SyntaxError) return res.status(400).json({ error: "invalid-json" });
+  return next(error);
+});
+
+app.use("/api/auth", (req, res, next) => {
+  if (req.method !== "POST") return next();
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    return res.status(400).json({ ok: false, error: "bad-request" });
+  }
+  next();
+});
 
 /**
  * As rotas `/api` são do próprio app, servido da mesma origem. Aceitar chamada de
@@ -205,7 +236,7 @@ app.get("/api/config", (_req, res) => {
 
 app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body, req.ip)));
 app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body, req.ip)));
-app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token)));
+app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token, req.ip)));
 app.post(
   "/api/auth/login-address/confirm",
   accountRoute((req) => accountService.confirmLoginAddress(req.body?.token), {
@@ -248,20 +279,8 @@ if (isDev) {
  * mínimo existe porque a chamada custa uma requisição ao provedor, e uma call com
  * seis pessoas em rede ruim pediria seis renovações no mesmo segundo.
  */
-const FORCED_REFRESH_INTERVAL_MS = 60_000;
-let lastForcedRefresh = 0;
-
-app.get("/api/ice", async (req, res) => {
-  try {
-    if (req.query.refresh === "1" && Date.now() - lastForcedRefresh > FORCED_REFRESH_INTERVAL_MS) {
-      lastForcedRefresh = Date.now();
-      invalidateIceCache();
-    }
-    res.set("Cache-Control", "no-store").json(await resolveIceConfig());
-  } catch (error) {
-    logger("TURN").error("falha ao montar configuração", { motivo: reason(error) });
-    res.status(500).json({ error: "ice-config-failed" });
-  }
+app.get("/api/ice", (_req, res) => {
+  res.status(401).set("Cache-Control", "no-store").json({ error: "authentication-required" });
 });
 
 // Em produção o mesmo processo serve o front. Uma origem só: sem CORS, e o
@@ -272,7 +291,7 @@ if (existsSync(distDir)) {
     if (req.method !== "GET" || req.path.startsWith("/api") || req.path.startsWith("/socket.io")) {
       return next();
     }
-    res.sendFile(join(distDir, "index.html"));
+    res.set("Cache-Control", "no-store").sendFile(join(distDir, "index.html"));
   });
 }
 
@@ -293,7 +312,7 @@ const io = new SocketServer(server, {
 const adminBootstrap = await accountService.bootstrapSystemAdmin();
 attachSignaling(io, process.env, { auth, accountService });
 
-server.listen(port, "0.0.0.0", async () => {
+server.listen(port, host, async () => {
   const scheme = credentials ? "https" : "http";
   const ice = await resolveIceConfig();
 

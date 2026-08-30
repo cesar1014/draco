@@ -112,7 +112,7 @@ function fetchFeed(url) {
  *
  * @returns {Promise<{current: string, latest: string|null, available: boolean, url: string|null, notes: string|null}>}
  */
-async function checkForUpdates({ feed = process.env.DRACO_UPDATE_FEED || DEFAULT_FEED } = {}) {
+async function checkForUpdates({ feed = (!app.isPackaged && process.env.DRACO_UPDATE_FEED) || DEFAULT_FEED } = {}) {
   const current = currentVersion();
   if (lastResult && Date.now() - lastCheck < CHECK_INTERVAL_MS) return lastResult;
 
@@ -134,7 +134,10 @@ async function checkForUpdates({ feed = process.env.DRACO_UPDATE_FEED || DEFAULT
       available: isNewer(tag, current),
       // Confere a origem do link: um feed comprometido não deve conseguir mandar
       // o app abrir um endereço qualquer no navegador de quem usa.
-      url: pageUrl && /^https:\/\/github\.com\//i.test(pageUrl) ? pageUrl : null,
+      url:
+        pageUrl && /^https:\/\/github\.com\/cesar1014\/draco\/releases\//i.test(pageUrl)
+          ? pageUrl
+          : null,
       notes: typeof release.body === "string" ? release.body.slice(0, 2000) : null,
     };
     return lastResult;

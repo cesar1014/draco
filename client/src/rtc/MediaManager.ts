@@ -107,21 +107,27 @@ export interface ScreenShareOptions {
 export const SCREEN_RESOLUTIONS: readonly ScreenResolution[] = ["720", "1080", "source"] as const;
 
 export const DEFAULT_SCREEN_OPTIONS: ScreenShareOptions = {
-  resolution: "1080",
+  // 720p30 é o ponto de partida equilibrado: reduz fila de encoder e upload.
+  // Quem tiver rede sobrando ainda pode escolher 1080p ou a fonte original.
+  resolution: "720",
   frameRate: 30,
   systemAudio: true,
   content: "auto",
 };
 
 const SCREEN_CONTENT_HINT: Record<ScreenContent, string> = {
-  auto: "",
+  auto: "motion",
   game: "motion",
   text: "detail",
 };
 
 /** Jogo tem que continuar fluindo; texto tem que continuar legível. */
 export const screenDegradation = (content: ScreenContent): RTCDegradationPreference =>
-  content === "game" ? "maintain-framerate" : "maintain-resolution";
+  content === "game"
+    ? "maintain-framerate"
+    : content === "text"
+      ? "maintain-resolution"
+      : "balanced";
 
 /** `source` não limita: entrega o tamanho nativo da tela. */
 const SCREEN_HEIGHT: Record<ScreenResolution, number | null> = { "720": 720, "1080": 1080, source: null };
