@@ -26,8 +26,13 @@ async function post(path: string, body: unknown, token?: string | null): Promise
 export const loginAccount = (email: string, password: string) =>
   post("/api/auth/login", { email, password });
 
-export const registerAccount = (email: string, username: string, password: string) =>
-  post("/api/auth/register", { email, username, password });
+export const registerAccount = (
+  email: string,
+  username: string,
+  age: number,
+  password: string,
+  passwordConfirmation: string,
+) => post("/api/auth/register", { email, username, age, password, passwordConfirmation });
 
 export const verifyAccountEmail = (token: string) => post("/api/auth/verify", { token });
 
@@ -48,6 +53,10 @@ export function describeAuthError(code?: string): string {
       return "Escolha um nome de 2 a 32 caracteres.";
     case "bad-password-format":
       return "A senha precisa ter de 10 a 128 caracteres.";
+    case "password-mismatch":
+      return "As duas senhas precisam ser iguais.";
+    case "adult-required":
+      return "O Draco é exclusivo para pessoas com 18 anos ou mais.";
     case "email-taken":
       return "Esse e-mail já está cadastrado.";
     case "username-taken":

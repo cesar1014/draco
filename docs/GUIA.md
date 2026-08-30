@@ -183,7 +183,7 @@ SMTP_PASS=senha-do-smtp
 EMAIL_FROM=Draco <noreply@exemplo.com>
 ```
 
-Reinicie depois de editar o `.env`. Cada amigo cria a própria conta e confirma o próprio e-mail.
+Reinicie depois de editar o `.env`. Cada amigo maior de 18 anos informa a idade, confirma a senha, cria a própria conta e confirma o próprio e-mail. A idade declarada só é validada durante a entrada e não fica guardada no banco.
 
 ### O que muda pra quem entra
 

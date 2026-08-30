@@ -123,7 +123,7 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 
 ### 🔒 Segurança
 
-- Conta individual com e-mail e senha protegida por scrypt
+- Conta individual 18+, com confirmação de senha e senha protegida por scrypt
 - Confirmação de e-mail e troca de senha por link de uso único
 - Identidade assinada pelo servidor: conhecer o id de alguém não dá acesso à conta dela
 - Origem aceita pelo Socket.IO e pelas rotas `/api` restringível
@@ -266,7 +266,7 @@ O banco guarda as **5000 mensagens mais recentes** de cada canal. A entrada carr
 
 ### Identidade
 
-Cada pessoa tem uma conta com e-mail único, nome único e senha própria. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador e troca de senha usam links de uso único enviados por e-mail. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
+Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador e troca de senha usam links de uso único enviados por e-mail. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
 
 O segredo de assinatura vem de `SESSION_SECRET` ou, na falta dele, é sorteado no primeiro boot e guardado no banco. Guardar em vez de sortear a cada boot é o que faz um deploy não desconectar todo mundo da própria identidade.
 

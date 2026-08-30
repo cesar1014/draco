@@ -32,6 +32,7 @@ export function JoinScreen() {
   );
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
+  const [age, setAge] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,6 +53,9 @@ export function JoinScreen() {
   }, [action, actionToken, verifyEmail]);
 
   const connecting = status === "connecting" || busy;
+  const ageRequired = mode === "register" || mode === "guest";
+  const numericAge = Number(age);
+  const adultAge = Number.isInteger(numericAge) && numericAge >= 18 && numericAge <= 120;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -61,14 +65,21 @@ export function JoinScreen() {
     if (mode === "login") {
       await connect(email, password);
     } else if (mode === "register") {
-      const error = await register(email, username, password);
-      setMessage(error ?? "Conta criada. Abra o e-mail de confirmação para liberar o acesso.");
-      if (!error) setMode("login");
+      if (password !== confirmation) {
+        setMessage("As duas senhas precisam ser iguais.");
+      } else if (!adultAge) {
+        setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
+      } else {
+        const error = await register(email, username, numericAge, password, confirmation);
+        setMessage(error ?? "Conta criada. Abra o e-mail de confirmação para liberar o acesso.");
+        if (!error) setMode("login");
+      }
     } else if (mode === "forgot") {
       const error = await requestPassword(email);
       setMessage(error ?? "Se o e-mail estiver cadastrado, o link de troca foi enviado.");
     } else if (mode === "guest") {
-      await connectGuest(username, inviteCode);
+      if (!adultAge) setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
+      else await connectGuest(username, inviteCode, numericAge);
     } else if (mode === "password") {
       if (password !== confirmation) setMessage("As duas senhas precisam ser iguais.");
       else if (!actionToken) setMessage("Esse link não tem um token válido.");
@@ -81,6 +92,7 @@ export function JoinScreen() {
     setMode(next);
     setPassword("");
     setConfirmation("");
+    setAge("");
     setMessage(null);
     useStore.setState({ joinError: null });
   }
@@ -113,6 +125,14 @@ export function JoinScreen() {
           </label>
         )}
 
+        {ageRequired && (
+          <label className="field">
+            <span>Idade <em>*</em></span>
+            <input type="number" inputMode="numeric" value={age} onChange={(event) => setAge(event.target.value)} min={18} max={120} step={1} autoComplete="off" placeholder="18 ou mais" />
+            <em>É necessário ter 18 anos ou mais.</em>
+          </label>
+        )}
+
         {(mode === "login" || mode === "register" || mode === "password") && (
           <label className="field">
             <span>Senha <em>*</em></span>
@@ -121,19 +141,19 @@ export function JoinScreen() {
           </label>
         )}
 
-        {mode === "password" && (
+        {(mode === "register" || mode === "password") && (
           <label className="field">
             <span>Confirmar senha <em>*</em></span>
             <input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={10} maxLength={128} autoComplete="new-password" />
           </label>
         )}
 
-        {mode === "guest" && <p className="join-warning">Visitantes podem entrar na voz e ler o canal, mas não podem escrever. A identidade desaparece ao sair.</p>}
+        {mode === "guest" && <p className="join-warning">Ao continuar, você declara ter 18 anos ou mais. Visitantes podem entrar na voz e ler o canal, mas não podem escrever. A identidade desaparece ao sair.</p>}
         {!emailReady && mode !== "guest" && <p className="join-warning">O administrador ainda precisa configurar o envio de e-mail no servidor.</p>}
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
         {mode !== "verified" && (
-          <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || ((mode === "login" || mode === "register" || mode === "password") && password.length < 10) || ((mode === "register" || mode === "guest") && username.trim().length < 2)}>
+          <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || ((mode === "login" || mode === "register" || mode === "password") && password.length < 10) || ((mode === "register" || mode === "password") && confirmation.length < 10) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>
         )}
