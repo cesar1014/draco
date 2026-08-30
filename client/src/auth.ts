@@ -55,7 +55,7 @@ export function describeAuthError(code?: string): string {
     case "bad-username":
       return "Escolha um nome de 2 a 32 caracteres.";
     case "bad-password-format":
-      return "A senha precisa ter de 10 a 128 caracteres.";
+      return "A senha precisa ter de 8 a 128 caracteres, com pelo menos uma letra maiúscula e uma minúscula.";
     case "password-mismatch":
       return "As duas senhas precisam ser iguais.";
     case "adult-required":
