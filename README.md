@@ -266,7 +266,7 @@ O banco guarda as **5000 mensagens mais recentes** de cada canal. A entrada carr
 
 ### Identidade
 
-Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador e troca de senha usam links de uso único enviados por e-mail. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
+Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador, troca de senha e autorização de um IP novo usam links de uso único enviados por e-mail. O endereço de rede também não fica em texto puro: o banco guarda somente um HMAC usado para reconhecer até 20 endereços confirmados. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
 
 O segredo de assinatura vem de `SESSION_SECRET` ou, na falta dele, é sorteado no primeiro boot e guardado no banco. Guardar em vez de sortear a cada boot é o que faz um deploy não desconectar todo mundo da própria identidade.
 

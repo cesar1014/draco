@@ -4,7 +4,7 @@ import { BrandMark } from "@/components/Icons";
 import { mediaSupported } from "@/rtc/MediaManager";
 import { useStore } from "@/state/store";
 
-type Mode = "login" | "register" | "forgot" | "guest" | "password" | "verified";
+type Mode = "login" | "register" | "forgot" | "guest" | "password" | "verified" | "login-address";
 
 export function JoinScreen() {
   const query = new URLSearchParams(window.location.search);
@@ -20,15 +20,18 @@ export function JoinScreen() {
   const connectGuest = useStore((state) => state.connectGuest);
   const register = useStore((state) => state.register);
   const verifyEmail = useStore((state) => state.verifyEmail);
+  const confirmLoginAddress = useStore((state) => state.confirmLoginAddress);
   const requestPassword = useStore((state) => state.requestPassword);
   const completePassword = useStore((state) => state.completePassword);
 
   const [mode, setMode] = useState<Mode>(() =>
     action === "senha" || action === "ativar"
       ? "password"
-      : action === "verificar"
-        ? "verified"
-        : "login",
+      : action === "novo-ip"
+        ? "login-address"
+        : action === "verificar"
+          ? "verified"
+          : "login",
   );
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
@@ -51,6 +54,16 @@ export function JoinScreen() {
       if (!error) window.history.replaceState(null, "", window.location.pathname);
     });
   }, [action, actionToken, verifyEmail]);
+
+  useEffect(() => {
+    if (action !== "novo-ip" || !actionToken) return;
+    setBusy(true);
+    void confirmLoginAddress(actionToken).then((error) => {
+      setBusy(false);
+      setMessage(error ?? "Novo IP confirmado. Volte ao aparelho que tentou entrar e faça o login novamente.");
+      if (!error) window.history.replaceState(null, "", window.location.pathname);
+    });
+  }, [action, actionToken, confirmLoginAddress]);
 
   const connecting = status === "connecting" || busy;
   const ageRequired = mode === "register" || mode === "guest";
@@ -108,7 +121,7 @@ export function JoinScreen() {
         <div className="join-logo"><BrandMark size={72} /></div>
         <h1>Draco</h1>
         <p className="join-subtitle">
-          {mode === "register" ? "Crie sua conta pessoal." : mode === "guest" ? "Entre como visitante temporário." : mode === "forgot" ? "Receba um link seguro por e-mail." : mode === "password" ? "Escolha sua nova senha." : mode === "verified" ? "Confirmação de e-mail" : "Entre na sua conta."}
+          {mode === "register" ? "Crie sua conta pessoal." : mode === "guest" ? "Entre como visitante temporário." : mode === "forgot" ? "Receba um link seguro por e-mail." : mode === "password" ? "Escolha sua nova senha." : mode === "verified" ? "Confirmação de e-mail" : mode === "login-address" ? "Confirmação de novo IP" : "Entre na sua conta."}
         </p>
 
         {(mode === "login" || mode === "register" || mode === "forgot") && (
@@ -152,7 +165,7 @@ export function JoinScreen() {
         {!emailReady && mode !== "guest" && <p className="join-warning">O administrador ainda precisa configurar o envio de e-mail no servidor.</p>}
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
-        {mode !== "verified" && (
+        {mode !== "verified" && mode !== "login-address" && (
           <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || ((mode === "login" || mode === "register" || mode === "password") && password.length < 10) || ((mode === "register" || mode === "password") && confirmation.length < 10) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>

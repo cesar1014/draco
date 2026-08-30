@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  confirmLoginAddress as confirmLoginAddressRequest,
   completePasswordReset,
   describeAuthError,
   loginAccount,
@@ -402,6 +403,7 @@ interface Store {
     passwordConfirmation: string,
   ) => Promise<string | null>;
   verifyEmail: (token: string) => Promise<string | null>;
+  confirmLoginAddress: (token: string) => Promise<string | null>;
   requestPassword: (email: string) => Promise<string | null>;
   completePassword: (token: string, password: string) => Promise<string | null>;
   requestOwnPassword: () => Promise<string | null>;
@@ -1229,6 +1231,11 @@ export const useStore = create<Store>()((set, get) => {
 
     async verifyEmail(token) {
       const reply = await verifyAccountEmail(token);
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async confirmLoginAddress(token) {
+      const reply = await confirmLoginAddressRequest(token);
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
