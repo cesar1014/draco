@@ -18,7 +18,7 @@ import { SessionAuthority } from "../server/auth.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 3999;
-const PASSWORD = "segredo-bem-longo";
+const PASSWORD = "Segredo-bem-longo";
 const SESSION_SECRET = "segredo-de-sessao-do-teste-com-mais-de-32-caracteres";
 const URL = `http://localhost:${PORT}`;
 const testDirectory = mkdtempSync(join(tmpdir(), "draco-signaling-"));

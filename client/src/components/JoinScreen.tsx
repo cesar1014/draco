@@ -6,6 +6,9 @@ import { useStore } from "@/state/store";
 
 type Mode = "login" | "register" | "forgot" | "guest" | "password" | "verified" | "login-address";
 
+const validNewPassword = (value: string) =>
+  value.length >= 8 && value.length <= 128 && /\p{Ll}/u.test(value) && /\p{Lu}/u.test(value);
+
 export function JoinScreen() {
   const query = new URLSearchParams(window.location.search);
   const action = query.get("conta");
@@ -78,7 +81,9 @@ export function JoinScreen() {
     if (mode === "login") {
       await connect(email, password);
     } else if (mode === "register") {
-      if (password !== confirmation) {
+      if (!validNewPassword(password)) {
+        setMessage("A senha precisa ter no mínimo 8 caracteres, uma letra maiúscula e uma minúscula.");
+      } else if (password !== confirmation) {
         setMessage("As duas senhas precisam ser iguais.");
       } else if (!adultAge) {
         setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
@@ -94,7 +99,8 @@ export function JoinScreen() {
       if (!adultAge) setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
       else await connectGuest(username, inviteCode, numericAge);
     } else if (mode === "password") {
-      if (password !== confirmation) setMessage("As duas senhas precisam ser iguais.");
+      if (!validNewPassword(password)) setMessage("A senha precisa ter no mínimo 8 caracteres, uma letra maiúscula e uma minúscula.");
+      else if (password !== confirmation) setMessage("As duas senhas precisam ser iguais.");
       else if (!actionToken) setMessage("Esse link não tem um token válido.");
       else setMessage(await completePassword(actionToken, password));
     }
@@ -149,15 +155,15 @@ export function JoinScreen() {
         {(mode === "login" || mode === "register" || mode === "password") && (
           <label className="field">
             <span>Senha <em>*</em></span>
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} />
-            {mode !== "login" && <em>Mínimo de 10 caracteres.</em>}
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} />
+            {mode !== "login" && <em>Mínimo de 8 caracteres, com letra maiúscula e minúscula.</em>}
           </label>
         )}
 
         {(mode === "register" || mode === "password") && (
           <label className="field">
             <span>Confirmar senha <em>*</em></span>
-            <input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={10} maxLength={128} autoComplete="new-password" />
+            <input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={8} maxLength={128} autoComplete="new-password" />
           </label>
         )}
 
@@ -166,7 +172,7 @@ export function JoinScreen() {
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
         {mode !== "verified" && mode !== "login-address" && (
-          <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || ((mode === "login" || mode === "register" || mode === "password") && password.length < 10) || ((mode === "register" || mode === "password") && confirmation.length < 10) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
+          <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>
         )}

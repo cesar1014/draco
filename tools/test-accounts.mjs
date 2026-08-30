@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createAccountService } from "../server/accounts.js";
 import { SessionAuthority } from "../server/auth.js";
 import { createAccountRepository } from "../server/data/account-repository.js";
-import { hashActionToken } from "../server/passwords.js";
+import { hashActionToken, validPassword } from "../server/passwords.js";
 
 const directory = mkdtempSync(join(tmpdir(), "draco-accounts-"));
 const databasePath = join(directory, "draco.sqlite");
@@ -15,6 +15,11 @@ const IP_B = "198.51.100.25";
 const IP_C = "2001:db8::77";
 
 try {
+  assert.equal(validPassword("SenhaAb"), false, "sete caracteres não bastam");
+  assert.equal(validPassword("senhafraca"), false, "uma maiúscula é obrigatória");
+  assert.equal(validPassword("SENHAFRACA"), false, "uma minúscula é obrigatória");
+  assert.equal(validPassword("Senha123"), true, "oito caracteres com maiúscula e minúscula bastam");
+
   const repository = createAccountRepository({ databasePath });
   const service = createAccountService({
     repository,
@@ -27,11 +32,25 @@ try {
   assert.deepEqual(
     await service.register(
       {
+        email: "fraca@example.com",
+        username: "Fraca",
+        age: 18,
+        password: "senhafraca",
+        passwordConfirmation: "senhafraca",
+      },
+      IP_A,
+    ),
+    { ok: false, error: "bad-password-format" },
+  );
+
+  assert.deepEqual(
+    await service.register(
+      {
         email: "menor@example.com",
         username: "Menor",
         age: 17,
-        password: "senha-super-segura",
-        passwordConfirmation: "senha-super-segura",
+        password: "Senha-super-segura",
+        passwordConfirmation: "Senha-super-segura",
       },
       IP_A,
     ),
@@ -43,8 +62,8 @@ try {
         email: "ana@example.com",
         username: "Ana",
         age: 18,
-        password: "senha-super-segura",
-        passwordConfirmation: "senha-diferente-aqui",
+        password: "Senha-super-segura",
+        passwordConfirmation: "Senha-diferente-aqui",
       },
       IP_A,
     ),
@@ -56,15 +75,18 @@ try {
         email: "ana@example.com",
         username: "Ana",
         age: 18,
-        password: "senha-super-segura",
-        passwordConfirmation: "senha-super-segura",
+        password: "Senha-super-segura",
+        passwordConfirmation: "Senha-super-segura",
       },
       IP_A,
     ),
     { ok: true },
   );
+  const storedPassword = repository.accountByEmail("ana@example.com").passwordHash;
+  assert.match(storedPassword, /^scrypt\$/u, "o banco recebe um hash scrypt");
+  assert.equal(storedPassword.includes("Senha-super-segura"), false, "o banco não recebe a senha original");
   assert.equal(
-    (await service.login({ email: "ana@example.com", password: "senha-super-segura" }, IP_A)).error,
+    (await service.login({ email: "ana@example.com", password: "Senha-super-segura" }, IP_A)).error,
     "email-verification-sent",
   );
   assert.equal(sent.length, 2, "o login não confirmado reenvia um link novo");
@@ -72,7 +94,7 @@ try {
   assert.deepEqual(await service.verifyEmail(verifyToken), { ok: true });
 
   const login = await service.login(
-    { email: "ANA@example.com", password: "senha-super-segura" },
+    { email: "ANA@example.com", password: "Senha-super-segura" },
     IP_A,
   );
   assert.equal(login.ok, true);
@@ -83,8 +105,8 @@ try {
         email: "ana@example.com",
         username: "Outra",
         age: 30,
-        password: "senha-super-segura",
-        passwordConfirmation: "senha-super-segura",
+        password: "Senha-super-segura",
+        passwordConfirmation: "Senha-super-segura",
       },
       IP_A,
     )).error,
@@ -92,7 +114,7 @@ try {
   );
 
   const unknownAddress = await service.login(
-    { email: "ana@example.com", password: "senha-super-segura" },
+    { email: "ana@example.com", password: "Senha-super-segura" },
     IP_B,
   );
   assert.equal(unknownAddress.error, "new-ip-verification-sent");
@@ -104,7 +126,7 @@ try {
   assert.deepEqual(service.confirmLoginAddress(addressToken), { ok: true });
   assert.deepEqual(service.confirmLoginAddress(addressToken), { ok: false, error: "token-invalid" });
   const loginFromB = await service.login(
-    { email: "ana@example.com", password: "senha-super-segura" },
+    { email: "ana@example.com", password: "Senha-super-segura" },
     IP_B,
   );
   assert.equal(loginFromB.ok, true);
@@ -132,12 +154,16 @@ try {
 
   assert.deepEqual(await service.requestOwnPassword(login.token, IP_A), { ok: true });
   const resetToken = new URL(sent.at(-1).action).searchParams.get("token");
-  const changed = await service.completePassword(resetToken, "outra-senha-segura", IP_C);
+  assert.deepEqual(await service.completePassword(resetToken, "outra-senha-segura", IP_C), {
+    ok: false,
+    error: "bad-password-format",
+  });
+  const changed = await service.completePassword(resetToken, "Outra-senha-segura", IP_C);
   assert.equal(changed.ok, true);
   assert.equal(service.session(login.token, IP_A), null, "trocar a senha revoga sessões antigas");
   assert.equal(service.session(changed.token, IP_C)?.account.username, "Ana");
   assert.equal(
-    (await service.login({ email: "ana@example.com", password: "outra-senha-segura" }, IP_A)).ok,
+    (await service.login({ email: "ana@example.com", password: "Outra-senha-segura" }, IP_A)).ok,
     true,
   );
 

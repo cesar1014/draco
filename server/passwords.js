@@ -16,7 +16,13 @@ export function normalizeEmail(raw) {
 }
 
 export function validPassword(raw) {
-  return typeof raw === "string" && raw.length >= 10 && raw.length <= 128;
+  return (
+    typeof raw === "string" &&
+    raw.length >= 8 &&
+    raw.length <= 128 &&
+    /\p{Ll}/u.test(raw) &&
+    /\p{Lu}/u.test(raw)
+  );
 }
 
 export async function hashPassword(password) {
