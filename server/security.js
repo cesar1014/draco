@@ -44,6 +44,18 @@ export function sanitizeUsername(raw) {
 }
 
 /**
+ * ID público digitável, usado para encontrar uma conta. É separado do nome
+ * exibido: nomes podem se repetir, mas este valor é único sem diferenciar
+ * maiúsculas/minúsculas. ASCII evita IDs visualmente idênticos com alfabetos
+ * diferentes; o @ é aceito na entrada apenas por conveniência e não é salvo.
+ */
+export function sanitizePublicId(raw) {
+  if (typeof raw !== "string" || raw.length > 64) return null;
+  const cleaned = raw.normalize("NFKC").trim().replace(/^@/u, "").toLowerCase();
+  return /^[a-z0-9](?:[a-z0-9_.-]{1,30}[a-z0-9])$/u.test(cleaned) ? cleaned : null;
+}
+
+/**
  * O cadastro pede apenas a idade declarada, não a data de nascimento. Depois de
  * confirmar 18+, o número não é persistido: isso aplica a regra sem guardar um
  * dado pessoal que o aplicativo não precisa usar novamente.

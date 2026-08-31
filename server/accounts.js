@@ -8,7 +8,7 @@ import {
   validPassword,
   verifyPassword,
 } from "./passwords.js";
-import { sanitizeUsername, validAdultAge } from "./security.js";
+import { sanitizePublicId, sanitizeUsername, validAdultAge } from "./security.js";
 
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 const RESET_TTL = 60 * 60 * 1000;
@@ -18,7 +18,9 @@ const NEW_DEVICE_TTL = 15 * 60 * 1000;
 const publicAccount = (account) => ({
   id: account.userId,
   email: account.email,
-  username: account.username,
+  username: account.displayName,
+  displayName: account.displayName,
+  publicId: account.publicId,
   isSystemAdmin: account.isSystemAdmin,
 });
 
@@ -130,13 +132,23 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   }
 
   async function register(
-    { email: rawEmail, username: rawUsername, age, password, passwordConfirmation },
+    {
+      email: rawEmail,
+      username: legacyUsername,
+      displayName: rawDisplayName,
+      publicId: rawPublicId,
+      age,
+      password,
+      passwordConfirmation,
+    },
     rawAddress,
   ) {
     const email = normalizeEmail(rawEmail);
-    const username = sanitizeUsername(rawUsername);
+    const displayName = sanitizeUsername(rawDisplayName ?? legacyUsername);
+    const publicId = sanitizePublicId(rawPublicId ?? legacyUsername);
     if (!email) return { ok: false, error: "bad-email" };
-    if (!username) return { ok: false, error: "bad-username" };
+    if (!displayName) return { ok: false, error: "bad-username" };
+    if (!publicId) return { ok: false, error: "bad-public-id" };
     if (!validAdultAge(age)) return { ok: false, error: "adult-required" };
     if (!validPassword(password)) return { ok: false, error: "bad-password-format" };
     if (password !== passwordConfirmation) return { ok: false, error: "password-mismatch" };
@@ -144,14 +156,15 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const addressHash = auth.fingerprintAddress(rawAddress);
     if (!addressHash) return { ok: false, error: "address-unavailable" };
     if (accounts.accountByEmail(email)) return { ok: false, error: "email-taken" };
-    if (accounts.accountByUsername(username)) return { ok: false, error: "username-taken" };
+    if (accounts.accountByPublicId(publicId)) return { ok: false, error: "public-id-taken" };
 
     const account = accounts.createAccount({
       userId: randomUUID(),
       email,
-      username,
+      publicId,
+      displayName,
       passwordHash: await hashPassword(password),
-      color: colorForName(username),
+      color: colorForName(displayName),
     });
     try {
       await actionMail(account, "verify_email");
@@ -159,6 +172,28 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
       return { ok: false, error: "email-failed", detail: error };
     }
     return { ok: true };
+  }
+
+  function updateIdentity(userId, { displayName: rawDisplayName, publicId: rawPublicId }) {
+    const displayName = sanitizeUsername(rawDisplayName);
+    const publicId = sanitizePublicId(rawPublicId);
+    if (!displayName) return { ok: false, error: "bad-username" };
+    if (!publicId) return { ok: false, error: "bad-public-id" };
+    const owner = accounts.accountByPublicId(publicId);
+    if (owner && owner.userId !== userId) return { ok: false, error: "public-id-taken" };
+    try {
+      const account = accounts.updateIdentity(userId, {
+        displayName,
+        publicId,
+        color: colorForName(displayName),
+      });
+      return account ? { ok: true, account } : { ok: false, error: "no-user" };
+    } catch (error) {
+      if (error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
+        return { ok: false, error: "public-id-taken" };
+      }
+      throw error;
+    }
   }
 
   function addressLabel(rawAddress) {
@@ -272,6 +307,22 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     };
   }
 
+  async function resendVerification({ email: rawEmail, password }) {
+    const email = normalizeEmail(rawEmail);
+    const account = email ? accounts.accountByEmail(email) : null;
+    const fallback = "scrypt$32768$8$3$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const valid = await verifyPassword(password, account?.passwordHash ?? fallback);
+    if (!account || !valid || account.disabledAt) return { ok: false, error: "login-failed" };
+    if (account.emailVerifiedAt) return { ok: false, error: "email-already-verified" };
+    if (!mailer?.ready) return { ok: false, error: "email-unavailable" };
+    try {
+      await actionMail(account, "verify_email");
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: "email-failed", detail: error };
+    }
+  }
+
   function session(token, rawAddress) {
     const signed = auth.verify(token);
     if (!signed) return null;
@@ -295,7 +346,27 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   function confirmLoginAddress(rawToken) {
     const tokenHash = hashActionToken(rawToken);
     const challenge = accounts.consumeLoginChallenge(tokenHash);
-    return challenge ? { ok: true } : { ok: false, error: "token-invalid" };
+    if (!challenge) return { ok: false, error: "token-invalid" };
+    const account = accounts.accountById(challenge.user_id);
+    if (!account || account.disabledAt || !account.emailVerifiedAt || !challenge.device_id) {
+      return { ok: true, autoLogin: false };
+    }
+    const issued = auth.issue(account.userId, account.sessionVersion);
+    accounts.createSession({
+      id: issued.sessionId,
+      userId: account.userId,
+      tokenHash: hashActionToken(issued.token),
+      clientType: challenge.client_type ?? "unknown",
+      deviceName: challenge.device_name ?? "Dispositivo confirmado",
+      deviceId: challenge.device_id,
+      expiresAt: auth.verify(issued.token).expiresAt,
+    });
+    return {
+      ok: true,
+      autoLogin: true,
+      token: issued.token,
+      account: publicAccount(account),
+    };
   }
 
   async function verifyEmail(rawToken) {
@@ -402,14 +473,16 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
 
   async function bootstrapSystemAdmin() {
     const email = normalizeEmail(env.SYSTEM_ADMIN_EMAIL ?? "xcesaryt@gmail.com");
-    const username = sanitizeUsername(env.SYSTEM_ADMIN_USERNAME ?? "cesar1014");
-    if (!email || !username) return { ok: false, skipped: true };
+    const publicId = sanitizePublicId(env.SYSTEM_ADMIN_PUBLIC_ID ?? env.SYSTEM_ADMIN_USERNAME ?? "cesar1014");
+    const displayName = sanitizeUsername(env.SYSTEM_ADMIN_DISPLAY_NAME ?? env.SYSTEM_ADMIN_USERNAME ?? "cesar1014");
+    if (!email || !publicId || !displayName) return { ok: false, skipped: true };
     const account = accounts.ensureSystemAdmin({
       userId: randomUUID(),
       email,
-      username,
+      publicId,
+      displayName,
       passwordHash: null,
-      color: colorForName(username),
+      color: colorForName(displayName),
     });
     if (account.passwordHash && account.emailVerifiedAt) return { ok: true, active: true, account };
     try {
@@ -423,7 +496,9 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   return {
     repository: accounts,
     register,
+    updateIdentity,
     login,
+    resendVerification,
     session,
     confirmLoginAddress,
     verifyEmail,

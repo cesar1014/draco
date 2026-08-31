@@ -4,6 +4,7 @@ export interface AuthReply {
   ok: boolean;
   error?: string;
   account?: Account;
+  autoLogin?: boolean;
 }
 
 export interface ConnectedSession {
@@ -92,12 +93,27 @@ export const loginAccount = async (email: string, password: string, botToken: st
 
 export const registerAccount = (
   email: string,
-  username: string,
+  displayName: string,
+  publicId: string,
   age: number,
   password: string,
   passwordConfirmation: string,
   botToken: string | null = null,
-) => post("/api/auth/register", { email, username, age, password, passwordConfirmation, botToken });
+) => post("/api/auth/register", {
+  email,
+  displayName,
+  publicId,
+  age,
+  password,
+  passwordConfirmation,
+  botToken,
+});
+
+export const resendAccountVerification = (
+  email: string,
+  password: string,
+  botToken: string | null = null,
+) => post("/api/auth/verification/resend", { email, password, botToken });
 
 export const verifyAccountEmail = (token: string) => post("/api/auth/verify", { token });
 
@@ -187,6 +203,8 @@ export function describeAuthError(code?: string): string {
       return "Digite um e-mail válido.";
     case "bad-username":
       return "Escolha um nome de 2 a 32 caracteres.";
+    case "bad-public-id":
+      return "Escolha um ID de 3 a 32 caracteres usando letras, números, ponto, hífen ou sublinhado.";
     case "bad-password-format":
       return "A senha precisa ter de 8 a 128 caracteres, com pelo menos uma letra maiúscula e uma minúscula.";
     case "password-mismatch":
@@ -196,16 +214,19 @@ export function describeAuthError(code?: string): string {
     case "email-taken":
       return "Esse e-mail já está cadastrado.";
     case "username-taken":
-      return "Esse nome já está em uso.";
+    case "public-id-taken":
+      return "Esse ID já está em uso.";
     case "login-failed":
       return "E-mail ou senha incorretos.";
     case "email-unverified":
       return "Confirme o e-mail antes de entrar.";
     case "email-verification-sent":
       return "Enviamos um novo link de confirmação para esse e-mail.";
+    case "email-already-verified":
+      return "Esse e-mail já foi confirmado. Você já pode entrar.";
     case "new-device-verification-sent":
     case "new-ip-verification-sent":
-      return "Novo dispositivo detectado. Enviamos um link de confirmação para seu e-mail; confirme e tente entrar novamente.";
+      return "Novo dispositivo detectado. Enviamos um link de confirmação; ao autorizar, você entrará automaticamente.";
     case "address-unavailable":
       return "Não foi possível identificar o endereço desta conexão.";
     case "email-unavailable":

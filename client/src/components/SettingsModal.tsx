@@ -82,6 +82,7 @@ export function SettingsModal() {
   const resetPerson = useStore((state) => state.resetPerson);
   const account = useStore((state) => state.account);
   const requestOwnPassword = useStore((state) => state.requestOwnPassword);
+  const updateIdentity = useStore((state) => state.updateIdentity);
   const logout = useStore((state) => state.logout);
 
   const [tab, setTab] = useState<Tab>("account");
@@ -92,6 +93,9 @@ export function SettingsModal() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState(account?.displayName ?? account?.username ?? "");
+  const [publicId, setPublicId] = useState(account?.publicId ?? "");
+  const [profileBusy, setProfileBusy] = useState(false);
   const [sessions, setSessions] = useState<ConnectedSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [platformHealth, setPlatformHealth] = useState<Record<string, any> | null>(null);
@@ -171,6 +175,19 @@ export function SettingsModal() {
     void loadPlatformHealth().then((reply) => setPlatformHealth(reply.ok ? reply.metrics ?? null : null));
   }, [tab, account?.isSystemAdmin]);
 
+  useEffect(() => {
+    setDisplayName(account?.displayName ?? account?.username ?? "");
+    setPublicId(account?.publicId ?? "");
+  }, [account?.displayName, account?.publicId, account?.username]);
+
+  async function saveIdentity() {
+    setProfileBusy(true);
+    setAccountMessage(null);
+    const error = await updateIdentity(displayName, publicId);
+    setAccountMessage(error ?? "Perfil atualizado.");
+    setProfileBusy(false);
+  }
+
   async function testConnection() {
     setProbing(true);
     setReport(null);
@@ -216,7 +233,8 @@ export function SettingsModal() {
             <section className="settings-section account-settings">
               <h3>{account?.guest ? "Sessão de visitante" : "Sua conta"}</h3>
               <p className="hint">
-                <strong>{account?.username}</strong>
+                <strong>{account?.displayName ?? account?.username}</strong>
+                {account?.publicId && <> · @{account.publicId}</>}
                 {!account?.guest && <> · {account?.email}</>}
                 {account?.isSystemAdmin && <> · administrador global</>}
               </p>
@@ -225,6 +243,39 @@ export function SettingsModal() {
               </button>}
               {!account?.guest && (
                 <>
+                  <div className="account-identity-form">
+                    <label className="field">
+                      <span>Nome exibido</span>
+                      <input
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        minLength={2}
+                        maxLength={32}
+                        autoComplete="nickname"
+                      />
+                      <small className="hint">Este nome pode ser igual ao de outra pessoa.</small>
+                    </label>
+                    <label className="field">
+                      <span>ID público</span>
+                      <input
+                        value={publicId}
+                        onChange={(event) => setPublicId(event.target.value.toLowerCase())}
+                        minLength={3}
+                        maxLength={32}
+                        autoComplete="username"
+                        spellCheck={false}
+                      />
+                      <small className="hint">Único. Seus amigos adicionam você usando @{publicId || "seu_id"}.</small>
+                    </label>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={profileBusy || displayName.trim().length < 2 || publicId.trim().replace(/^@/u, "").length < 3}
+                      onClick={() => void saveIdentity()}
+                    >
+                      {profileBusy ? "Salvando…" : "Salvar perfil"}
+                    </button>
+                  </div>
                   <p className="hint">A troca de senha exige confirmação pelo seu próprio e-mail. Ao concluir, as sessões antigas são encerradas.</p>
                   <button type="button" className="secondary-button" onClick={() => { setAccountMessage(null); void requestOwnPassword().then((error) => setAccountMessage(error ?? "Enviamos o link de troca para seu e-mail.")); }}>
                     Trocar minha senha
@@ -252,7 +303,7 @@ export function SettingsModal() {
                   </div>}
                 </>
               )}
-              {accountMessage && <p className={accountMessage.startsWith("Enviamos") ? "status-ok" : "status-warn"}>{accountMessage}</p>}
+              {accountMessage && <p className={/^(Enviamos|Perfil atualizado)/u.test(accountMessage) ? "status-ok" : "status-warn"}>{accountMessage}</p>}
               <button type="button" className="secondary-button danger" onClick={() => { closeSettings(); logout(); }}>
                 Sair {account?.guest ? "da visita" : "da conta"}
               </button>

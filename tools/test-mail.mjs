@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { renderActionEmail } from "../server/mail.js";
+import { createMailer, renderActionEmail } from "../server/mail.js";
 
 const action = "https://dracocall.duckdns.org/?conta=novo-dispositivo&token=seguro";
 const rendered = renderActionEmail({
@@ -33,4 +33,52 @@ assert.throws(() => renderActionEmail({
   actionLabel: "Abrir",
 }), /ação de e-mail inválida/u);
 
-console.log("template visual, texto alternativo e escaping dos e-mails: ok");
+const deliveries = [];
+const mailer = createMailer({
+  SMTP_HOST: "smtp.example.test",
+  SMTP_PORT: "587",
+  SMTP_USER: "conta@example.test",
+  SMTP_PASS: "segredo",
+}, {
+  logoAvailable: false,
+  createTransport: () => ({
+    verify: async () => true,
+    sendMail: async (mail) => {
+      deliveries.push(mail);
+      return { accepted: [mail.to], rejected: [], messageId: "mail-test" };
+    },
+  }),
+});
+assert.equal(mailer.ready, true, "a própria conta SMTP serve como remetente padrão");
+assert.equal(await mailer.verify(), true);
+assert.deepEqual(await mailer.send({
+  to: "destino@example.test",
+  subject: "[DracoCall] Teste",
+  title: "Teste de entrega",
+  text: "Mensagem transacional.",
+  action,
+  actionLabel: "Abrir",
+}), { messageId: "mail-test", accepted: 1 });
+assert.equal(deliveries[0].from, "DracoCall <conta@example.test>");
+
+const rejected = createMailer({
+  SMTP_HOST: "smtp.example.test",
+  SMTP_USER: "conta@example.test",
+  SMTP_PASS: "segredo",
+}, {
+  logoAvailable: false,
+  createTransport: () => ({
+    verify: async () => true,
+    sendMail: async () => ({ accepted: [], rejected: ["destino@example.test"] }),
+  }),
+});
+await assert.rejects(() => rejected.send({
+  to: "destino@example.test",
+  subject: "[DracoCall] Teste",
+  title: "Teste de entrega",
+  text: "Mensagem transacional.",
+  action,
+  actionLabel: "Abrir",
+}), /não aceitou o destinatário/u);
+
+console.log("template, remetente, aceite SMTP e rejeição de destinatário: ok");

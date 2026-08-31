@@ -3248,6 +3248,20 @@ button.add-guild:hover {
   margin-right: 10px;
 }
 
+.account-identity-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.account-identity-form .primary-button,
+.admin-guild-identity .primary-button {
+  justify-self: start;
+}
+
 /* ---------------------------------------------------------------------------
    Modais
    --------------------------------------------------------------------------- */
@@ -5008,6 +5022,13 @@ button.guild:active {
   font-weight: 750;
 }
 
+.admin-guild-identity {
+  padding: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
 .admin-danger-zone {
   padding: 16px;
   border: 1px solid rgba(255, 95, 122, 0.34);
@@ -5117,5 +5138,171 @@ button.guild:active {
 
   .admin-channel-create .primary-button {
     grid-column: 1 / -1;
+  }
+
+  /* Mobile usa a altura visual do navegador: a barra de endereço não corta
+     menus, modais nem os controles inferiores quando aparece/desaparece. */
+  html,
+  body,
+  #root,
+  .app {
+    height: 100dvh;
+  }
+
+  .content-header {
+    min-height: 56px;
+    height: auto;
+    padding: max(6px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
+  }
+
+  .home-header {
+    min-height: 56px;
+  }
+
+  .friends-tabs,
+  .settings-modal .settings-nav,
+  .admin-nav {
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    overscroll-behavior-inline: contain;
+  }
+
+  .friends-tabs button,
+  .settings-modal .settings-nav button,
+  .admin-nav button {
+    min-height: 44px;
+    scroll-snap-align: start;
+  }
+
+  .friends-tabs {
+    margin-inline: -4px;
+    padding-inline: 4px;
+  }
+
+  .friend-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 12px 4px;
+  }
+
+  .friend-actions {
+    width: 100%;
+    padding-left: 52px;
+    justify-content: flex-start;
+  }
+
+  .friend-actions button {
+    min-height: 40px;
+    flex: 1 1 auto;
+  }
+
+  .friends-add form {
+    padding: 12px;
+  }
+
+  .friends-add form input,
+  .friends-add form button {
+    min-height: 46px;
+  }
+
+  .guild-rail,
+  .sidebar,
+  .members {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sidebar {
+    width: min(92vw, 360px);
+  }
+
+  .members {
+    width: min(90vw, 350px);
+  }
+
+  /* Menus contextuais viram uma folha inferior larga. Assim não ficam cortados
+     pela borda nem exigem precisão de mouse num telefone. */
+  .popover {
+    inset: auto 10px max(10px, env(safe-area-inset-bottom)) !important;
+    width: auto !important;
+    max-height: min(78dvh, 620px);
+    overflow-y: auto;
+  }
+
+  .popover .person-menu,
+  .tile-menu .person-menu {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .navigation-menu > button,
+  .person-social-actions .person-button,
+  .person-actions .person-button,
+  .person-moderation-actions .person-button {
+    min-height: 46px;
+  }
+
+  .tile-menu {
+    inset: auto 10px 10px;
+    width: auto;
+    max-height: calc(100% - 20px);
+  }
+
+  /* Em telas pequenas os modais deixam de ser cartões quase do tamanho da tela:
+     ocupam a viewport inteira, com cabeçalho e abas sempre acessíveis. */
+  .modal-backdrop {
+    place-items: stretch;
+  }
+
+  .modal,
+  .settings-modal,
+  .admin-modal {
+    width: 100%;
+    height: 100dvh;
+    max-width: none;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .modal-header {
+    min-height: 58px;
+    padding: max(10px, env(safe-area-inset-top)) 14px 10px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .modal-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .settings-modal .settings-nav,
+  .admin-nav {
+    padding: 8px 10px;
+    background: var(--surface);
+  }
+
+  .settings-modal .modal-body,
+  .admin-content,
+  .modal-body {
+    padding: 18px 14px max(24px, env(safe-area-inset-bottom));
+  }
+
+  .settings-section .primary-button,
+  .admin-guild-identity .primary-button,
+  .admin-danger-zone .secondary-button {
+    width: 100%;
+  }
+
+  .call-controls {
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .composer {
+    margin-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .toast {
+    inset: auto 10px max(10px, env(safe-area-inset-bottom));
+    width: auto;
   }
 }

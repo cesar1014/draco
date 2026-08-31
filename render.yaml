@@ -26,8 +26,10 @@ services:
       - key: TRUSTED_PROXY
         value: "1"
 
-      - key: SYSTEM_ADMIN_USERNAME
+      - key: SYSTEM_ADMIN_PUBLIC_ID
         value: cesar1014
+      - key: SYSTEM_ADMIN_DISPLAY_NAME
+        value: Cesar
       - key: SYSTEM_ADMIN_EMAIL
         value: xcesaryt@gmail.com
 
@@ -48,7 +50,8 @@ services:
 #                          te der). Tranca a origem aceita pelo Socket.IO e pelas
 #                          rotas /api nessa origem só.
 #   APP_URL                o mesmo endereço, usado nos links enviados por e-mail.
-#   SMTP_HOST/PORT/USER/PASS, SMTP_SECURE e EMAIL_FROM para confirmação de conta.
+#   SMTP_HOST/PORT/USER/PASS e SMTP_SECURE para os e-mails da conta. EMAIL_FROM
+#                          é opcional e só deve diferir do usuário se estiver validado.
 #
 #   TURN_CREDENTIALS_URL   a URL de credenciais do Open Relay. Sem TURN, cerca de
 #                          uma em cada cinco duplas não conecta pela internet.

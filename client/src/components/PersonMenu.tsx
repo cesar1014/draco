@@ -95,7 +95,7 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
 
       {!mine && <div className="person-social-actions">
         <button type="button" className="person-button" onClick={() => void openDirect(member.id).then(() => onClose())}>Mensagem</button>
-        {!friend && !incoming && !outgoing && !blocked && <button type="button" className="person-button" onClick={() => void requestFriend(member.username)}>Adicionar amigo</button>}
+        {member.publicId && !friend && !incoming && !outgoing && !blocked && <button type="button" className="person-button" onClick={() => void requestFriend(member.publicId!)}>Adicionar amigo</button>}
         {incoming && <button type="button" className="person-button" onClick={() => void changeFriendship("accept", member.id)}>Aceitar amizade</button>}
         {outgoing && <button type="button" className="person-button" onClick={() => void changeFriendship("cancel", member.id)}>Cancelar pedido</button>}
         {friend && <button type="button" className="person-button" onClick={() => void changeFriendship("remove", member.id)}>Remover amigo</button>}

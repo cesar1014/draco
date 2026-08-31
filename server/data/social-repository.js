@@ -3,9 +3,12 @@ import { randomUUID } from "node:crypto";
 const pairKey = (left, right) => [left, right].sort().join(":");
 
 function mapPerson(row) {
+  const publicId = row.public_id ?? row.username;
   return {
     id: row.user_id,
-    username: row.username,
+    // Alias preservado para clientes antigos; semanticamente é o ID público.
+    username: publicId,
+    publicId,
     displayName: row.display_name || row.username,
     color: row.color,
     avatarUrl: row.avatar_url ?? null,
@@ -19,12 +22,13 @@ export class SocialRepository {
     this.database = database;
     this.statements = {
       profileById: database.prepare(`
-        SELECT user_id, username, display_name, color, avatar_url,
-               presence_mode, custom_status, status_expires_at
-        FROM profiles WHERE user_id = ?
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name,
+               p.color, p.avatar_url, p.presence_mode, p.custom_status, p.status_expires_at
+        FROM profiles p JOIN accounts a ON a.user_id = p.user_id
+        WHERE p.user_id = ?
       `),
-      profileByUsername: database.prepare(`
-        SELECT p.user_id, p.username, p.display_name, p.color, p.avatar_url,
+      profileByPublicId: database.prepare(`
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name, p.color, p.avatar_url,
                p.presence_mode, p.custom_status, p.status_expires_at
         FROM profiles p JOIN accounts a ON a.user_id = p.user_id
         WHERE a.username = ? COLLATE NOCASE
@@ -52,29 +56,36 @@ export class SocialRepository {
       `),
       deleteBlock: database.prepare("DELETE FROM user_blocks WHERE blocker_id = ? AND blocked_id = ?"),
       listFriends: database.prepare(`
-        SELECT p.user_id, p.username, p.display_name, p.color, p.avatar_url,
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name, p.color, p.avatar_url,
                p.custom_status, p.status_expires_at, f.created_at
         FROM friendships f
         JOIN profiles p ON p.user_id = CASE WHEN f.user_low_id = @userId THEN f.user_high_id ELSE f.user_low_id END
+        JOIN accounts a ON a.user_id = p.user_id
         WHERE f.user_low_id = @userId OR f.user_high_id = @userId
         ORDER BY COALESCE(p.display_name, p.username) COLLATE NOCASE
       `),
       listIncoming: database.prepare(`
-        SELECT p.user_id, p.username, p.display_name, p.color, p.avatar_url,
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name, p.color, p.avatar_url,
                p.custom_status, p.status_expires_at, r.created_at
-        FROM friend_requests r JOIN profiles p ON p.user_id = r.requester_id
+        FROM friend_requests r
+        JOIN profiles p ON p.user_id = r.requester_id
+        JOIN accounts a ON a.user_id = p.user_id
         WHERE r.recipient_id = ? ORDER BY r.created_at DESC
       `),
       listOutgoing: database.prepare(`
-        SELECT p.user_id, p.username, p.display_name, p.color, p.avatar_url,
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name, p.color, p.avatar_url,
                p.custom_status, p.status_expires_at, r.created_at
-        FROM friend_requests r JOIN profiles p ON p.user_id = r.recipient_id
+        FROM friend_requests r
+        JOIN profiles p ON p.user_id = r.recipient_id
+        JOIN accounts a ON a.user_id = p.user_id
         WHERE r.requester_id = ? ORDER BY r.created_at DESC
       `),
       listBlocked: database.prepare(`
-        SELECT p.user_id, p.username, p.display_name, p.color, p.avatar_url,
+        SELECT p.user_id, a.username AS public_id, p.username, p.display_name, p.color, p.avatar_url,
                p.custom_status, p.status_expires_at, b.created_at
-        FROM user_blocks b JOIN profiles p ON p.user_id = b.blocked_id
+        FROM user_blocks b
+        JOIN profiles p ON p.user_id = b.blocked_id
+        JOIN accounts a ON a.user_id = p.user_id
         WHERE b.blocker_id = ? ORDER BY b.created_at DESC
       `),
       friendIds: database.prepare(`
@@ -183,9 +194,13 @@ export class SocialRepository {
     };
   }
 
-  targetByUsername(username) {
-    const row = this.statements.profileByUsername.get(username);
+  targetByPublicId(publicId) {
+    const row = this.statements.profileByPublicId.get(publicId);
     return row ? mapPerson(row) : null;
+  }
+
+  targetByUsername(publicId) {
+    return this.targetByPublicId(publicId);
   }
 
   relationshipSnapshot(userId) {

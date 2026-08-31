@@ -139,22 +139,30 @@ export function renderActionEmail({
 }
 
 /** Remetente SMTP. Credenciais ficam só no ambiente da VM. */
-export function createMailer(env = process.env) {
+export function createMailer(env = process.env, {
+  createTransport = (options) => nodemailer.createTransport(options),
+  logoAvailable = existsSync(logoPath),
+} = {}) {
   const host = env.SMTP_HOST?.trim();
   const user = env.SMTP_USER?.trim();
   const pass = env.SMTP_PASS?.trim();
-  const from = env.EMAIL_FROM?.trim();
+  // Para Gmail/Outlook simples, omitir EMAIL_FROM usa a própria conta
+  // autenticada e evita um remetente fictício que falha em SPF/DMARC.
+  const from = env.EMAIL_FROM?.trim() || (user?.includes("@") ? `${BRAND_NAME} <${user}>` : "");
   const port = Number(env.SMTP_PORT ?? 587);
   const ready = Boolean(host && user && pass && from && Number.isInteger(port));
   const transport = ready
-    ? nodemailer.createTransport({
+    ? createTransport({
         host,
         port,
         secure: boolean(env.SMTP_SECURE) || port === 465,
         auth: { user, pass },
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 20_000,
       })
     : null;
-  const includeLogo = existsSync(logoPath);
+  const includeLogo = logoAvailable;
 
   return {
     ready,
@@ -166,7 +174,7 @@ export function createMailer(env = process.env) {
     async send({ to, subject, ...content }) {
       if (!transport) throw new Error("SMTP não configurado");
       const rendered = renderActionEmail({ ...content, includeLogo });
-      await transport.sendMail({
+      const result = await transport.sendMail({
         from,
         to,
         subject,
@@ -175,6 +183,10 @@ export function createMailer(env = process.env) {
           ? { attachments: [{ filename: "dracocall.png", path: logoPath, cid: LOGO_CID }] }
           : {}),
       });
+      if (!Array.isArray(result.accepted) || result.accepted.length === 0) {
+        throw new Error("SMTP não aceitou o destinatário");
+      }
+      return { messageId: result.messageId ?? null, accepted: result.accepted.length };
     },
   };
 }

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   confirmLoginAddress as confirmLoginAddressRequest,
+  resendAccountVerification,
   completePasswordReset,
   describeAuthError,
   loginAccount,
@@ -71,6 +72,8 @@ import {
   requestFriend,
   changeFriendship,
   updatePresence as updatePresenceRequest,
+  updateProfile as updateProfileRequest,
+  updateGuild as updateGuildRequest,
   markRead,
   mutateMessage,
   kickMember as kickGuildMember,
@@ -438,17 +441,20 @@ interface Store {
   connectGuest: (username: string, inviteCode: string, age: number) => Promise<void>;
   register: (
     email: string,
-    username: string,
+    displayName: string,
+    publicId: string,
     age: number,
     password: string,
     passwordConfirmation: string,
     botToken?: string | null,
   ) => Promise<string | null>;
+  resendVerification: (email: string, password: string, botToken?: string | null) => Promise<string | null>;
   verifyEmail: (token: string) => Promise<string | null>;
   confirmLoginAddress: (token: string) => Promise<string | null>;
   requestPassword: (email: string, botToken?: string | null) => Promise<string | null>;
   completePassword: (token: string, password: string) => Promise<string | null>;
   requestOwnPassword: () => Promise<string | null>;
+  updateIdentity: (displayName: string, publicId: string) => Promise<string | null>;
   logout: () => void;
   selectGuild: (guildId: string) => void;
   selectChannel: (channelId: string) => void;
@@ -462,7 +468,7 @@ interface Store {
   editMessage: (scope: "chat" | "direct", messageId: string, content: string) => Promise<string | null>;
   deleteMessage: (scope: "chat" | "direct", messageId: string) => Promise<string | null>;
   reactMessage: (scope: "chat" | "direct", messageId: string, emoji: string) => Promise<string | null>;
-  requestFriend: (username: string) => Promise<string | null>;
+  requestFriend: (publicId: string) => Promise<string | null>;
   changeFriendship: (
     action: "accept" | "reject" | "cancel" | "remove" | "block" | "unblock",
     userId: string,
@@ -501,6 +507,7 @@ interface Store {
 
   // --- administração ------------------------------------------------------
   createGuild: (name: string) => Promise<string | null>;
+  renameGuild: (guildId: string, name: string) => Promise<string | null>;
   deleteGuild: (guildId: string) => Promise<string | null>;
   leaveGuild: (guildId: string) => Promise<string | null>;
   joinByInvite: (code: string) => Promise<string | null>;
@@ -1057,6 +1064,25 @@ export const useStore = create<Store>()((set, get) => {
 
     s.on("member:state", (member) => {
       remember([member]);
+      set((state) => ({
+        roster: Object.fromEntries(Object.entries(state.roster).map(([guildId, entries]) => [
+          guildId,
+          entries.map((entry) => entry.id === member.id
+            ? { ...entry, username: member.username, publicId: member.publicId, color: member.color }
+            : entry),
+        ])),
+        directThreads: state.directThreads.map((thread) => thread.peer.id === member.id
+          ? {
+              ...thread,
+              peer: {
+                ...thread.peer,
+                username: member.username,
+                publicId: member.publicId,
+                color: member.color,
+              },
+            }
+          : thread),
+      }));
       // Uma trilha nova publicada no SFU aparece como mudança de estado: é o
       // gatilho pra assinar a câmera que a pessoa acabou de ligar.
       if (sfuAvailable && member.voiceChannelId === get().voiceChannelId) syncRemote();
@@ -1229,6 +1255,12 @@ export const useStore = create<Store>()((set, get) => {
             ? "Você foi removido da chamada após ser expulso do servidor."
             : "Você foi removido da chamada durante uma restrição temporária.",
       });
+    });
+
+    s.on("guild:updated", ({ guild }) => {
+      set((state) => ({
+        guilds: state.guilds.map((item) => item.id === guild.id ? guild : item),
+      }));
     });
 
     s.on("guild:member-joined", ({ guildId, member }) => {
@@ -1490,8 +1522,21 @@ export const useStore = create<Store>()((set, get) => {
       await startConnection();
     },
 
-    async register(email, username, age, password, passwordConfirmation, botToken = null) {
-      const reply = await registerAccount(email, username, age, password, passwordConfirmation, botToken);
+    async register(email, displayName, publicId, age, password, passwordConfirmation, botToken = null) {
+      const reply = await registerAccount(
+        email,
+        displayName,
+        publicId,
+        age,
+        password,
+        passwordConfirmation,
+        botToken,
+      );
+      return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async resendVerification(email, password, botToken = null) {
+      const reply = await resendAccountVerification(email.trim(), password, botToken);
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
@@ -1502,7 +1547,12 @@ export const useStore = create<Store>()((set, get) => {
 
     async confirmLoginAddress(token) {
       const reply = await confirmLoginAddressRequest(token);
-      return reply.ok ? null : describeAuthError(reply.error);
+      if (!reply.ok) return describeAuthError(reply.error);
+      if (reply.autoLogin === false) return "Dispositivo autorizado. Volte ao aparelho que iniciou o acesso.";
+      clearSessionToken();
+      identity = { token: null };
+      await startConnection();
+      return get().status === "ready" ? null : get().joinError;
     },
 
     async requestPassword(email, botToken = null) {
@@ -1522,6 +1572,15 @@ export const useStore = create<Store>()((set, get) => {
     async requestOwnPassword() {
       const reply = await requestOwnPasswordChange();
       return reply.ok ? null : describeAuthError(reply.error);
+    },
+
+    async updateIdentity(displayName, publicId) {
+      if (!socket) return "Sem conexão com o servidor.";
+      const reply = await updateProfileRequest(socket, displayName.trim(), publicId.trim());
+      if (!reply.ok || !reply.account) return describeSocketError(reply.error);
+      set({ account: reply.account });
+      if (reply.member) remember([reply.member]);
+      return null;
     },
 
     logout() {
@@ -1654,9 +1713,9 @@ export const useStore = create<Store>()((set, get) => {
       return reply.ok ? null : describeSocketError(reply.error);
     },
 
-    async requestFriend(username) {
+    async requestFriend(publicId) {
       if (!socket) return "Sem conexão com o servidor.";
-      const reply = await requestFriend(socket, username.trim());
+      const reply = await requestFriend(socket, publicId.trim());
       if (!reply.ok) return describeSocketError(reply.error);
       if (reply.relationships) set({ relationships: reply.relationships });
       return null;
@@ -2126,6 +2185,26 @@ export const useStore = create<Store>()((set, get) => {
       // um segundo clique pra ver o que acabou de nascer.
       const first = reply.state.channels.find((c) => c.guildId === guildId && c.type === "text");
       set({ activeGuildId: guildId, activeChannelId: first?.id ?? "", sidebarOpen: false });
+      return null;
+    },
+
+    async renameGuild(guildId, name) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s) return "Sem conexão com o servidor.";
+      if (admin?.busy) return "Aguarde a ação atual terminar.";
+      if (admin?.guildId === guildId) set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await updateGuildRequest(s, guildId, name.trim());
+      const current = get().admin;
+      if (!reply.ok || !reply.guild) {
+        const error = describeSocketError(reply.error);
+        if (current?.guildId === guildId) set({ admin: { ...current, busy: false, error } });
+        return error;
+      }
+      set((state) => ({
+        guilds: state.guilds.map((guild) => guild.id === guildId ? reply.guild! : guild),
+        admin: state.admin?.guildId === guildId ? { ...state.admin, busy: false, error: null } : state.admin,
+      }));
       return null;
     },
 

@@ -102,7 +102,8 @@ set_env DATABASE_PATH "$ROOT/data/draco.sqlite" >/dev/null
 set_env TRUSTED_PROXY 1 force >/dev/null
 set_env ORIGIN "https://$DOMAIN" force >/dev/null
 set_env APP_URL "https://$DOMAIN" force >/dev/null
-set_env SYSTEM_ADMIN_USERNAME "cesar1014" force >/dev/null
+set_env SYSTEM_ADMIN_PUBLIC_ID "cesar1014" force >/dev/null
+set_env SYSTEM_ADMIN_DISPLAY_NAME "Cesar" force >/dev/null
 set_env SYSTEM_ADMIN_EMAIL "xcesaryt@gmail.com" force >/dev/null
 set_env TURN_HOST "turn:$DOMAIN:3478" force >/dev/null
 chmod 600 "$ROOT/.env"

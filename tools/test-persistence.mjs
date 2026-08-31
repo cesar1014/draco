@@ -256,10 +256,14 @@ async function migrateLegacy(databasePath) {
     .prepare("INSERT INTO app_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?)")
     .run("catalog:seeded_at", String(now), now);
   before.prepare("DELETE FROM schema_migrations WHERE name = ?").run("003_no_default_guilds.sql");
+  before.prepare("DELETE FROM schema_migrations WHERE name = ?").run("011_public_user_ids.sql");
   before.close();
 
   const after = openDatabase(databasePath);
   const guild = after.prepare("SELECT owner_id FROM guilds WHERE id = 'g-main'").get();
+  const migratedProfile = after
+    .prepare("SELECT username, display_name FROM profiles WHERE user_id = ?")
+    .get(first);
   const seeded = after
     .prepare("SELECT value_json FROM app_settings WHERE setting_key = 'catalog:seeded_at'")
     .get();
@@ -269,6 +273,7 @@ async function migrateLegacy(databasePath) {
   after.close();
 
   assert.equal(guild.owner_id, first, "o servidor sem dono é adotado por quem entrou primeiro");
+  assert.equal(migratedProfile.display_name, migratedProfile.username, "a migração preserva o nome das contas existentes");
   assert.equal(members, 2, "e ninguém é removido do servidor no caminho");
   assert.equal(seeded, undefined, "a marca do seed sai: não há mais catálogo a semear");
 }

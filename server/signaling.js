@@ -10,6 +10,7 @@ import {
   sanitizeDescription,
   sanitizeGuildName,
   sanitizeMessage,
+  sanitizePublicId,
   sanitizeReason,
   sanitizeRoleName,
   sanitizeUsername,
@@ -67,6 +68,8 @@ import {
   snapshot,
   unban,
   updateRole,
+  updateGuildIdentity,
+  updateMemberIdentity,
 } from "./state.js";
 
 /**
@@ -215,6 +218,7 @@ export function attachSignaling(io, env = process.env, {
     let guest = false;
     let guestGuildId = null;
     let systemAdmin = false;
+    let account = null;
     const address = clientAddress(socket, trustProxy);
 
     /**
@@ -401,8 +405,6 @@ export function attachSignaling(io, env = process.env, {
       let member;
       let previousSocketId = null;
       let renewed = null;
-      let account = null;
-
       let guestToken = null;
       if (reconnectGuest && reconnectGuest.expiresAt > Date.now()) {
         identified = true;
@@ -440,9 +442,10 @@ export function attachSignaling(io, env = process.env, {
         userId = account.userId;
         systemAdmin = account.isSystemAdmin;
         renewed = cookieToken ? null : auth.renewIfNeeded(authenticated);
-        ({ member, previousSocketId } = addMember(socket.id, userId, account.username, {
+        ({ member, previousSocketId } = addMember(socket.id, userId, account.displayName, {
           systemAdmin,
           profile: social.profile(userId),
+          publicId: account.publicId,
         }));
       }
 
@@ -461,7 +464,15 @@ export function attachSignaling(io, env = process.env, {
         ...(renewed ? { token: renewed.token } : {}),
         ...(guestToken ? { guestToken } : {}),
         account: guest
-          ? { id: member.id, username: member.username, email: null, isSystemAdmin: false, guest: true }
+          ? {
+              id: member.id,
+              username: member.username,
+              displayName: member.username,
+              publicId: null,
+              email: null,
+              isSystemAdmin: false,
+              guest: true,
+            }
           : { ...accountService.publicAccount(account), guest: false },
         sfu: sfuHealth.available(),
         state,
@@ -593,12 +604,29 @@ export function attachSignaling(io, env = process.env, {
       }
     };
 
+    socket.on("profile:update", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
+      if (!allow("social")) return reply({ ok: false, error: "rate-limited" });
+      const result = accountService.updateIdentity(userId, payload ?? {});
+      if (!result.ok) return reply(result);
+      account = result.account;
+      const member = updateMemberIdentity(userId, account.displayName, account.publicId);
+      emitPresence("member:state", member);
+      publishRelationships(userId, ...social.friendIds(userId));
+      reply({
+        ok: true,
+        account: accountService.publicAccount(account),
+        member: publicMember(member),
+      });
+    });
+
     socket.on("friend:request", (payload, ack) => {
       const reply = typeof ack === "function" ? ack : () => {};
       if (!identified || guest) return reply({ ok: false, error: "not-authenticated" });
       if (!allow("social")) return reply({ ok: false, error: "rate-limited" });
-      const username = sanitizeUsername(payload?.username);
-      const target = username ? social.targetByUsername(username) : null;
+      const publicId = sanitizePublicId(payload?.publicId ?? payload?.username);
+      const target = publicId ? social.targetByPublicId(publicId) : null;
       if (!target) return reply({ ok: false, error: "no-user" });
       const result = social.sendRequest(userId, target.id);
       if (!result.ok) return reply(result);
@@ -606,7 +634,7 @@ export function attachSignaling(io, env = process.env, {
         userId: target.id,
         kind: "friend_request",
         actorId: userId,
-        metadata: { username: getMember(socket.id)?.username ?? account?.username },
+        metadata: { username: getMember(socket.id)?.username ?? account?.displayName },
       });
       io.to(userRoom(target.id)).emit("notification:new", notification);
       publishRelationships(userId, target.id);
@@ -1040,6 +1068,24 @@ export function attachSignaling(io, env = process.env, {
       for (const channel of channelsOfGuild(guild.id)) syncChannelRoom(channel);
       log.info("servidor criado", { guildId: guild.id, ownerId: userId });
       reply({ ok: true, guild, state: clientState() });
+    });
+
+    socket.on("guild:update", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+      if (!isGuildOwner(guildId, userId)) return reply({ ok: false, error: "not-owner" });
+      const name = sanitizeGuildName(payload?.name);
+      if (!name) return reply({ ok: false, error: "bad-name" });
+      const previous = currentGuilds().find((guild) => guild.id === guildId);
+      const guild = updateGuildIdentity(guildId, name);
+      if (!guild) return reply({ ok: false, error: "no-guild" });
+      administration.audit(guildId, userId, "guild.update", "guild", guildId, {
+        previousName: previous?.name ?? null,
+        name: guild.name,
+      });
+      io.to(guildRoom(guildId)).emit("guild:updated", { guild });
+      reply({ ok: true, guild });
     });
 
     socket.on("guild:delete", (payload, ack) => {

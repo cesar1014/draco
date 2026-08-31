@@ -7,23 +7,29 @@ const database = openDatabase(":memory:");
 const accounts = new AccountRepository(database);
 const social = new SocialRepository(database);
 
-const make = (username) => accounts.createAccount({
+const make = (publicId, displayName = publicId) => accounts.createAccount({
   userId: crypto.randomUUID(),
-  email: `${username}@example.test`,
-  username,
+  email: `${publicId}@example.test`,
+  publicId,
+  displayName,
   passwordHash: "test",
   verifiedAt: Date.now(),
   color: "#6674E8",
 });
 
-const ana = make("ana");
-const bia = make("bia");
+const ana = make("ana", "Nome Repetido");
+const bia = make("bia", "Nome Repetido");
 const caio = make("caio");
+
+assert.equal(social.targetByPublicId("ANA").id, ana.userId);
+assert.equal(social.targetByPublicId("ana").displayName, "Nome Repetido");
 
 assert.deepEqual(social.sendRequest(ana.userId, bia.userId), { ok: true });
 assert.equal(social.sendRequest(ana.userId, bia.userId).error, "request-exists");
 assert.equal(social.sendRequest(bia.userId, ana.userId).error, "request-awaiting-you");
 assert.equal(social.relationshipSnapshot(bia.userId).incomingRequests[0].username, "ana");
+assert.equal(social.relationshipSnapshot(bia.userId).incomingRequests[0].publicId, "ana");
+assert.equal(social.relationshipSnapshot(bia.userId).incomingRequests[0].displayName, "Nome Repetido");
 assert.deepEqual(social.acceptRequest(bia.userId, ana.userId), { ok: true, peerId: ana.userId });
 assert.equal(social.areFriends(ana.userId, bia.userId), true);
 assert.equal(database.prepare("SELECT COUNT(*) AS total FROM friendships").get().total, 1);

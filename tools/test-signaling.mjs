@@ -26,29 +26,30 @@ const testDirectory = mkdtempSync(join(tmpdir(), "draco-signaling-"));
 const databasePath = join(testDirectory, "draco.sqlite");
 
 const seeded = [
-  ["11111111-1111-4111-8111-111111111111", "ana@teste.local", "Ana"],
-  ["22222222-2222-4222-8222-222222222222", "bruno@teste.local", "Bruno"],
-  ["33333333-3333-4333-8333-333333333333", "carla@teste.local", "Carla"],
-  ["44444444-4444-4444-8444-444444444444", "davi@teste.local", "Davi"],
-  ["55555555-5555-4555-8555-555555555555", "elena@teste.local", "Elena"],
-  ["66666666-6666-4666-8666-666666666666", "fabio@teste.local", "Fábio", true],
+  ["11111111-1111-4111-8111-111111111111", "ana@teste.local", "Ana", "ana"],
+  ["22222222-2222-4222-8222-222222222222", "bruno@teste.local", "Bruno", "bruno"],
+  ["33333333-3333-4333-8333-333333333333", "carla@teste.local", "Carla", "carla"],
+  ["44444444-4444-4444-8444-444444444444", "davi@teste.local", "Davi", "davi"],
+  ["55555555-5555-4555-8555-555555555555", "elena@teste.local", "Elena", "elena"],
+  ["66666666-6666-4666-8666-666666666666", "fabio@teste.local", "Fábio", "fabio", true],
 ];
 const passwordHash = await hashPassword(PASSWORD);
 const authority = new SessionAuthority(SESSION_SECRET);
 const tokens = {};
 const accountRepository = createAccountRepository({ databasePath });
-for (const [userId, email, username, isSystemAdmin = false] of seeded) {
+for (const [userId, email, displayName, publicId, isSystemAdmin = false] of seeded) {
   accountRepository.createAccount({
     userId,
     email,
-    username,
+    displayName,
+    publicId,
     passwordHash,
     isSystemAdmin,
     verifiedAt: Date.now(),
     color: "#5b6cff",
   });
   const issued = authority.issue(userId, 1);
-  tokens[username] = issued.token;
+  tokens[displayName] = issued.token;
   accountRepository.createSession({
     id: issued.sessionId,
     userId,
@@ -162,6 +163,7 @@ try {
     check(`snapshot não expõe ${internal}`, internal in publicSelf, false);
   }
   check("entrada com conta válida", joinA.ok, true);
+  check("conta expõe um único ID público", joinA.account?.publicId, "ana");
   check(
     "conta identificada recebe configuração ICE",
     (await emit(a, "ice:get", { refresh: false })).ok,
@@ -204,6 +206,12 @@ try {
   const homeInvite = await emit(a, "invite:create", { guildId: homeId });
   await emit(b, "invite:accept", { code: homeInvite.code });
   await emit(c, "invite:accept", { code: homeInvite.code });
+
+  const relationshipOnB = waitFor(b, "relationship:update");
+  const friendRequest = await emit(a, "friend:request", { publicId: "bruno" });
+  check("amizade encontra a pessoa pelo ID público", friendRequest.ok, true);
+  const incomingFriend = (await relationshipOnB)?.incomingRequests?.[0];
+  check("pedido recebido conserva nome e ID separados", [incomingFriend?.displayName, incomingFriend?.publicId], ["Ana", "ana"]);
 
   // Visitante entra só pelo convite, sem criar conta e sem poder escrever.
   const underageVisitor = connect(URL, { transports: ["websocket"] });
@@ -284,7 +292,8 @@ try {
   // Mensagem privada para outra conta e para si mesmo.
   const selfThread = await emit(a, "direct:open", { userId: idA });
   check("usuário abre conversa consigo mesmo", selfThread.thread?.peer?.id, idA);
-  check("usuário envia mensagem para si mesmo", (await emit(a, "direct:send", { threadId: selfThread.thread.id, content: "minha nota" })).ok, true);
+  const selfNote = await emit(a, "direct:send", { threadId: selfThread.thread.id, content: "minha nota" });
+  check("usuário envia mensagem para si mesmo", selfNote.ok, true);
   const directOnA = waitFor(a, "direct:message");
   const pairThread = await emit(b, "direct:open", { userId: idA });
   await emit(b, "direct:send", { threadId: pairThread.thread.id, content: "oi no privado" });
@@ -558,6 +567,30 @@ try {
     true,
   );
   check(
+    "membro comum não altera o nome do servidor",
+    (await emit(g, "guild:update", { guildId, name: "Nome indevido" })).error,
+    "not-owner",
+  );
+  const renamedOnMember = waitFor(g, "guild:updated");
+  const renamedGuild = await emit(a, "guild:update", { guildId, name: "Servidor Renomeado" });
+  check("dono altera o nome do servidor", [renamedGuild.guild?.name, renamedGuild.guild?.initials], ["Servidor Renomeado", "SR"]);
+  check("novo nome chega aos membros imediatamente", (await renamedOnMember)?.guild?.name, "Servidor Renomeado");
+
+  const profileOnMember = waitFor(g, "member:state");
+  const renamedProfile = await emit(a, "profile:update", {
+    displayName: "Nome Repetido",
+    publicId: "ana.nova",
+  });
+  check("perfil separa nome exibido do ID único", [renamedProfile.account?.username, renamedProfile.account?.publicId], ["Nome Repetido", "ana.nova"]);
+  check("perfil atualizado chega ao servidor em comum", [(await profileOnMember)?.username, renamedProfile.member?.publicId], ["Nome Repetido", "ana.nova"]);
+  const renamedDirect = await emit(a, "direct:react", { messageId: selfNote.message.id, emoji: "👍" });
+  check("mensagem privada continua mostrando o nome exibido", renamedDirect.message?.username, "Nome Repetido");
+  check(
+    "outra pessoa não assume um ID existente",
+    (await emit(g, "profile:update", { displayName: "Nome Repetido", publicId: "ana.nova" })).error,
+    "public-id-taken",
+  );
+  check(
     "convite de uso único não serve duas vezes",
     (await emit(h, "invite:accept", { code: invite.code })).error,
     "invite-used-up",
@@ -638,7 +671,7 @@ try {
   const voiceClosedOnMember = waitFor(g, "voice:channel-closed");
   const deleted = await emit(a, "guild:delete", { guildId });
   check("dono exclui o servidor", deleted.ok, true);
-  check("exclusão avisa os demais membros", (await deletedOnMember)?.name, "Servidor de Teste");
+  check("exclusão avisa os demais membros", (await deletedOnMember)?.name, "Servidor Renomeado");
   check("exclusão encerra a call do servidor", (await voiceClosedOnMember)?.channelId, voiceOnly.id);
   check("snapshot do dono não conserva o servidor excluído", deleted.state.guilds.some((guild) => guild.id === guildId), false);
   check("servidor excluído não pode mais ser administrado", (await emit(g, "guild:admin", { guildId })).error, "not-member");

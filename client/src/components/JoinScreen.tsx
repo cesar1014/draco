@@ -49,6 +49,7 @@ export function JoinScreen() {
   const connect = useStore((state) => state.connect);
   const connectGuest = useStore((state) => state.connectGuest);
   const register = useStore((state) => state.register);
+  const resendVerification = useStore((state) => state.resendVerification);
   const verifyEmail = useStore((state) => state.verifyEmail);
   const confirmLoginAddress = useStore((state) => state.confirmLoginAddress);
   const requestPassword = useStore((state) => state.requestPassword);
@@ -65,6 +66,7 @@ export function JoinScreen() {
   );
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
+  const [publicId, setPublicId] = useState("");
   const [age, setAge] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -93,7 +95,7 @@ export function JoinScreen() {
     setBusy(true);
     void confirmLoginAddress(actionToken).then((error) => {
       setBusy(false);
-      setMessage(error ?? "Dispositivo confirmado. Volte ao aparelho que tentou entrar e faça o login novamente.");
+      setMessage(error ?? "Dispositivo confirmado. Entrando automaticamente…");
       if (!error) window.history.replaceState(null, "", window.location.pathname);
     });
   }, [action, actionToken, confirmLoginAddress]);
@@ -147,7 +149,15 @@ export function JoinScreen() {
       } else if (!adultAge) {
         setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
       } else {
-        const error = await register(email, username, numericAge, password, confirmation, botToken);
+        const error = await register(
+          email,
+          username,
+          publicId,
+          numericAge,
+          password,
+          confirmation,
+          botToken,
+        );
         setMessage(error ?? "Conta criada. Abra o e-mail de confirmação para liberar o acesso.");
         if (!error) setMode("login");
       }
@@ -172,11 +182,30 @@ export function JoinScreen() {
     setBusy(false);
   }
 
+  async function resend() {
+    if (connecting || !email.trim() || password.length < 8) {
+      setMessage("Digite o e-mail e a senha da conta para reenviar a confirmação.");
+      return;
+    }
+    if (turnstileSiteKey && !botToken) {
+      setMessage("Conclua a verificação antirobô.");
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    const error = await resendVerification(email, password, botToken);
+    setMessage(error ?? "Novo e-mail de confirmação enviado.");
+    if (turnstileWidget.current && window.turnstile) window.turnstile.reset(turnstileWidget.current);
+    setBotToken(null);
+    setBusy(false);
+  }
+
   function switchMode(next: Mode) {
     setMode(next);
     setPassword("");
     setConfirmation("");
     setAge("");
+    setPublicId("");
     setMessage(null);
     useStore.setState({ joinError: null });
   }
@@ -204,8 +233,25 @@ export function JoinScreen() {
 
         {(mode === "register" || mode === "guest") && (
           <label className="field">
-            <span>{mode === "guest" ? "Apelido temporário" : "Nome de usuário"} <em>*</em></span>
+            <span>{mode === "guest" ? "Apelido temporário" : "Nome exibido"} <em>*</em></span>
             <input value={username} onChange={(event) => setUsername(event.target.value)} maxLength={32} autoComplete="nickname" autoFocus={mode === "guest"} />
+            {mode === "register" && <em>Não precisa ser único; outras pessoas podem usar o mesmo nome.</em>}
+          </label>
+        )}
+
+        {mode === "register" && (
+          <label className="field">
+            <span>ID público <em>*</em></span>
+            <input
+              value={publicId}
+              onChange={(event) => setPublicId(event.target.value.toLowerCase())}
+              minLength={3}
+              maxLength={32}
+              autoComplete="username"
+              placeholder="cesar1014"
+              spellCheck={false}
+            />
+            <em>Único e usado pelos amigos para encontrar você. Letras, números, ponto, hífen ou sublinhado.</em>
           </label>
         )}
 
@@ -238,7 +284,7 @@ export function JoinScreen() {
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
         {mode !== "verified" && mode !== "login-address" && (
-          <button type="submit" className="join-submit" disabled={connecting || Boolean(turnstileSiteKey && botProtected && !botToken) || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
+          <button type="submit" className="join-submit" disabled={connecting || Boolean(turnstileSiteKey && botProtected && !botToken) || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (mode === "register" && publicId.trim().replace(/^@/u, "").length < 3) || (ageRequired && !adultAge)}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>
         )}
@@ -246,6 +292,7 @@ export function JoinScreen() {
         <nav className="join-links" aria-label="Opções da conta">
           {mode !== "login" && <button type="button" onClick={() => switchMode("login")}>Entrar na conta</button>}
           {mode === "login" && <button type="button" onClick={() => switchMode("register")}>Criar conta</button>}
+          {mode === "login" && <button type="button" onClick={() => void resend()}>Reenviar confirmação</button>}
           {mode === "login" && <button type="button" onClick={() => switchMode("forgot")}>Esqueci a senha</button>}
           {inviteCode && mode !== "guest" && <button type="button" onClick={() => switchMode("guest")}>Continuar sem login</button>}
         </nav>

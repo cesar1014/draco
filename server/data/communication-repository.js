@@ -26,8 +26,8 @@ export class CommunicationRepository {
       directMessage: database.prepare(`
         SELECT dm.sequence, dm.id, dm.thread_id, dm.author_id, dm.content,
           dm.created_at, dm.edited_at, dm.deleted_at, dm.reply_to_id,
-          a.username, p.color
-        FROM direct_messages dm JOIN accounts a ON a.user_id = dm.author_id
+          COALESCE(p.display_name, p.username) AS username, p.color
+        FROM direct_messages dm
         JOIN profiles p ON p.user_id = dm.author_id WHERE dm.id = ?
       `),
       editChannel: database.prepare(`
@@ -213,8 +213,10 @@ export class CommunicationRepository {
       const table = type === "channel" ? "messages" : "direct_messages";
       const authorJoin = type === "channel"
         ? ""
-        : "JOIN accounts a ON a.user_id = m.author_id";
-      const username = type === "channel" ? "m.username_snapshot AS username" : "a.username AS username";
+        : "JOIN profiles p ON p.user_id = m.author_id";
+      const username = type === "channel"
+        ? "m.username_snapshot AS username"
+        : "COALESCE(p.display_name, p.username) AS username";
       const rows = this.database.prepare(`
         SELECT m.id, m.author_id, ${username}, m.content, m.deleted_at
         FROM ${table} m ${authorJoin} WHERE m.id IN (${parentPlaceholders})

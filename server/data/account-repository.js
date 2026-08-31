@@ -3,10 +3,14 @@ import { openDatabase } from "./database.js";
 
 function mapAccount(row) {
   if (!row) return null;
+  const displayName = row.display_name || row.username;
   return {
     userId: row.user_id,
     email: row.email,
-    username: row.username,
+    // `username` continua como alias do nome exibido para clientes antigos.
+    username: displayName,
+    displayName,
+    publicId: row.username,
     passwordHash: row.password_hash,
     emailVerifiedAt: row.email_verified_at,
     isSystemAdmin: row.is_system_admin === 1,
@@ -21,38 +25,50 @@ export class AccountRepository {
     this.cipher = database.dracoFieldCipher;
     this.statements = {
       accountByEmail: database.prepare(`
-        SELECT a.*, u.disabled_at
-        FROM accounts a JOIN users u ON u.id = a.user_id
+        SELECT a.*, u.disabled_at, COALESCE(p.display_name, p.username, a.username) AS display_name
+        FROM accounts a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN profiles p ON p.user_id = a.user_id
         WHERE a.email = ? COLLATE NOCASE
       `),
-      accountByUsername: database.prepare(`
-        SELECT a.*, u.disabled_at
-        FROM accounts a JOIN users u ON u.id = a.user_id
+      accountByPublicId: database.prepare(`
+        SELECT a.*, u.disabled_at, COALESCE(p.display_name, p.username, a.username) AS display_name
+        FROM accounts a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN profiles p ON p.user_id = a.user_id
         WHERE a.username = ? COLLATE NOCASE
       `),
       accountById: database.prepare(`
-        SELECT a.*, u.disabled_at
-        FROM accounts a JOIN users u ON u.id = a.user_id
+        SELECT a.*, u.disabled_at, COALESCE(p.display_name, p.username, a.username) AS display_name
+        FROM accounts a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN profiles p ON p.user_id = a.user_id
         WHERE a.user_id = ?
       `),
       insertUser: database.prepare(`
         INSERT INTO users (id, created_at, updated_at) VALUES (@userId, @now, @now)
       `),
       insertProfile: database.prepare(`
-        INSERT INTO profiles (user_id, username, color, updated_at)
-        VALUES (@userId, @username, @color, @now)
+        INSERT INTO profiles (user_id, username, display_name, color, updated_at)
+        VALUES (@userId, @displayName, @displayName, @color, @now)
       `),
       insertAccount: database.prepare(`
         INSERT INTO accounts (
           user_id, email, username, password_hash, email_verified_at,
           is_system_admin, session_version, created_at, updated_at
         ) VALUES (
-          @userId, @email, @username, @passwordHash, @verifiedAt,
+          @userId, @email, @publicId, @passwordHash, @verifiedAt,
           @isSystemAdmin, 1, @now, @now
         )
       `),
-      updateProfileName: database.prepare(`
-        UPDATE profiles SET username = ?, updated_at = ? WHERE user_id = ?
+      updateAccountPublicId: database.prepare(`
+        UPDATE accounts SET username = @publicId, updated_at = @now WHERE user_id = @userId
+      `),
+      updateProfileIdentity: database.prepare(`
+        UPDATE profiles
+        SET username = @displayName, display_name = @displayName,
+            color = @color, updated_at = @now
+        WHERE user_id = @userId
       `),
       insertToken: database.prepare(`
         INSERT INTO account_tokens (token_hash, user_id, purpose, expires_at, created_at)
@@ -149,7 +165,8 @@ export class AccountRepository {
           t.id,
           t.updated_at,
           a.user_id AS peer_id,
-          a.username AS peer_username,
+          COALESCE(p.display_name, p.username) AS peer_username,
+          a.username AS peer_public_id,
           p.color AS peer_color,
           (
             SELECT dm.content FROM direct_messages dm
@@ -190,7 +207,7 @@ export class AccountRepository {
       listDirectMessages: database.prepare(`
         SELECT dm.sequence, dm.id, dm.thread_id, dm.author_id, dm.content, dm.created_at,
                dm.edited_at, dm.deleted_at, dm.reply_to_id,
-               a.username, p.color
+               COALESCE(p.display_name, p.username) AS username, p.color
         FROM direct_messages dm
         JOIN accounts a ON a.user_id = dm.author_id
         JOIN profiles p ON p.user_id = dm.author_id
@@ -285,6 +302,10 @@ export class AccountRepository {
       this.statements.insertProfile.run(account);
       this.statements.insertAccount.run(account);
     });
+    this.updateIdentityTransaction = database.transaction((identity) => {
+      this.statements.updateAccountPublicId.run(identity);
+      this.statements.updateProfileIdentity.run(identity);
+    });
     this.createTokenTransaction = database.transaction((token) => {
       this.statements.expireTokens.run(token);
       this.statements.insertToken.run(token);
@@ -369,20 +390,36 @@ export class AccountRepository {
     return mapAccount(this.statements.accountByEmail.get(email));
   }
 
-  accountByUsername(username) {
-    return mapAccount(this.statements.accountByUsername.get(username));
+  accountByPublicId(publicId) {
+    return mapAccount(this.statements.accountByPublicId.get(publicId));
+  }
+
+  /** Compatibilidade interna enquanto chamadas antigas ainda usam este nome. */
+  accountByUsername(publicId) {
+    return this.accountByPublicId(publicId);
   }
 
   accountById(userId) {
     return mapAccount(this.statements.accountById.get(userId));
   }
 
-  createAccount({ userId, email, username, passwordHash = null, isSystemAdmin = false, verifiedAt = null, color }) {
+  createAccount({
+    userId,
+    email,
+    username = null,
+    publicId = username,
+    displayName = username ?? publicId,
+    passwordHash = null,
+    isSystemAdmin = false,
+    verifiedAt = null,
+    color,
+  }) {
     const now = Date.now();
     this.createAccountTransaction({
       userId,
       email,
-      username,
+      publicId,
+      displayName,
       passwordHash,
       verifiedAt,
       isSystemAdmin: isSystemAdmin ? 1 : 0,
@@ -401,12 +438,8 @@ export class AccountRepository {
     return this.createAccount({ ...account, isSystemAdmin: true });
   }
 
-  rename(userId, username) {
-    const now = Date.now();
-    this.database
-      .prepare("UPDATE accounts SET username = ?, updated_at = ? WHERE user_id = ?")
-      .run(username, now, userId);
-    this.statements.updateProfileName.run(username, now, userId);
+  updateIdentity(userId, { publicId, displayName, color }) {
+    this.updateIdentityTransaction({ userId, publicId, displayName, color, now: Date.now() });
     return this.accountById(userId);
   }
 
@@ -469,7 +502,12 @@ export class AccountRepository {
       return true;
     }).map((row) => ({
       id: row.id,
-      peer: { id: row.peer_id, username: row.peer_username, color: row.peer_color },
+      peer: {
+        id: row.peer_id,
+        username: row.peer_username,
+        publicId: row.peer_public_id,
+        color: row.peer_color,
+      },
       lastContent: row.last_content === null
         ? null
         : this.cipher.decrypt(row.last_content, `direct_messages:${row.last_message_id}`),
@@ -519,7 +557,7 @@ export class AccountRepository {
       id: message.id,
       threadId,
       authorId,
-      username: account.username,
+      username: account.displayName,
       color: this.database.prepare("SELECT color FROM profiles WHERE user_id = ?").get(authorId).color,
       content,
       at: message.now,

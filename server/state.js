@@ -100,13 +100,18 @@ export function closeState() {
  * objeto: preferências e estado de voz seguem de pé. O socket antigo é devolvido
  * pra quem chamou, que precisa derrubá-lo pra não ficarem dois donos do mesmo id.
  */
-export function addMember(socketId, userId, username, { systemAdmin = false, profile = null } = {}) {
+export function addMember(socketId, userId, username, {
+  systemAdmin = false,
+  profile = null,
+  publicId = null,
+} = {}) {
   const existing = members.get(userId);
   const previousSocketId = existing?.socketId ?? null;
 
   const member = existing ?? {
     id: userId,
     username,
+    publicId,
     color: colorForName(username),
     voiceChannelId: null,
     // Estado de voz. Vem do cliente e é replicado pra todos: é por isso que o
@@ -141,6 +146,7 @@ export function addMember(socketId, userId, username, { systemAdmin = false, pro
   repository.saveProfile({ id: userId, username, color });
 
   member.username = username;
+  member.publicId = publicId;
   member.color = color;
   member.socketId = socketId;
   member.guest = false;
@@ -170,6 +176,7 @@ export function addGuest(socketId, username, guildId, existingUserId = null) {
   const member = {
     id: userId,
     username,
+    publicId: null,
     color: colorForName(username),
     voiceChannelId: null,
     muted: false,
@@ -227,6 +234,7 @@ export function publicMember(member) {
   return {
     id: member.id,
     username: member.username,
+    publicId: member.publicId ?? null,
     color: member.color,
     voiceChannelId: member.voiceChannelId,
     muted: member.muted,
@@ -486,6 +494,30 @@ export function createGuild(ownerId, name) {
   );
   reloadCatalog();
   return guilds.find((guild) => guild.id === id) ?? null;
+}
+
+export function updateGuildIdentity(guildId, name) {
+  const existing = guilds.find((guild) => guild.id === guildId);
+  if (!existing) return null;
+  const changed = repository.updateGuildIdentity(
+    guildId,
+    name,
+    initialsFor(name),
+    colorForName(name),
+  );
+  if (!changed) return null;
+  reloadCatalog();
+  return guilds.find((guild) => guild.id === guildId) ?? null;
+}
+
+/** Atualiza somente a presença viva; a identidade persistente fica nas contas. */
+export function updateMemberIdentity(userId, username, publicId) {
+  const member = members.get(userId);
+  if (!member || member.guest) return null;
+  member.username = username;
+  member.publicId = publicId;
+  member.color = colorForName(username);
+  return member;
 }
 
 /**

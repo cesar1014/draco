@@ -127,6 +127,7 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 ### 🔒 Segurança
 
 - Conta individual 18+, com confirmação de senha e senha protegida por scrypt
+- Nome exibido livre e repetível, com um ID público único para amizades e menções
 - E-mails de segurança responsivos e com a marca DracoCall para confirmação de conta, novo acesso e troca de senha
 - Identidade assinada pelo servidor: conhecer o id de alguém não dá acesso à conta dela
 - Origem aceita pelo Socket.IO e pelas rotas `/api` restringível
@@ -253,7 +254,7 @@ O app não vem com servidores de demonstração. Quem entra pela primeira vez co
 
 Todo servidor nasce privado, com um canal de texto e um de voz, e só quem recebe um convite entra. Isso não é uma regra de permissão à parte — o snapshot que cada cliente recebe é montado a partir dos servidores de que aquela pessoa é membro, então um servidor de que ela não faz parte simplesmente não existe do ponto de vista dela: nem os canais, nem a conversa.
 
-Quem cria é o dono. Ele cria e apaga canais, convida, bane, readmite e pode excluir permanentemente o servidor após confirmar o nome; nenhum cargo ou administrador global recebe essa permissão. Os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
+Quem cria é o dono. Ele altera o nome do servidor, cria e apaga canais, convida, bane, readmite e pode excluir permanentemente o servidor após confirmar o nome; nenhum cargo ou administrador global recebe essas permissões de propriedade. Os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
 
 Convites são códigos de dez caracteres, num alfabeto sem vogais e sem os caracteres que se confundem ao ler em voz alta (`0`/`O`, `1`/`I`). Aceitam validade e limite de usos, e gastar um uso acontece na mesma transação que registra a entrada — duas pessoas colando o mesmo convite de uso único no mesmo instante não entram as duas.
 
@@ -269,7 +270,7 @@ O banco guarda as **5000 mensagens mais recentes** de cada canal. A entrada carr
 
 ### Identidade
 
-Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador, troca de senha e autorização de um dispositivo novo usam links de uso único enviados por e-mail. O endereço de rede também não fica em texto puro. A sessão e a credencial derivadora do dispositivo ficam em cookies **HttpOnly, SameSite=Strict e Secure em produção**, fora do alcance do JavaScript.
+Cada pessoa tem uma conta com e-mail único, um **ID público único** (por exemplo, `cesar1014`), um nome exibido que pode se repetir e uma senha própria. Amizades e menções usam o ID, enquanto conversas e chamadas mostram o nome. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador, troca de senha e autorização de um dispositivo novo usam links de uso único enviados por e-mail. O endereço de rede também não fica em texto puro. A sessão e a credencial derivadora do dispositivo ficam em cookies **HttpOnly, SameSite=Strict e Secure em produção**, fora do alcance do JavaScript.
 
 O segredo de assinatura vem de `SESSION_SECRET`. Em desenvolvimento, na falta dele, um valor é sorteado no primeiro boot e guardado no banco; em produção a variável externa é obrigatória.
 
@@ -548,7 +549,8 @@ DATABASE_PATH=
 BACKUP_RETENTION=7
 BACKUP_ENCRYPTION_KEY=
 ORIGIN=
-SYSTEM_ADMIN_USERNAME=cesar1014
+SYSTEM_ADMIN_PUBLIC_ID=cesar1014
+SYSTEM_ADMIN_DISPLAY_NAME=Cesar
 SYSTEM_ADMIN_EMAIL=xcesaryt@gmail.com
 APP_URL=https://dracocall.duckdns.org
 SMTP_HOST=
@@ -556,6 +558,7 @@ SMTP_PORT=587
 SMTP_SECURE=0
 SMTP_USER=
 SMTP_PASS=
+# Opcional se SMTP_USER for e-mail; caso contrário, use remetente verificado.
 EMAIL_FROM=
 SESSION_SECRET=
 DATA_ENCRYPTION_KEY=
@@ -742,7 +745,10 @@ acima. O instalador pode ser repetido: ele preserva as chaves existentes, config
 fora do Git e recebe permissão `600` no servidor.
 
 As credenciais de SMTP e as duas chaves do Cloudflare Turnstile devem ser adicionadas ao `.env` no
-servidor quando esses provedores forem usados. Sem as duas chaves, o Turnstile permanece desativado.
+servidor quando esses provedores forem usados. `EMAIL_FROM` pode ficar vazio quando `SMTP_USER`
+for um e-mail; um remetente diferente só deve ser usado depois de validado no provedor, ou SPF/DMARC
+pode impedir a entrega. No boot, o Draco testa a autenticação SMTP e informa o resultado no log.
+Sem as duas chaves, o Turnstile permanece desativado.
 
 Para produção, o ideal é usar:
 

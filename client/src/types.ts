@@ -25,6 +25,8 @@ export interface Member {
    */
   id: string;
   username: string;
+  /** ID público único, sem @. Visitantes não possuem um. */
+  publicId: string | null;
   color: string;
   voiceChannelId: string | null;
   muted: boolean;
@@ -101,7 +103,9 @@ export type PresenceState = Exclude<PresenceMode, "invisible"> | "offline";
 
 export interface SocialPerson {
   id: string;
+  /** Alias legado do ID público. */
   username: string;
+  publicId: string;
   displayName: string;
   color: string;
   avatarUrl: string | null;
@@ -142,6 +146,7 @@ export interface DracoNotification {
 export interface RosterEntry {
   id: string;
   username: string;
+  publicId: string | null;
   color: string;
 }
 
@@ -176,7 +181,10 @@ export interface SfuHealth {
 export interface Account {
   id: string;
   email: string | null;
+  /** Alias legado do nome exibido. */
   username: string;
+  displayName: string;
+  publicId: string | null;
   isSystemAdmin: boolean;
   guest?: boolean;
 }

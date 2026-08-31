@@ -226,10 +226,11 @@ export class StateRepository {
         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at
       `),
       upsertProfile: database.prepare(`
-        INSERT INTO profiles (user_id, username, color, updated_at)
-        VALUES (@id, @username, @color, @now)
+        INSERT INTO profiles (user_id, username, display_name, color, updated_at)
+        VALUES (@id, @username, @username, @color, @now)
         ON CONFLICT(user_id) DO UPDATE SET
           username = excluded.username,
+          display_name = excluded.display_name,
           color = excluded.color,
           updated_at = excluded.updated_at
       `),
@@ -289,9 +290,11 @@ export class StateRepository {
       // parte "offline" da lista de membros: presença vem da memória, o elenco
       // vem do banco.
       listGuildRoster: database.prepare(`
-        SELECT p.user_id, p.username, p.color
+        SELECT p.user_id, COALESCE(p.display_name, p.username) AS username,
+               COALESCE(a.username, p.username) AS public_id, p.color
         FROM guild_members gm
         JOIN profiles p ON p.user_id = gm.user_id
+        LEFT JOIN accounts a ON a.user_id = gm.user_id
         WHERE gm.guild_id = ?
         ORDER BY gm.joined_at, p.username
       `),
@@ -302,6 +305,11 @@ export class StateRepository {
       // anexos relacionados. O trigger dos anexos preserva as chaves na fila de
       // limpeza antes da cascata chegar ao registro.
       deleteGuild: database.prepare("DELETE FROM guilds WHERE id = ?"),
+      updateGuildIdentity: database.prepare(`
+        UPDATE guilds
+        SET name = @name, initials = @initials, color = @color, updated_at = @now
+        WHERE id = @guildId
+      `),
       nextGuildPosition: database.prepare(
         "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM guilds",
       ),
@@ -553,6 +561,7 @@ export class StateRepository {
     return this.statements.listGuildRoster.all(guildId).map((row) => ({
       id: row.user_id,
       username: row.username,
+      publicId: row.public_id,
       color: row.color,
     }));
   }
@@ -634,6 +643,12 @@ export class StateRepository {
 
   deleteGuild(guildId) {
     return this.statements.deleteGuild.run(guildId).changes > 0;
+  }
+
+  updateGuildIdentity(guildId, name, initials, color) {
+    return this.statements.updateGuildIdentity.run({
+      guildId, name, initials, color, now: Date.now(),
+    }).changes > 0;
   }
 
   // --- canais ----------------------------------------------------------------

@@ -13,10 +13,14 @@ A Parte 2 e o endurecimento de segurança solicitado estão concluídos.
 - DTOs, uploads privados, quotas/limpeza, rate limit persistente, Turnstile opcional, HTTPS/origem fail-closed e scans de CI foram revisados e implementados.
 - Exclusão permanente de servidor disponível somente para o dono, com confirmação pelo nome, encerramento das chamadas e cascata segura de dados/anexos.
 - E-mails de confirmação, novo dispositivo e senha usam template responsivo com logo e identidade DracoCall, texto alternativo e dados dinâmicos escapados.
+- Nome exibido foi separado do ID público único; amizades usam o ID e o perfil permite alterar ambos sem trocar a identidade interna.
+- O dono pode renomear o servidor, com atualização imediata para os membros e registro de auditoria.
+- SMTP é verificado no boot, rejeições de destinatário viram erro e a confirmação de cadastro pode ser reenviada com as credenciais da conta.
+- Autorizar um novo dispositivo pelo link já cria a sessão e entra diretamente; menus, gavetas e modais receberam layout específico para mobile.
 
 ## Validação final
 
-- `npm test`: aprovado, incluindo typecheck, **118** casos de signaling e **22** casos de mídia, além de contas, e-mail, social, persistência, backup, storage e segurança HTTP.
+- `npm test`: aprovado, incluindo typecheck, **128** casos de signaling e **22** casos de mídia, além de contas, e-mail, social, persistência, backup, storage e segurança HTTP.
 - `npm run build`: aprovado.
 - `npm run app:build`: aprovado; instalador e blockmap gerados em `desktop/out/`.
 - Diff final auditado sem arquivos temporários, logs/debug novos, secrets, botões sem ação ou remoção acidental de funcionalidade.

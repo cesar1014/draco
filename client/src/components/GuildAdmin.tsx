@@ -83,6 +83,7 @@ export function GuildAdminModal() {
   const createChannel = useStore((state) => state.createChannel);
   const deleteChannel = useStore((state) => state.deleteChannel);
   const deleteGuild = useStore((state) => state.deleteGuild);
+  const renameGuild = useStore((state) => state.renameGuild);
   const reorderChannels = useStore((state) => state.reorderChannels);
   const reorderRoles = useStore((state) => state.reorderRoles);
   const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
@@ -98,6 +99,8 @@ export function GuildAdminModal() {
   const [channelType, setChannelType] = useState<"text" | "voice">("text");
   const [permissionChannelId, setPermissionChannelId] = useState<string | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [guildName, setGuildName] = useState("");
+  const guild = guilds.find((item) => item.id === admin?.guildId);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -114,7 +117,10 @@ export function GuildAdminModal() {
     return () => clearTimeout(timer);
   }, [copied]);
 
-  useEffect(() => setDeleteConfirmation(""), [admin?.guildId]);
+  useEffect(() => {
+    setDeleteConfirmation("");
+    setGuildName(guild?.name ?? "");
+  }, [admin?.guildId, guild?.name]);
 
   if (!admin) return null;
 
@@ -127,7 +133,6 @@ export function GuildAdminModal() {
       ? banMember(entry.id, reason.trim() || undefined)
       : kickMember(entry.id, reason.trim() || undefined));
   };
-  const guild = guilds.find((item) => item.id === admin.guildId);
   const canInvite = admin.permissions.includes("create_invites");
   const canBan = admin.permissions.includes("ban_members");
   const canRoles = admin.permissions.includes("manage_roles");
@@ -200,6 +205,33 @@ export function GuildAdminModal() {
                 <p className="hint">{admin.roster.length} membros · {guildChannels.length} canais · servidor privado</p>
                 <p className="hint">As regras de acesso são definidas pelos cargos e permissões deste servidor.</p>
               </div>
+            </section>
+          )}
+
+          {section === "overview" && admin.owner && (
+            <section className="settings-section admin-guild-identity">
+              <div>
+                <h3>Nome do servidor</h3>
+                <p className="hint">A alteração aparece imediatamente para todos os membros.</p>
+              </div>
+              <label className="field">
+                <span>Novo nome</span>
+                <input
+                  value={guildName}
+                  onChange={(event) => setGuildName(event.target.value)}
+                  minLength={2}
+                  maxLength={48}
+                  autoComplete="off"
+                />
+              </label>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={admin.busy || guildName.trim().length < 2 || guildName.trim() === guild?.name}
+                onClick={() => void renameGuild(admin.guildId, guildName)}
+              >
+                Salvar nome
+              </button>
             </section>
           )}
 

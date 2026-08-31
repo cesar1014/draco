@@ -327,7 +327,7 @@ function accountRoute(handler, {
         ? 200
         : result.error === "not-authenticated"
           ? 401
-          : result.error === "email-taken" || result.error === "username-taken"
+          : ["email-taken", "username-taken", "public-id-taken"].includes(result.error)
             ? 409
             : 400;
       return res.status(status).json(safe);
@@ -359,6 +359,10 @@ app.post("/api/auth/login", accountRoute((req, res) => accountService.login({
   legacyDeviceToken: req.body?.legacyDeviceToken ?? req.body?.deviceToken ?? null,
   deviceToken: deviceCredential(req, res, req.body?.email),
 }, req.ip, req.headers), { identity: emailIdentity, botAction: "login" }));
+app.post("/api/auth/verification/resend", accountRoute(
+  (req) => accountService.resendVerification(req.body),
+  { identity: emailIdentity, botAction: "login", burst: 4, perSec: 0.05 },
+));
 app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token, req.ip)));
 app.post(
   "/api/auth/login-address/confirm",
@@ -552,6 +556,14 @@ const io = new SocketServer(server, {
   },
 });
 
+let smtpVerified = false;
+if (mailer.ready) {
+  try {
+    smtpVerified = await mailer.verify();
+  } catch (error) {
+    log.error("configuração SMTP recusada", { motivo: reason(error) });
+  }
+}
 const adminBootstrap = await accountService.bootstrapSystemAdmin();
 attachSignaling(io, process.env, { auth, accountService, telemetry, attachments });
 
@@ -572,7 +584,7 @@ server.listen(port, host, async () => {
     }
   }
   console.log("");
-  console.log(`  contas         ·  e-mail ${accountService.emailReady ? "ativo" : "não configurado"}`);
+  console.log(`  contas         ·  e-mail ${smtpVerified ? "SMTP verificado" : accountService.emailReady ? "configurado, mas não verificado" : "não configurado"}`);
   console.log(`  administrador  ·  ${adminBootstrap.active ? "ativo" : adminBootstrap.emailSent ? "ativação enviada" : "pendente"}`);
   console.log(`  origem         ·  ${originIsOpen ? "qualquer" : allowedOrigins.join(", ")}`);
   console.log(`  sessões        ·  segredo ${secretSource === "env" ? "do ambiente" : "guardado no banco"}`);

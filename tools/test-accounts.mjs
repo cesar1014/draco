@@ -36,19 +36,27 @@ try {
   });
 
   assert.deepEqual(await service.register({
-    email: "ana@example.com", username: "Ana", age: 17,
+    email: "ana@example.com", displayName: "Ana", publicId: "ana101", age: 17,
     password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
   }, IP_A), { ok: false, error: "adult-required" });
   assert.deepEqual(await service.register({
-    email: "ana@example.com", username: "Ana", age: 18,
+    email: "ana@example.com", displayName: "Ana", publicId: "ana101", age: 18,
     password: "Senha-super-segura", passwordConfirmation: "Senha-diferente-aqui",
   }, IP_A), { ok: false, error: "password-mismatch" });
   assert.deepEqual(await service.register({
-    email: "ana@example.com", username: "Ana", age: 18,
+    email: "ana@example.com", displayName: "Ana", publicId: "ana101", age: 18,
     password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
   }, IP_A), { ok: true });
   assert.equal(sent.at(-1).subject, "[DracoCall] Confirme seu e-mail");
   assert.equal(sent.at(-1).recipientName, "Ana");
+  assert.equal(repository.accountByEmail("ana@example.com").publicId, "ana101");
+  assert.equal((await service.resendVerification({
+    email: "ana@example.com", password: "senha-errada",
+  })).error, "login-failed");
+  assert.deepEqual(await service.resendVerification({
+    email: "ana@example.com", password: "Senha-super-segura",
+  }), { ok: true });
+  assert.equal(sent.at(-1).subject, "[DracoCall] Confirme seu e-mail");
 
   const storedPassword = repository.accountByEmail("ana@example.com").passwordHash;
   assert.match(storedPassword, /^scrypt\$32768\$8\$3\$/u);
@@ -84,7 +92,10 @@ try {
     { label: "Endereço IP", value: IP_B },
   ]);
   const confirmation = mailToken();
-  assert.deepEqual(service.confirmLoginAddress(confirmation), { ok: true });
+  const confirmedDevice = service.confirmLoginAddress(confirmation);
+  assert.equal(confirmedDevice.ok, true);
+  assert.equal(confirmedDevice.autoLogin, true, "autorizar o dispositivo já cria a sessão");
+  assert.equal(service.session(confirmedDevice.token, IP_B)?.account.username, "Ana");
   assert.deepEqual(service.confirmLoginAddress(confirmation), { ok: false, error: "token-invalid" });
 
   const second = await service.login({
@@ -119,12 +130,24 @@ try {
   assert.equal(afterExpiry.ok, true, "o dispositivo ainda autorizado pode criar sessão nova");
 
   assert.deepEqual(await service.register({
-    email: "bia@example.com", username: "Bia", age: 25,
+    email: "bia@example.com", displayName: "Ana", publicId: "bia101", age: 25,
     password: "Senha-da-Bia", passwordConfirmation: "Senha-da-Bia",
   }, IP_A), { ok: true });
   assert.deepEqual(await service.verifyEmail(mailToken(), IP_A), { ok: true });
   const bia = await service.login({ email: "bia@example.com", password: "Senha-da-Bia" }, IP_A, headers);
   assert.equal(bia.ok, true);
+  assert.equal(bia.account.username, "Ana", "nomes exibidos podem se repetir");
+  assert.equal(bia.account.publicId, "bia101");
+  assert.deepEqual(service.updateIdentity(bia.account.id, {
+    displayName: "Bia Souza",
+    publicId: "ana101",
+  }), { ok: false, error: "public-id-taken" });
+  const renamedIdentity = service.updateIdentity(bia.account.id, {
+    displayName: "Ana",
+    publicId: "bia.nova",
+  });
+  assert.equal(renamedIdentity.account.publicId, "bia.nova");
+  assert.equal(renamedIdentity.account.displayName, "Ana");
   const crossAccount = await service.login({
     email: "bia@example.com", password: "Senha-da-Bia", deviceToken: unknown.deviceToken,
   }, IP_A, headers);
@@ -183,6 +206,19 @@ try {
     "new-device-verification-sent",
     "administrador sem dispositivo nunca faz bootstrap somente com senha",
   );
+
+  const bootstrap = await service.bootstrapSystemAdmin();
+  assert.equal(bootstrap.emailSent, true);
+  assert.equal(sent.at(-1).subject, "[DracoCall] Ative sua conta de administrador");
+
+  const subjects = new Set(sent.map((mail) => mail.subject));
+  for (const subject of [
+    "[DracoCall] Confirme seu e-mail",
+    "[DracoCall] Confirme este novo acesso",
+    "[DracoCall] Redefina sua senha",
+    "[DracoCall] Confirme a alteração da sua senha",
+    "[DracoCall] Ative sua conta de administrador",
+  ]) assert.equal(subjects.has(subject), true, `o sistema gera ${subject}`);
 
   const id = changed.account.id;
   const thread = repository.createOrFindThread(id, id);

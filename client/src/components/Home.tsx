@@ -35,7 +35,7 @@ function FriendRow({ person, kind }: {
       </span>
       <span className="friend-copy">
         <strong>{person.displayName}</strong>
-        <small>@{person.username} · {status || PRESENCE_LABEL[presence]}</small>
+        <small>@{person.publicId} · {status || PRESENCE_LABEL[presence]}</small>
       </span>
       <span className="friend-actions">
         {kind === "friend" && <button type="button" onClick={() => void openDirect(person.id)}>Mensagem</button>}
@@ -62,7 +62,7 @@ export function Home() {
   const selectGuild = useStore((state) => state.selectGuild);
   const selectChannel = useStore((state) => state.selectChannel);
   const [tab, setTab] = useState<FriendsTab>("online");
-  const [username, setUsername] = useState("");
+  const [publicId, setPublicId] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const self = selfId ? members[selfId] : null;
@@ -83,9 +83,9 @@ export function Home() {
 
   async function add(event: FormEvent) {
     event.preventDefault();
-    const error = await requestFriend(username);
+    const error = await requestFriend(publicId);
     setFeedback(error ?? "Solicitação enviada.");
-    if (!error) setUsername("");
+    if (!error) setPublicId("");
   }
 
   async function presence(mode: PresenceMode) {
@@ -117,10 +117,10 @@ export function Home() {
             {tab === "add" ? (
               <section className="friends-add">
                 <h2>Adicionar amigo</h2>
-                <p>Digite o nome de usuário exato. A outra pessoa decide quando aceitar.</p>
+                <p>Digite o ID público exato. O nome exibido pode se repetir; o ID identifica uma única pessoa.</p>
                 <form onSubmit={add}>
-                  <input value={username} onChange={(event) => setUsername(event.target.value)} maxLength={32} placeholder="nome_de_usuario" autoComplete="off" />
-                  <button type="submit" disabled={!username.trim()}>Enviar solicitação</button>
+                  <input value={publicId} onChange={(event) => setPublicId(event.target.value.toLowerCase())} maxLength={32} placeholder="cesar1014" autoComplete="off" spellCheck={false} />
+                  <button type="submit" disabled={!publicId.trim()}>Enviar solicitação</button>
                 </form>
                 {feedback && <p className="friends-feedback" role="status">{feedback}</p>}
               </section>

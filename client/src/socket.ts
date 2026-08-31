@@ -51,6 +51,7 @@ interface ServerEvents {
   "guild:banned": (payload: { guildId: string }) => void;
   "guild:kicked": (payload: { guildId: string }) => void;
   "guild:deleted": (payload: { guildId: string; name: string }) => void;
+  "guild:updated": (payload: { guild: Guild }) => void;
   "role:changed": (payload: {
     guildId: string;
     roles: Role[];
@@ -196,6 +197,11 @@ export interface RelationshipReply extends Ack {
   };
 }
 
+export interface ProfileReply extends Ack {
+  account?: Account;
+  member?: Member;
+}
+
 interface SfuPublishReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
 }
@@ -246,6 +252,7 @@ interface ClientEvents {
 
   // --- administração ------------------------------------------------------
   "guild:create": (payload: { name: string }, ack: (reply: GuildReply) => void) => void;
+  "guild:update": (payload: { guildId: string; name: string }, ack: (reply: GuildReply) => void) => void;
   "guild:delete": (payload: { guildId: string }, ack: (reply: GuildReply) => void) => void;
   "guild:leave": (payload: { guildId: string }, ack: (reply: GuildReply) => void) => void;
   "guild:admin": (payload: { guildId: string }, ack: (reply: AdminReply) => void) => void;
@@ -297,7 +304,11 @@ interface ClientEvents {
   "direct:edit": (payload: { messageId: string; content: string }, ack: (reply: MessageReply) => void) => void;
   "direct:delete": (payload: { messageId: string }, ack: (reply: MessageReply) => void) => void;
   "direct:react": (payload: { messageId: string; emoji: string }, ack: (reply: MessageReply) => void) => void;
-  "friend:request": (payload: { username: string }, ack: (reply: RelationshipReply) => void) => void;
+  "friend:request": (payload: { publicId: string }, ack: (reply: RelationshipReply) => void) => void;
+  "profile:update": (
+    payload: { displayName: string; publicId: string },
+    ack: (reply: ProfileReply) => void,
+  ) => void;
   "friend:accept": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
   "friend:reject": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
   "friend:cancel": (payload: { userId: string }, ack: (reply: RelationshipReply) => void) => void;
@@ -418,6 +429,9 @@ export const sfuRenegotiate = (
 export const createGuild = (socket: AppSocket, name: string) =>
   ask<GuildReply>((resolve) => socket.emit("guild:create", { name }, resolve));
 
+export const updateGuild = (socket: AppSocket, guildId: string, name: string) =>
+  ask<GuildReply>((resolve) => socket.emit("guild:update", { guildId, name }, resolve));
+
 export const deleteGuild = (socket: AppSocket, guildId: string) =>
   ask<GuildReply>((resolve) => socket.emit("guild:delete", { guildId }, resolve));
 
@@ -534,8 +548,11 @@ export const mutateMessage = (
   else socket.emit(`${scope}:delete`, { messageId }, resolve);
 });
 
-export const requestFriend = (socket: AppSocket, username: string) =>
-  ask<RelationshipReply>((resolve) => socket.emit("friend:request", { username }, resolve));
+export const requestFriend = (socket: AppSocket, publicId: string) =>
+  ask<RelationshipReply>((resolve) => socket.emit("friend:request", { publicId }, resolve));
+
+export const updateProfile = (socket: AppSocket, displayName: string, publicId: string) =>
+  ask<ProfileReply>((resolve) => socket.emit("profile:update", { displayName, publicId }, resolve));
 
 export const changeFriendship = (
   socket: AppSocket,
@@ -560,6 +577,12 @@ export function describeSocketError(code: string | undefined): string {
       return "Senha da sala incorreta.";
     case "bad-username":
       return "Escolha um apelido de 2 a 32 caracteres.";
+    case "bad-public-id":
+      return "Use um ID de 3 a 32 caracteres com letras, números, ponto, hífen ou sublinhado.";
+    case "public-id-taken":
+      return "Esse ID já pertence a outra pessoa.";
+    case "not-owner":
+      return "Somente o dono do servidor pode fazer isso.";
     case "rate-limited":
       return "Muitas tentativas em pouco tempo. Espere alguns segundos.";
     case "already-identified":
@@ -572,8 +595,6 @@ export function describeSocketError(code: string | undefined): string {
       return "Escolha um nome com pelo menos duas letras.";
     case "not-member":
       return "Você não faz parte desse servidor.";
-    case "not-owner":
-      return "Só quem criou o servidor pode fazer isso.";
     case "missing-permission":
       return "Seu cargo não tem permissão para fazer isso.";
     case "not-authenticated":
