@@ -32,7 +32,7 @@
     "db:restore": "node tools/restore-sqlite.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "13.0.3",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "helmet": "8.3.0",
