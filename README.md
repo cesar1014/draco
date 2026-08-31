@@ -16,6 +16,8 @@
 
 **Servidor oficial:** [dracocall.duckdns.org](https://dracocall.duckdns.org)
 
+**App para Windows:** [baixar Draco 1.0.1](https://github.com/cesar1014/draco/releases/download/v1.0.1/draco-setup-1.0.1.exe) · [notas da versão](https://github.com/cesar1014/draco/releases/tag/v1.0.1)
+
 </div>
 
 ---
