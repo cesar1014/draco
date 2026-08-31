@@ -127,7 +127,7 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 ### 🔒 Segurança
 
 - Conta individual 18+, com confirmação de senha e senha protegida por scrypt
-- Confirmação de e-mail e troca de senha por link de uso único
+- E-mails de segurança responsivos e com a marca DracoCall para confirmação de conta, novo acesso e troca de senha
 - Identidade assinada pelo servidor: conhecer o id de alguém não dá acesso à conta dela
 - Origem aceita pelo Socket.IO e pelas rotas `/api` restringível
 - Limite de tamanho, formato e frequência de eventos
@@ -253,7 +253,7 @@ O app não vem com servidores de demonstração. Quem entra pela primeira vez co
 
 Todo servidor nasce privado, com um canal de texto e um de voz, e só quem recebe um convite entra. Isso não é uma regra de permissão à parte — o snapshot que cada cliente recebe é montado a partir dos servidores de que aquela pessoa é membro, então um servidor de que ela não faz parte simplesmente não existe do ponto de vista dela: nem os canais, nem a conversa.
 
-Quem cria é o dono. Ele cria e apaga canais, convida, bane e readmite; os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
+Quem cria é o dono. Ele cria e apaga canais, convida, bane, readmite e pode excluir permanentemente o servidor após confirmar o nome; nenhum cargo ou administrador global recebe essa permissão. Os outros membros convidam e podem sair. O último canal de um tipo não pode ser apagado, porque um servidor sem canal de texto não tem onde conversar.
 
 Convites são códigos de dez caracteres, num alfabeto sem vogais e sem os caracteres que se confundem ao ler em voz alta (`0`/`O`, `1`/`I`). Aceitam validade e limite de usos, e gastar um uso acontece na mesma transação que registra a entrada — duas pessoas colando o mesmo convite de uso único no mesmo instante não entram as duas.
 
@@ -519,8 +519,9 @@ Duas consequências práticas:
 | `npm run app` | abre o Electron |
 | `npm run app:install` | instala dependências do desktop |
 | `npm run app:build` | gera o instalador Windows |
-| `npm test` | typecheck + os quatro conjuntos de teste |
+| `npm test` | typecheck + toda a suíte automatizada |
 | `npm run test:logic` | testa backoff do TURN, rate limit e nomes |
+| `npm run test:mail` | testa marca, texto alternativo e segurança dos e-mails |
 | `npm run test:server` | testa o protocolo de sinalização e a administração |
 | `npm run test:persistence` | testa migrations e persistência após reinício |
 | `npm run test:backup` | testa backup, retenção e restauração SQLite |
@@ -655,7 +656,7 @@ No servidor:
 
 ## Testes
 
-`npm test` roda tudo: typecheck e os quatro conjuntos. Nenhum deles precisa de câmera, microfone ou uma segunda pessoa.
+`npm test` roda o typecheck e toda a suíte automatizada. Nenhum teste precisa de câmera, microfone ou uma segunda pessoa.
 
 ### Sinalização
 
@@ -665,7 +666,7 @@ npm run test:server
 
 Sobe o servidor num socket real e verifica entrada com senha, presença, chat, repasse de sinalização, as guardas dos eventos `sfu:*`, limite de frequência e reconexão sem duplicar ninguém na lista, e que a identidade só é reassumida com o token assinado pelo servidor.
 
-Cobre também a administração: um servidor criado é privado, quem não é membro não o administra, o último canal de um tipo não pode ser apagado, convite de uso único não serve duas vezes, e quem foi banido não volta nem com convite válido. **59 testes.**
+Cobre também a administração: um servidor criado é privado, quem não é membro não o administra, o último canal de um tipo não pode ser apagado, convite de uso único não serve duas vezes, quem foi banido não volta nem com convite válido e somente o dono pode excluir o servidor.
 
 ### Lógica de servidor
 

@@ -35,6 +35,7 @@ import {
   createRole,
   channelsOfGuild,
   deleteChannel,
+  deleteGuild,
   deleteRole,
   findChannel,
   getMember,
@@ -1039,6 +1040,52 @@ export function attachSignaling(io, env = process.env, {
       for (const channel of channelsOfGuild(guild.id)) syncChannelRoom(channel);
       log.info("servidor criado", { guildId: guild.id, ownerId: userId });
       reply({ ok: true, guild, state: clientState() });
+    });
+
+    socket.on("guild:delete", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const guildId = payload?.guildId;
+      if (!guildAction(reply, guildId)) return;
+      // Excluir o servidor é exclusivo de quem o criou. Nem permissões de
+      // cargo nem a administração global substituem a liderança desta ação.
+      if (!isGuildOwner(guildId, userId)) {
+        return reply({ ok: false, error: "not-owner" });
+      }
+
+      const guildChannels = channelsOfGuild(guildId);
+      const voiceParticipants = guildChannels.flatMap((channel) =>
+        channel.type === "voice"
+          ? peersInVoiceChannel(channel.id, null).map((member) => ({ channelId: channel.id, memberId: member.id }))
+          : [],
+      );
+      const result = deleteGuild(guildId);
+      if (!result.ok) return reply(result);
+
+      // O evento sai antes de remover as salas do Socket.IO. Assim membros,
+      // convidados e administradores conectados descartam o servidor na hora.
+      io.to(guildRoom(guildId)).emit("guild:deleted", {
+        guildId,
+        name: result.guild.name,
+      });
+      for (const channel of guildChannels) {
+        if (channel.type === "voice") {
+          io.to(voiceRoom(channel.id)).emit("voice:channel-closed", { channelId: channel.id });
+          io.in(voiceRoom(channel.id)).socketsLeave(voiceRoom(channel.id));
+          callModes.delete(channel.id);
+          for (const key of [...screenViewers.keys()]) {
+            if (key.startsWith(`${channel.id}:`)) screenViewers.delete(key);
+          }
+        }
+        io.in(channelRoom(channel.id)).socketsLeave(channelRoom(channel.id));
+      }
+      io.in(guildRoom(guildId)).socketsLeave(guildRoom(guildId));
+
+      for (const participant of voiceParticipants) {
+        telemetry?.leaveCall(participant.channelId, participant.memberId);
+        emitPresence("member:state", getMemberById(participant.memberId));
+      }
+      log.info("servidor excluído", { guildId, name: result.guild.name, por: userId });
+      reply({ ok: true, guildId, state: clientState() });
     });
 
     socket.on("guild:leave", (payload, ack) => {

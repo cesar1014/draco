@@ -5008,6 +5008,22 @@ button.guild:active {
   font-weight: 750;
 }
 
+.admin-danger-zone {
+  padding: 16px;
+  border: 1px solid rgba(255, 95, 122, 0.34);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 95, 122, 0.06);
+}
+
+.admin-danger-zone h3,
+.admin-danger-zone .field > span strong {
+  color: var(--bad);
+}
+
+.admin-danger-zone .secondary-button {
+  justify-self: start;
+}
+
 .admin-channel-create {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr) auto;

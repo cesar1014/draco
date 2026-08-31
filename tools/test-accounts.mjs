@@ -47,6 +47,8 @@ try {
     email: "ana@example.com", username: "Ana", age: 18,
     password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
   }, IP_A), { ok: true });
+  assert.equal(sent.at(-1).subject, "[DracoCall] Confirme seu e-mail");
+  assert.equal(sent.at(-1).recipientName, "Ana");
 
   const storedPassword = repository.accountByEmail("ana@example.com").passwordHash;
   assert.match(storedPassword, /^scrypt\$32768\$8\$3\$/u);
@@ -76,7 +78,11 @@ try {
   assert.ok(unknown.deviceToken, "a credencial pendente só volta ao aparelho que iniciou o login");
   const deviceMail = sent.at(-1);
   assert.equal(new URL(deviceMail.action).searchParams.get("conta"), "novo-dispositivo");
-  assert.match(deviceMail.text, new RegExp(IP_B.replaceAll(".", "\\.")));
+  assert.equal(deviceMail.subject, "[DracoCall] Confirme este novo acesso");
+  assert.deepEqual(deviceMail.details, [
+    { label: "Dispositivo", value: "Windows · Chrome" },
+    { label: "Endereço IP", value: IP_B },
+  ]);
   const confirmation = mailToken();
   assert.deepEqual(service.confirmLoginAddress(confirmation), { ok: true });
   assert.deepEqual(service.confirmLoginAddress(confirmation), { ok: false, error: "token-invalid" });
@@ -124,7 +130,10 @@ try {
   }, IP_A, headers);
   assert.equal(crossAccount.error, "new-device-verification-sent", "credencial de outra conta nunca é confiável");
 
+  assert.deepEqual(await service.requestPassword("ana@example.com"), { ok: true });
+  assert.equal(sent.at(-1).subject, "[DracoCall] Redefina sua senha");
   assert.deepEqual(await service.requestOwnPassword(afterExpiry.token, IP_A), { ok: true });
+  assert.equal(sent.at(-1).subject, "[DracoCall] Confirme a alteração da sua senha");
   const resetToken = mailToken();
   const changed = await service.completePassword(resetToken, "Outra-senha-segura", IP_V6, headers);
   assert.equal(changed.ok, true);

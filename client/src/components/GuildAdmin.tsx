@@ -82,6 +82,7 @@ export function GuildAdminModal() {
   const assignRole = useStore((state) => state.assignRole);
   const createChannel = useStore((state) => state.createChannel);
   const deleteChannel = useStore((state) => state.deleteChannel);
+  const deleteGuild = useStore((state) => state.deleteGuild);
   const reorderChannels = useStore((state) => state.reorderChannels);
   const reorderRoles = useStore((state) => state.reorderRoles);
   const systemAdmin = useStore((state) => state.account?.isSystemAdmin === true);
@@ -96,6 +97,7 @@ export function GuildAdminModal() {
   const [channelName, setChannelName] = useState("");
   const [channelType, setChannelType] = useState<"text" | "voice">("text");
   const [permissionChannelId, setPermissionChannelId] = useState<string | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -111,6 +113,8 @@ export function GuildAdminModal() {
     const timer = setTimeout(() => setCopied(false), 2000);
     return () => clearTimeout(timer);
   }, [copied]);
+
+  useEffect(() => setDeleteConfirmation(""), [admin?.guildId]);
 
   if (!admin) return null;
 
@@ -196,6 +200,36 @@ export function GuildAdminModal() {
                 <p className="hint">{admin.roster.length} membros · {guildChannels.length} canais · servidor privado</p>
                 <p className="hint">As regras de acesso são definidas pelos cargos e permissões deste servidor.</p>
               </div>
+            </section>
+          )}
+
+          {section === "overview" && admin.owner && (
+            <section className="settings-section admin-danger-zone">
+              <div>
+                <h3>Excluir servidor</h3>
+                <p className="hint">
+                  Esta ação apaga permanentemente canais, mensagens, cargos, convites e anexos deste servidor.
+                  Não existe desfazer.
+                </p>
+              </div>
+              <label className="field">
+                <span>Digite <strong>{guild?.name}</strong> para confirmar</span>
+                <input
+                  value={deleteConfirmation}
+                  onChange={(event) => setDeleteConfirmation(event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={guild?.name}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button danger"
+                disabled={admin.busy || !guild?.name || deleteConfirmation !== guild.name}
+                onClick={() => void deleteGuild(admin.guildId)}
+              >
+                Excluir servidor permanentemente
+              </button>
             </section>
           )}
 

@@ -488,6 +488,30 @@ export function createGuild(ownerId, name) {
   return guilds.find((guild) => guild.id === id) ?? null;
 }
 
+/**
+ * Exclui o servidor e todo o conteúdo persistente ligado a ele. A autorização
+ * fica na sinalização; aqui a operação só garante consistência de catálogo e dos
+ * caches vivos depois que a cascata do SQLite terminou.
+ */
+export function deleteGuild(guildId) {
+  const guild = guilds.find((item) => item.id === guildId);
+  if (!guild) return { ok: false, error: "no-guild" };
+
+  const removedChannels = channelsOfGuild(guildId);
+  if (!repository.deleteGuild(guildId)) return { ok: false, error: "delete-failed" };
+
+  const removedIds = new Set(removedChannels.map((channel) => channel.id));
+  for (const channelId of removedIds) {
+    messages.delete(channelId);
+    hasOlder.delete(channelId);
+  }
+  for (const member of members.values()) {
+    if (removedIds.has(member.voiceChannelId)) setVoiceChannel(member.id, null);
+  }
+  reloadCatalog();
+  return { ok: true, guild, channels: removedChannels };
+}
+
 export function createChannel(guildId, type, name) {
   const id = `${type === "voice" ? "v" : "t"}-${randomUUID().slice(0, 8)}`;
   repository.createChannel({

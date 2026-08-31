@@ -74,34 +74,58 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
 
     const actionType = newDevice ? "novo-dispositivo" : setup ? "ativar" : verify ? "verificar" : "senha";
     const action = `${origin}/?conta=${actionType}&token=${encodeURIComponent(raw)}`;
+    const passwordChange = purpose === "password_change";
     const copy = verify
       ? {
-          subject: "Confirme seu e-mail no Draco",
+          subject: "[DracoCall] Confirme seu e-mail",
           title: "Confirme seu e-mail",
-          text: "Confirme que este endereço pertence a você para liberar sua conta.",
+          text: "Só falta confirmar que este endereço pertence a você para liberar sua conta no DracoCall.",
           actionLabel: "Confirmar e-mail",
+          preheader: "Confirme seu endereço de e-mail para começar a usar o DracoCall.",
+          expiresIn: "Este link expira em 24 horas e só pode ser usado uma vez.",
         }
       : newDevice
         ? {
-            subject: "Confirme um novo dispositivo no Draco",
-            title: "Novo dispositivo",
-            text: `Alguém informou sua senha em ${context.deviceName}, a partir do IP ${context.addressLabel}. Confirme somente se foi você. O link expira em 15 minutos.`,
-            actionLabel: "Confirmar dispositivo",
+            subject: "[DracoCall] Confirme este novo acesso",
+            title: "Novo acesso ao DracoCall",
+            text: "Recebemos uma tentativa de login correta em um dispositivo que ainda não foi confirmado.",
+            actionLabel: "Sim, fui eu",
+            preheader: `Novo acesso em ${context.deviceName}. Confirme somente se foi você.`,
+            details: [
+              { label: "Dispositivo", value: context.deviceName },
+              { label: "Endereço IP", value: context.addressLabel },
+            ],
+            expiresIn: "Este link expira em 15 minutos e só pode ser usado uma vez.",
+            securityNote: "Não reconhece este acesso? Não clique no botão e troque sua senha. Nenhum dispositivo novo será autorizado sem esta confirmação.",
           }
       : setup
         ? {
-            subject: "Ative a conta de administrador do Draco",
+            subject: "[DracoCall] Ative sua conta de administrador",
             title: "Sua conta de administrador está pronta",
-            text: "Defina sua senha para ativar a conta principal do Draco.",
+            text: "Defina uma senha forte para ativar a conta principal e começar a administrar o DracoCall.",
             actionLabel: "Definir minha senha",
+            preheader: "Ative com segurança a conta principal do DracoCall.",
+            expiresIn: "Este link expira em 48 horas e só pode ser usado uma vez.",
           }
-        : {
-            subject: "Confirme a troca de senha do Draco",
-            title: "Troca de senha",
-            text: "Use este link para escolher uma senha nova. Ele expira em uma hora.",
-            actionLabel: "Trocar minha senha",
-          };
-    await mailer.send({ to: account.email, action, ...copy });
+        : passwordChange
+          ? {
+              subject: "[DracoCall] Confirme a alteração da sua senha",
+              title: "Altere sua senha com segurança",
+              text: "Você solicitou uma nova senha enquanto estava conectado ao DracoCall.",
+              actionLabel: "Escolher nova senha",
+              preheader: "Use este link seguro para alterar sua senha do DracoCall.",
+              expiresIn: "Este link expira em 1 hora e só pode ser usado uma vez.",
+            }
+          : {
+              subject: "[DracoCall] Redefina sua senha",
+              title: "Redefinição de senha",
+              text: "Recebemos uma solicitação para redefinir a senha da sua conta no DracoCall.",
+              actionLabel: "Redefinir minha senha",
+              preheader: "Use este link seguro para recuperar sua conta do DracoCall.",
+              expiresIn: "Este link expira em 1 hora e só pode ser usado uma vez.",
+              securityNote: "Não solicitou a redefinição? Ignore este e-mail. Sua senha atual não será alterada.",
+            };
+    await mailer.send({ to: account.email, action, recipientName: account.username, ...copy });
     return { ok: true };
   }
 

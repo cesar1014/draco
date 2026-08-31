@@ -298,6 +298,10 @@ export class StateRepository {
       deleteGuildMember: database.prepare(
         "DELETE FROM guild_members WHERE guild_id = ? AND user_id = ?",
       ),
+      // As FKs do schema removem canais, mensagens, cargos, convites, bans e
+      // anexos relacionados. O trigger dos anexos preserva as chaves na fila de
+      // limpeza antes da cascata chegar ao registro.
+      deleteGuild: database.prepare("DELETE FROM guilds WHERE id = ?"),
       nextGuildPosition: database.prepare(
         "SELECT COALESCE(MAX(position), -1) + 1 AS position FROM guilds",
       ),
@@ -626,6 +630,10 @@ export class StateRepository {
 
   leaveGuild(guildId, userId) {
     this.statements.deleteGuildMember.run(guildId, userId);
+  }
+
+  deleteGuild(guildId) {
+    return this.statements.deleteGuild.run(guildId).changes > 0;
   }
 
   // --- canais ----------------------------------------------------------------

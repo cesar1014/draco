@@ -96,7 +96,26 @@ try {
     "attachments/one.png",
     "a chave continua em fila durável até o bucket confirmar a exclusão",
   );
-  console.log("storage privado, quota acumulada e limpeza de pendências: ok");
+
+  const cascaded = attachments.create({
+    scope: "channel",
+    messageId,
+    ownerId: userId,
+    filename: "guild.png",
+    mime: "image/png",
+    size: 60,
+    storageKey: "attachments/guild.png",
+  });
+  assert.ok(cascaded?.id);
+  assert.equal(attachments.complete(cascaded.id, userId), true);
+  assert.equal(state.deleteGuild(guildId), true);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM attachments WHERE id = ?").get(cascaded.id).count, 0);
+  assert.equal(
+    attachments.queuedDeletions().some((entry) => entry.storage_key === "attachments/guild.png"),
+    true,
+    "excluir o servidor agenda a remoção dos arquivos anexados no bucket",
+  );
+  console.log("storage privado, quota e limpeza de pendências/servidor: ok");
 } finally {
   database.close();
 }

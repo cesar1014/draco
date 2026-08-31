@@ -50,6 +50,7 @@ interface ServerEvents {
   "guild:member-left": (payload: { guildId: string; userId: string }) => void;
   "guild:banned": (payload: { guildId: string }) => void;
   "guild:kicked": (payload: { guildId: string }) => void;
+  "guild:deleted": (payload: { guildId: string; name: string }) => void;
   "role:changed": (payload: {
     guildId: string;
     roles: Role[];
@@ -245,6 +246,7 @@ interface ClientEvents {
 
   // --- administração ------------------------------------------------------
   "guild:create": (payload: { name: string }, ack: (reply: GuildReply) => void) => void;
+  "guild:delete": (payload: { guildId: string }, ack: (reply: GuildReply) => void) => void;
   "guild:leave": (payload: { guildId: string }, ack: (reply: GuildReply) => void) => void;
   "guild:admin": (payload: { guildId: string }, ack: (reply: AdminReply) => void) => void;
   "channel:create": (
@@ -416,6 +418,9 @@ export const sfuRenegotiate = (
 export const createGuild = (socket: AppSocket, name: string) =>
   ask<GuildReply>((resolve) => socket.emit("guild:create", { name }, resolve));
 
+export const deleteGuild = (socket: AppSocket, guildId: string) =>
+  ask<GuildReply>((resolve) => socket.emit("guild:delete", { guildId }, resolve));
+
 export const leaveGuild = (socket: AppSocket, guildId: string) =>
   ask<GuildReply>((resolve) => socket.emit("guild:leave", { guildId }, resolve));
 
@@ -561,6 +566,8 @@ export function describeSocketError(code: string | undefined): string {
       return "Esta aba já entrou. Recarregue a página.";
     case "no-channel":
       return "Esse canal de voz não existe mais.";
+    case "no-guild":
+      return "Esse servidor não existe mais.";
     case "bad-name":
       return "Escolha um nome com pelo menos duas letras.";
     case "not-member":

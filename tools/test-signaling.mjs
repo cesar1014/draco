@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io as connect } from "socket.io-client";
+import Database from "better-sqlite3";
 import { createAccountRepository } from "../server/data/account-repository.js";
 import { hashActionToken, hashPassword } from "../server/passwords.js";
 import { SessionAuthority } from "../server/auth.js";
@@ -30,17 +31,19 @@ const seeded = [
   ["33333333-3333-4333-8333-333333333333", "carla@teste.local", "Carla"],
   ["44444444-4444-4444-8444-444444444444", "davi@teste.local", "Davi"],
   ["55555555-5555-4555-8555-555555555555", "elena@teste.local", "Elena"],
+  ["66666666-6666-4666-8666-666666666666", "fabio@teste.local", "Fábio", true],
 ];
 const passwordHash = await hashPassword(PASSWORD);
 const authority = new SessionAuthority(SESSION_SECRET);
 const tokens = {};
 const accountRepository = createAccountRepository({ databasePath });
-for (const [userId, email, username] of seeded) {
+for (const [userId, email, username, isSystemAdmin = false] of seeded) {
   accountRepository.createAccount({
     userId,
     email,
     username,
     passwordHash,
+    isSystemAdmin,
     verifiedAt: Date.now(),
     color: "#5b6cff",
   });
@@ -599,6 +602,11 @@ try {
     (await emit(g, "channel:delete", { channelId: voiceOnly.id })).error,
     "missing-permission",
   );
+  check(
+    "membro sem liderança não exclui o servidor",
+    (await emit(g, "guild:delete", { guildId })).error,
+    "not-owner",
+  );
   check("quem não é dono pode sair", (await emit(g, "guild:leave", { guildId })).ok, true);
   check(
     "o dono não sai do próprio servidor",
@@ -613,6 +621,45 @@ try {
     ["member.kick", "member.ban", "member.unban"].every((action) => panel.auditLog.some((entry) => entry.action === action)),
     true,
   );
+
+  // Exclusão é a saída definitiva do dono. Todos recebem o evento, a call fecha
+  // e o snapshot devolvido já não contém o servidor nem seu conteúdo.
+  await emit(g, "invite:accept", { code: openInvite.code });
+  await emit(g, "voice:join", { channelId: voiceOnly.id });
+  const globalAdmin = connect(URL, { transports: ["websocket"] });
+  await waitFor(globalAdmin, "connect");
+  await emit(globalAdmin, "identify", { token: tokens.Fábio });
+  check(
+    "administrador global sem liderança não exclui o servidor",
+    (await emit(globalAdmin, "guild:delete", { guildId })).error,
+    "not-owner",
+  );
+  const deletedOnMember = waitFor(g, "guild:deleted");
+  const voiceClosedOnMember = waitFor(g, "voice:channel-closed");
+  const deleted = await emit(a, "guild:delete", { guildId });
+  check("dono exclui o servidor", deleted.ok, true);
+  check("exclusão avisa os demais membros", (await deletedOnMember)?.name, "Servidor de Teste");
+  check("exclusão encerra a call do servidor", (await voiceClosedOnMember)?.channelId, voiceOnly.id);
+  check("snapshot do dono não conserva o servidor excluído", deleted.state.guilds.some((guild) => guild.id === guildId), false);
+  check("servidor excluído não pode mais ser administrado", (await emit(g, "guild:admin", { guildId })).error, "not-member");
+
+  const persisted = new Database(databasePath, { readonly: true, fileMustExist: true });
+  const relatedTables = ["guild_members", "roles", "channels", "guild_settings", "invites", "bans", "member_timeouts", "audit_log"];
+  const remaining = {
+    guild: persisted.prepare("SELECT COUNT(*) AS count FROM guilds WHERE id = ?").get(guildId).count,
+    related: relatedTables.reduce(
+      (total, table) => total + persisted.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE guild_id = ?`).get(guildId).count,
+      0,
+    ),
+    foreignKeyViolations: persisted.pragma("foreign_key_check").length,
+  };
+  persisted.close();
+  check("exclusão também remove os dados persistidos sem órfãos", remaining, {
+    guild: 0,
+    related: 0,
+    foreignKeyViolations: 0,
+  });
+  globalAdmin.close();
 
   a.close();
   g.close();

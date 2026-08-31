@@ -11,10 +11,12 @@ A Parte 2 e o endurecimento de segurança solicitado estão concluídos.
 - A migration incremental `008_trusted_devices.sql` adiciona dispositivos confiáveis e preserva compatibilidade com bancos existentes.
 - Sessão/dispositivo usam cookies HttpOnly; mensagens e backups usam AES-256-GCM com chaves externas.
 - DTOs, uploads privados, quotas/limpeza, rate limit persistente, Turnstile opcional, HTTPS/origem fail-closed e scans de CI foram revisados e implementados.
+- Exclusão permanente de servidor disponível somente para o dono, com confirmação pelo nome, encerramento das chamadas e cascata segura de dados/anexos.
+- E-mails de confirmação, novo dispositivo e senha usam template responsivo com logo e identidade DracoCall, texto alternativo e dados dinâmicos escapados.
 
 ## Validação final
 
-- `npm test`: aprovado, incluindo typecheck, **110** casos de signaling e **22** casos de mídia, além de contas, social, persistência, backup, storage e segurança HTTP.
+- `npm test`: aprovado, incluindo typecheck, **118** casos de signaling e **22** casos de mídia, além de contas, e-mail, social, persistência, backup, storage e segurança HTTP.
 - `npm run build`: aprovado.
 - `npm run app:build`: aprovado; instalador e blockmap gerados em `desktop/out/`.
 - Diff final auditado sem arquivos temporários, logs/debug novos, secrets, botões sem ação ou remoção acidental de funcionalidade.

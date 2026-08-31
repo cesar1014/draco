@@ -57,6 +57,7 @@ import {
   createRole as createGuildRole,
   createSocket,
   deleteChannel,
+  deleteGuild as deleteGuildRequest,
   describeSocketError,
   identify,
   identifyGuest,
@@ -500,6 +501,7 @@ interface Store {
 
   // --- administração ------------------------------------------------------
   createGuild: (name: string) => Promise<string | null>;
+  deleteGuild: (guildId: string) => Promise<string | null>;
   leaveGuild: (guildId: string) => Promise<string | null>;
   joinByInvite: (code: string) => Promise<string | null>;
   createChannel: (guildId: string, type: "text" | "voice", name: string) => Promise<string | null>;
@@ -1312,6 +1314,43 @@ export const useStore = create<Store>()((set, get) => {
       });
       ensureSelection();
     });
+
+    s.on("guild:deleted", ({ guildId, name }) => {
+      const channelIds = new Set(
+        get().channels.filter((channel) => channel.guildId === guildId).map((channel) => channel.id),
+      );
+      if (channelIds.has(get().voiceChannelId ?? "")) get().leaveVoice();
+
+      set((state) => {
+        const roster = { ...state.roster };
+        const roles = { ...state.roles };
+        const memberRoles = { ...state.memberRoles };
+        const permissions = { ...state.permissions };
+        const messages = { ...state.messages };
+        const history = { ...state.history };
+        delete roster[guildId];
+        delete roles[guildId];
+        delete memberRoles[guildId];
+        delete permissions[guildId];
+        for (const channelId of channelIds) {
+          delete messages[channelId];
+          delete history[channelId];
+        }
+        return {
+          guilds: state.guilds.filter((guild) => guild.id !== guildId),
+          channels: state.channels.filter((channel) => channel.guildId !== guildId),
+          roster,
+          roles,
+          memberRoles,
+          permissions,
+          messages,
+          history,
+          admin: state.admin?.guildId === guildId ? null : state.admin,
+          notice: `${name || "O servidor"} foi excluído permanentemente.`,
+        };
+      });
+      ensureSelection();
+    });
   };
 
   const startConnection = async () => {
@@ -2087,6 +2126,27 @@ export const useStore = create<Store>()((set, get) => {
       // um segundo clique pra ver o que acabou de nascer.
       const first = reply.state.channels.find((c) => c.guildId === guildId && c.type === "text");
       set({ activeGuildId: guildId, activeChannelId: first?.id ?? "", sidebarOpen: false });
+      return null;
+    },
+
+    async deleteGuild(guildId) {
+      const s = socket;
+      const admin = get().admin;
+      if (!s) return "Sem conexão com o servidor.";
+      if (admin?.busy) return "Aguarde a ação atual terminar.";
+      if (admin?.guildId === guildId) set({ admin: { ...admin, busy: true, error: null } });
+
+      const reply = await deleteGuildRequest(s, guildId);
+      if (!reply.ok || !reply.state) {
+        const error = describeSocketError(reply.error);
+        const current = get().admin;
+        if (current?.guildId === guildId) set({ admin: { ...current, busy: false, error } });
+        return error;
+      }
+
+      set(fromSnapshot(reply.state));
+      set({ admin: null });
+      ensureSelection();
       return null;
     },
 
