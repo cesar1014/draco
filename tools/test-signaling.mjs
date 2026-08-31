@@ -114,6 +114,7 @@ const server = spawn(process.execPath, ["server/index.js"], {
     PORT: String(PORT),
     SESSION_SECRET,
     ORIGIN: "",
+    NODE_ENV: "test",
   },
   stdio: ["ignore", "ignore", "inherit"],
 });
@@ -153,6 +154,10 @@ try {
   );
 
   const joinA = await emit(a, "identify", { token: tokens.Ana });
+  const publicSelf = joinA.state.members.find((member) => member.id === seeded[0][0]);
+  for (const internal of ["socketId", "sfuRecvSessionId", "systemAdmin", "presenceMode"]) {
+    check(`snapshot não expõe ${internal}`, internal in publicSelf, false);
+  }
   check("entrada com conta válida", joinA.ok, true);
   check(
     "conta identificada recebe configuração ICE",
@@ -256,6 +261,12 @@ try {
     "membro sem permissão não reordena cargos",
     (await emit(c, "role:reorder", { guildId: homeId, orderedIds: [role.role.id, secondRole.role.id] })).error,
     "missing-permission",
+  );
+  await emit(a, "role:assign", { guildId: homeId, userId: idB, roleId: secondRole.role.id, assigned: true });
+  check(
+    "nem moderador com banimento pode banir o dono",
+    (await emit(b, "member:ban", { guildId: homeId, userId: idA })).error,
+    "protected-user",
   );
 
   const channelOrder = [voice, text, teamChannel.channel.id, extra];
@@ -389,9 +400,32 @@ try {
 
   // --- estado de voz -------------------------------------------------------
   const stateOnC = waitFor(c, "member:state");
-  a.emit("voice:state", { muted: true, camOn: true });
+  a.emit("voice:state", { muted: true, deafened: true, camOn: true, volume: 0.1 });
   const state = await stateOnC;
-  check("estado de voz replica pra quem não está na call", [state?.muted, state?.camOn], [true, true]);
+  check("mute e deafen públicos são replicados", [state?.muted, state?.deafened, state?.camOn], [true, true, true]);
+  check("volume individual não vira estado público", Object.hasOwn(state ?? {}, "volume"), false);
+  const stateRestored = waitFor(c, "member:state");
+  a.emit("voice:state", { muted: false, deafened: false });
+  const restored = await stateRestored;
+  check("desmutar e tirar deafen atualiza imediatamente", [restored?.muted, restored?.deafened], [false, false]);
+
+  // Espectador só existe depois de abrir uma tela real na mesma call.
+  const screenStarted = waitFor(c, "member:state");
+  a.emit("voice:state", { screenOn: true });
+  await screenStarted;
+  const viewerOnA = waitFor(a, "screen:viewers");
+  check("participante da call começa a assistir", (await emit(b, "screen:view", { ownerId: idA, watching: true })).ok, true);
+  check("lista de espectadores traz a identidade real", (await viewerOnA)?.viewers?.map((viewer) => viewer.id), [idB]);
+  check("quem está fora da call não se declara espectador", (await emit(c, "screen:view", { ownerId: idA, watching: true })).error, "not-in-voice");
+  const viewerStopped = waitFor(a, "screen:viewers");
+  await emit(b, "screen:view", { ownerId: idA, watching: false });
+  check("parar de assistir reduz o contador", (await viewerStopped)?.viewers?.length, 0);
+  const watchingAgain = waitFor(a, "screen:viewers");
+  await emit(b, "screen:view", { ownerId: idA, watching: true });
+  await watchingAgain;
+  const screenEnded = waitFor(b, "screen:viewers");
+  a.emit("voice:state", { screenOn: false });
+  check("encerrar a tela limpa todos os espectadores", (await screenEnded)?.viewers?.length, 0);
 
   // --- reconexão com a mesma identidade ------------------------------------
   const d = connect(URL, { transports: ["websocket"] });
@@ -427,10 +461,15 @@ try {
   check("SDP gigante e candidato malformado são descartados", junkSignals.length, 0);
 
   // --- saída ---------------------------------------------------------------
+  a.emit("voice:state", { screenOn: true });
+  await sleep(20);
+  await emit(b, "screen:view", { ownerId: idA, watching: true });
+  const viewersAfterAbruptLeave = waitFor(a, "screen:viewers");
   const peerLeftOnA = waitFor(a, "voice:peer-left");
   const memberLeftOnA = waitFor(a, "member:left");
   b.close();
   check("saída avisa os peers da call", (await peerLeftOnA)?.memberId, idB);
+  check("saída abrupta não deixa espectador fantasma", (await viewersAfterAbruptLeave)?.viewers?.length, 0);
   check("saída avisa a lista de membros", (await memberLeftOnA)?.id, idB);
 
   // --- rate limit ----------------------------------------------------------
@@ -526,15 +565,29 @@ try {
     "invite-invalid",
   );
 
-  // Banir tira do servidor e impede a volta pelo mesmo convite.
+  // Expulsar remove inclusive da voz, mas preserva o direito de voltar.
   const openInvite = await emit(a, "invite:create", { guildId });
-  check("banir remove do elenco", (await emit(a, "member:ban", { guildId, userId: idG })).ok, true);
+  await emit(a, "voice:join", { channelId: voiceOnly.id });
+  await emit(g, "voice:join", { channelId: voiceOnly.id });
+  const kickedFromVoice = waitFor(g, "voice:moderated");
+  check("expulsar remove do elenco", (await emit(a, "member:kick", { guildId, userId: idG, reason: "teste de kick" })).ok, true);
+  check("kick remove da call de forma autoritativa", (await kickedFromVoice)?.reason, "kick");
+  check("kick permite voltar com convite válido", (await emit(g, "invite:accept", { code: openInvite.code })).ok, true);
+
+  // Banir tira do servidor e da voz, registra o ator e impede convite válido.
+  await emit(g, "voice:join", { channelId: voiceOnly.id });
+  const bannedFromVoice = waitFor(g, "voice:moderated");
+  const banReply = await emit(a, "member:ban", { guildId, userId: idG, reason: "teste de ban" });
+  check("banir remove do elenco", banReply.ok, true);
+  check("ban remove da call de forma autoritativa", (await bannedFromVoice)?.reason, "ban");
+  check("ban registra moderador, data e motivo", [banReply.bans?.[0]?.moderatorId, banReply.bans?.[0]?.reason, Number.isFinite(banReply.bans?.[0]?.createdAt)], [idA, "teste de ban", true]);
   check(
     "quem foi banido não volta nem com convite válido",
     (await emit(g, "invite:accept", { code: openInvite.code })).error,
     "banned",
   );
-  check("readmitir libera a volta", (await emit(a, "member:unban", { guildId, userId: idG })).ok, true);
+  check("desbanir libera a volta", (await emit(a, "member:unban", { guildId, userId: idG })).ok, true);
+  check("desbanir não adiciona o usuário automaticamente", (await emit(a, "guild:admin", { guildId })).roster.some((entry) => entry.id === idG), false);
   check(
     "depois de readmitido o convite funciona",
     (await emit(g, "invite:accept", { code: openInvite.code })).ok,
@@ -555,6 +608,11 @@ try {
 
   const panel = await emit(a, "guild:admin", { guildId });
   check("o painel do dono traz elenco e convites", [panel.ok, panel.owner], [true, true]);
+  check(
+    "kick, ban e unban entram no audit log existente",
+    ["member.kick", "member.ban", "member.unban"].every((action) => panel.auditLog.some((entry) => entry.action === action)),
+    true,
+  );
 
   a.close();
   g.close();

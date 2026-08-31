@@ -240,7 +240,7 @@ A divisão é simples: **o que faz sentido depois de um restart vai para o SQLit
 | servidores e canais | quem está em qual canal de voz |
 | membros e cargos | sessões do SFU, tracks e streams |
 | mensagens de canal e privadas | estado de mute, câmera e tela |
-| convites e banimentos | baldes de rate limit |
+| convites, banimentos e rate limit de autenticação | baldes de eventos Socket.IO |
 | segredo de assinatura das sessões | |
 
 Presença e mídia não são "estado que se perdeu": eles deixam de ser verdade no instante em que o processo cai, e ressuscitá-los mostraria gente numa call que não existe.
@@ -267,9 +267,11 @@ O banco guarda as **5000 mensagens mais recentes** de cada canal. A entrada carr
 
 ### Identidade
 
-Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador, troca de senha e autorização de um IP novo usam links de uso único enviados por e-mail. O endereço de rede também não fica em texto puro: o banco guarda somente um HMAC usado para reconhecer até 20 endereços confirmados. O navegador guarda um **token assinado com HMAC-SHA256**, com prazo de 30 dias e renovação automática na última semana.
+Cada pessoa tem uma conta com e-mail único, nome único e senha própria. O cadastro exige confirmação da senha e uma idade declarada entre 18 e 120 anos; a idade serve apenas para aplicar a barreira 18+ e não é guardada no banco. A senha é armazenada somente como hash scrypt; confirmação de cadastro, ativação do administrador, troca de senha e autorização de um dispositivo novo usam links de uso único enviados por e-mail. O endereço de rede também não fica em texto puro. A sessão e a credencial derivadora do dispositivo ficam em cookies **HttpOnly, SameSite=Strict e Secure em produção**, fora do alcance do JavaScript.
 
-O segredo de assinatura vem de `SESSION_SECRET` ou, na falta dele, é sorteado no primeiro boot e guardado no banco. Guardar em vez de sortear a cada boot é o que faz um deploy não desconectar todo mundo da própria identidade.
+O segredo de assinatura vem de `SESSION_SECRET`. Em desenvolvimento, na falta dele, um valor é sorteado no primeiro boot e guardado no banco; em produção a variável externa é obrigatória.
+
+O corpo das mensagens é cifrado no SQLite com AES-256-GCM usando `DATA_ENCRYPTION_KEY`, mantida fora do banco. Isso protege o arquivo e os backups contra leitura sem a chave; não é criptografia ponta a ponta, porque o servidor precisa descriptografar para entregar a conversa a quem tem acesso.
 
 ---
 
@@ -541,6 +543,7 @@ PORT=3100
 HOST=127.0.0.1
 DATABASE_PATH=
 BACKUP_RETENTION=7
+BACKUP_ENCRYPTION_KEY=
 ORIGIN=
 SYSTEM_ADMIN_USERNAME=cesar1014
 SYSTEM_ADMIN_EMAIL=xcesaryt@gmail.com
@@ -552,6 +555,10 @@ SMTP_USER=
 SMTP_PASS=
 EMAIL_FROM=
 SESSION_SECRET=
+DATA_ENCRYPTION_KEY=
+DATA_ENCRYPTION_PREVIOUS_KEYS=
+TURNSTILE_SITE_KEY=
+TURNSTILE_SECRET_KEY=
 TRUSTED_PROXY=0
 LOG_LEVEL=
 
@@ -566,6 +573,13 @@ TURN_ONLY=0
 
 CLOUDFLARE_REALTIME_APP_ID=
 CLOUDFLARE_REALTIME_APP_SECRET=
+
+OBJECT_STORAGE_ENDPOINT=
+OBJECT_STORAGE_BUCKET=
+OBJECT_STORAGE_ACCESS_KEY_ID=
+OBJECT_STORAGE_SECRET_ACCESS_KEY=
+OBJECT_STORAGE_REGION=auto
+OBJECT_STORAGE_USER_QUOTA_BYTES=1073741824
 ```
 
 Nunca publique credenciais reais no repositório. O `.env.example` explica cada opção em detalhe.
@@ -582,12 +596,13 @@ cada uma emitiria tokens que a outra recusaria.
 ### Backup e restauração do SQLite
 
 `npm run db:backup` cria uma cópia consistente em `backups/` usando a API de backup do SQLite,
-inclusive enquanto o banco está em WAL. `BACKUP_RETENTION` controla quantas cópias permanecem.
+inclusive enquanto o banco está em WAL, e a cifra com `BACKUP_ENCRYPTION_KEY`.
+`BACKUP_RETENTION` controla quantas cópias permanecem.
 
 Para restaurar, primeiro pare o serviço e execute:
 
 ```bash
-npm run db:restore -- backups/draco-AAAA-MM-DD.sqlite --confirm-offline
+npm run db:restore -- backups/draco-AAAA-MM-DD.sqlite.enc --confirm-offline
 ```
 
 O comando verifica a integridade antes e depois e preserva o banco substituído ao lado do arquivo
@@ -708,6 +723,24 @@ O repositório já possui arquivos para diferentes cenários:
 - `fly.toml`
 - `tools/deploy-oracle.sh`
 
+### Oracle Cloud
+
+Com o DuckDNS apontando para o IP público da máquina e o projeto já enviado ao servidor, execute:
+
+```bash
+cd draco
+bash tools/deploy-oracle.sh dracocall.duckdns.org
+```
+
+Em uma atualização, entre na mesma pasta, rode `git pull --ff-only` e execute novamente o comando
+acima. O instalador pode ser repetido: ele preserva as chaves existentes, configura `ORIGIN` e
+`APP_URL` com o domínio informado e, antes de iniciar o serviço, gera `SESSION_SECRET`,
+`DATA_ENCRYPTION_KEY` e `BACKUP_ENCRYPTION_KEY` quando ainda estiverem vazias. O `.env` permanece
+fora do Git e recebe permissão `600` no servidor.
+
+As credenciais de SMTP e as duas chaves do Cloudflare Turnstile devem ser adicionadas ao `.env` no
+servidor quando esses provedores forem usados. Sem as duas chaves, o Turnstile permanece desativado.
+
 Para produção, o ideal é usar:
 
 - domínio fixo;
@@ -716,7 +749,9 @@ Para produção, o ideal é usar:
 - TURN configurado;
 - SMTP configurado para confirmação de conta e troca de senha;
 - `ORIGIN` restringindo a origem aceita;
-- `SESSION_SECRET` quando o disco não for durável;
+- `NODE_ENV=production`, `APP_URL`, `SESSION_SECRET` e chaves externas de criptografia;
+- Turnstile para login/cadastro/recuperação expostos publicamente;
+- bucket de anexos privado, com CORS limitado à origem do Draco;
 - `TRUSTED_PROXY=1` quando houver proxy na frente;
 - `HOST=127.0.0.1` quando Caddy/nginx estiver na mesma máquina;
 - volume persistente para o arquivo SQLite;

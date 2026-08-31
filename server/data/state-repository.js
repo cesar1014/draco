@@ -47,7 +47,7 @@ function mapChannel(row) {
   };
 }
 
-function mapMessage(row) {
+function mapMessage(row, cipher) {
   return {
     sequence: row.sequence,
     id: row.id,
@@ -55,7 +55,7 @@ function mapMessage(row) {
     authorId: row.author_id,
     username: row.username_snapshot,
     color: row.color_snapshot,
-    content: row.deleted_at ? "" : row.content,
+    content: row.deleted_at ? "" : cipher.decrypt(row.content, `messages:${row.id}`),
     at: row.created_at,
     editedAt: row.edited_at ?? null,
     deletedAt: row.deleted_at ?? null,
@@ -66,6 +66,7 @@ function mapMessage(row) {
 export class StateRepository {
   constructor(database) {
     this.database = database;
+    this.cipher = database.dracoFieldCipher;
     this.statements = {
       listGuilds: database.prepare(`
         SELECT id, name, initials, color, owner_id
@@ -355,9 +356,11 @@ export class StateRepository {
         "SELECT guild_id, user_id, expires_at FROM bans WHERE guild_id = ? AND user_id = ?",
       ),
       listBans: database.prepare(`
-        SELECT b.guild_id, b.user_id, b.reason, b.created_at, p.username
+        SELECT b.guild_id, b.user_id, b.moderator_user_id, b.reason, b.created_at,
+               p.username, moderator.username AS moderator_username
         FROM bans b
         LEFT JOIN profiles p ON p.user_id = b.user_id
+        LEFT JOIN profiles moderator ON moderator.user_id = b.moderator_user_id
         WHERE b.guild_id = ?
         ORDER BY b.created_at DESC
       `),
@@ -475,7 +478,7 @@ export class StateRepository {
   }
 
   listMessages(historyLimit) {
-    return this.statements.listMessages.all(historyLimit).map(mapMessage);
+    return this.statements.listMessages.all(historyLimit).map((row) => mapMessage(row, this.cipher));
   }
 
   /**
@@ -492,7 +495,7 @@ export class StateRepository {
     // Um a mais que o pedido: a diferença é o que diz se ainda há passado.
     const rows = this.statements.listMessagesBefore.all(channelId, anchor.sequence, limit + 1);
     return {
-      messages: rows.slice(0, limit).reverse().map(mapMessage),
+      messages: rows.slice(0, limit).reverse().map((row) => mapMessage(row, this.cipher)),
       more: rows.length > limit,
     };
   }
@@ -524,7 +527,10 @@ export class StateRepository {
   }
 
   addMessage(message, retention) {
-    return this.addMessageTransaction(message, retention);
+    return this.addMessageTransaction({
+      ...message,
+      content: this.cipher.encrypt(message.content, `messages:${message.id}`),
+    }, retention);
   }
 
   // --- servidores ------------------------------------------------------------
@@ -712,6 +718,8 @@ export class StateRepository {
     return this.statements.listBans.all(guildId).map((row) => ({
       userId: row.user_id,
       username: row.username,
+      moderatorId: row.moderator_user_id,
+      moderatorUsername: row.moderator_username,
       reason: row.reason,
       createdAt: row.created_at,
     }));

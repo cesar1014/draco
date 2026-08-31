@@ -18,6 +18,7 @@ function buildTiles(
   selfId: string | null,
   camOn: boolean,
   screenOn: boolean,
+  mediaRecovery: "idle" | "reconnecting" | "failed",
 ): TileData[] {
   const tiles: TileData[] = [];
 
@@ -28,12 +29,13 @@ function buildTiles(
     const camera = self ? camOn : member.camOn;
     const screen = self ? screenOn : member.screenOn;
 
-    const videos: Array<Pick<TileData, "slot" | "stream" | "connecting">> = [];
+    const videos: Array<Pick<TileData, "slot" | "stream" | "connecting" | "mediaState">> = [];
     if (screen) {
       videos.push({
         slot: "screen",
         stream: self ? media.screenStream : (peer?.streams.screen ?? null),
         connecting: !self && !peer?.live.screen,
+        mediaState: self || peer?.live.screen ? "connected" : mediaRecovery === "idle" ? "connecting" : mediaRecovery,
       });
     }
     if (camera) {
@@ -41,11 +43,12 @@ function buildTiles(
         slot: "camera",
         stream: self ? media.cameraStream : (peer?.streams.camera ?? null),
         connecting: !self && !peer?.live.camera,
+        mediaState: self || peer?.live.camera ? "connected" : mediaRecovery === "idle" ? "connecting" : mediaRecovery,
       });
     }
 
     if (videos.length === 0) {
-      tiles.push({ key: `${member.id}:avatar`, member, slot: null, stream: null, self, connecting: false });
+      tiles.push({ key: `${member.id}:avatar`, member, slot: null, stream: null, self, connecting: false, mediaState: "connected" });
       continue;
     }
     for (const video of videos) {
@@ -65,6 +68,7 @@ export function VoiceStage({ channelId }: { channelId: string }) {
   const voiceChannelId = useStore((state) => state.voiceChannelId);
   const camOn = useStore((state) => state.camOn);
   const screenOn = useStore((state) => state.screenOn);
+  const mediaRecovery = useStore((state) => state.mediaRecovery);
   const focusedTiles = useStore((state) => state.focusedTiles);
   const toggleFocus = useStore((state) => state.toggleFocus);
   const clearFocus = useStore((state) => state.clearFocus);
@@ -77,8 +81,8 @@ export function VoiceStage({ channelId }: { channelId: string }) {
 
   const present = useMemo(() => membersInVoice(members, channelId), [members, channelId]);
   const tiles = useMemo(
-    () => buildTiles(present, remote, selfId, camOn, screenOn),
-    [present, remote, selfId, camOn, screenOn],
+    () => buildTiles(present, remote, selfId, camOn, screenOn, mediaRecovery),
+    [present, remote, selfId, camOn, screenOn, mediaRecovery],
   );
 
   // Quem saiu não pode continuar fixado nem "sendo visto".

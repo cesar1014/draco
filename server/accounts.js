@@ -13,7 +13,7 @@ import { sanitizeUsername, validAdultAge } from "./security.js";
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 const RESET_TTL = 60 * 60 * 1000;
 const SETUP_TTL = 48 * 60 * 60 * 1000;
-const NEW_IP_TTL = 15 * 60 * 1000;
+const NEW_DEVICE_TTL = 15 * 60 * 1000;
 
 const publicAccount = (account) => ({
   id: account.userId,
@@ -49,15 +49,19 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const raw = createActionToken();
     const setup = purpose === "admin_setup";
     const verify = purpose === "verify_email";
-    const newIp = purpose === "new_ip";
-    const expiresAt = Date.now() + (newIp ? NEW_IP_TTL : setup ? SETUP_TTL : verify ? VERIFY_TTL : RESET_TTL);
-    if (newIp) {
+    const newDevice = purpose === "new_device";
+    const expiresAt = Date.now() + (newDevice ? NEW_DEVICE_TTL : setup ? SETUP_TTL : verify ? VERIFY_TTL : RESET_TTL);
+    if (newDevice) {
       if (!context.addressHash) throw new Error("endereço ausente no desafio de login");
       accounts.createLoginChallenge({
         tokenHash: hashActionToken(raw),
         userId: account.userId,
         addressHash: context.addressHash,
         expiresAt,
+        deviceId: context.deviceId,
+        deviceCredentialHash: context.deviceCredentialHash,
+        clientType: context.clientType,
+        deviceName: context.deviceName,
       });
     } else {
       accounts.createToken({
@@ -68,7 +72,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
       });
     }
 
-    const actionType = newIp ? "novo-ip" : setup ? "ativar" : verify ? "verificar" : "senha";
+    const actionType = newDevice ? "novo-dispositivo" : setup ? "ativar" : verify ? "verificar" : "senha";
     const action = `${origin}/?conta=${actionType}&token=${encodeURIComponent(raw)}`;
     const copy = verify
       ? {
@@ -77,12 +81,12 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
           text: "Confirme que este endereço pertence a você para liberar sua conta.",
           actionLabel: "Confirmar e-mail",
         }
-      : newIp
+      : newDevice
         ? {
-            subject: "Confirme um novo endereço de acesso ao Draco",
-            title: "Novo endereço de acesso",
-            text: `Alguém informou sua senha a partir do IP ${context.addressLabel}. Confirme somente se foi você. O link expira em 15 minutos.`,
-            actionLabel: "Confirmar novo IP",
+            subject: "Confirme um novo dispositivo no Draco",
+            title: "Novo dispositivo",
+            text: `Alguém informou sua senha em ${context.deviceName}, a partir do IP ${context.addressLabel}. Confirme somente se foi você. O link expira em 15 minutos.`,
+            actionLabel: "Confirmar dispositivo",
           }
       : setup
         ? {
@@ -138,13 +142,23 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return value.startsWith("::ffff:") ? value.slice(7) : value;
   }
 
-  function useOrBootstrapAddress(account, addressHash) {
-    // Compatibilidade da migração: a conta que já existia antes deste recurso
-    // ganha seu primeiro endereço ao apresentar uma sessão ou senha válida.
-    return accounts.useOrBootstrapAddress(account.userId, addressHash);
+  function issueDevice(account, addressHash, metadata, preferredToken = null) {
+    const deviceToken = preferredToken ?? createActionToken();
+    const device = accounts.createDevice({
+      userId: account.userId,
+      credentialHash: hashActionToken(deviceToken),
+      addressHash,
+      ...metadata,
+    });
+    return { device, deviceToken };
   }
 
-  async function login({ email: rawEmail, password }, rawAddress, headers = {}) {
+  async function login({
+    email: rawEmail,
+    password,
+    deviceToken: presentedDeviceToken,
+    legacyDeviceToken = null,
+  }, rawAddress, headers = {}) {
     const email = normalizeEmail(rawEmail);
     const account = email ? accounts.accountByEmail(email) : null;
     // Mesmo trabalho de hash quando o e-mail não existe reduz a diferença de
@@ -169,15 +183,49 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     }
     const addressHash = auth.fingerprintAddress(rawAddress);
     if (!addressHash) return { ok: false, error: "address-unavailable" };
-    if (!useOrBootstrapAddress(account, addressHash)) {
+    const metadata = clientMetadata(headers);
+    const presentedHash = typeof presentedDeviceToken === "string" && presentedDeviceToken.length <= 512
+      ? hashActionToken(presentedDeviceToken)
+      : null;
+    let device = presentedHash ? accounts.activeDevice(account.userId, presentedHash) : null;
+    const legacyHash = typeof legacyDeviceToken === "string" && legacyDeviceToken.length <= 512
+      ? hashActionToken(legacyDeviceToken)
+      : null;
+    if (!device && presentedHash && legacyHash) {
+      const legacyDevice = accounts.activeDevice(account.userId, legacyHash);
+      if (legacyDevice && accounts.replaceDeviceCredential(account.userId, legacyDevice.id, presentedHash)) {
+        device = accounts.activeDevice(account.userId, presentedHash);
+      }
+    }
+    let deviceToken = null;
+    if (device) {
+      accounts.touchDevice(account.userId, device.id, addressHash);
+    } else {
+      const bootstrapToken = createActionToken();
+      if (!account.isSystemAdmin) {
+        device = accounts.bootstrapDevice({
+          userId: account.userId,
+          credentialHash: hashActionToken(presentedDeviceToken ?? bootstrapToken),
+          addressHash,
+          ...metadata,
+        });
+      }
+      if (device && !presentedDeviceToken) deviceToken = bootstrapToken;
+    }
+    if (!device) {
+      const pendingDeviceToken = presentedDeviceToken ?? createActionToken();
       try {
-        const sent = await actionMail(account, "new_ip", {
+        const sent = await actionMail(account, "new_device", {
           addressHash,
           addressLabel: addressLabel(rawAddress),
+          deviceId: randomUUID(),
+          deviceCredentialHash: hashActionToken(pendingDeviceToken),
+          ...metadata,
         });
         return {
           ok: false,
-          error: sent.ok ? "new-ip-verification-sent" : "email-unavailable",
+          error: sent.ok ? "new-device-verification-sent" : "email-unavailable",
+          ...(sent.ok && !presentedDeviceToken ? { deviceToken: pendingDeviceToken } : {}),
         };
       } catch (error) {
         return { ok: false, error: "email-failed", detail: error };
@@ -188,10 +236,16 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
       id: issued.sessionId,
       userId: account.userId,
       tokenHash: hashActionToken(issued.token),
-      ...clientMetadata(headers),
+      ...metadata,
+      deviceId: device.id,
       expiresAt: auth.verify(issued.token).expiresAt,
     });
-    return { ok: true, token: issued.token, account: publicAccount(account) };
+    return {
+      ok: true,
+      token: issued.token,
+      account: publicAccount(account),
+      ...(deviceToken ? { deviceToken } : {}),
+    };
   }
 
   function session(token, rawAddress) {
@@ -207,9 +261,10 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     ) {
       return null;
     }
-    if (signed.sessionId && !accounts.activeSession(signed.sessionId, signed.userId)) return null;
+    const activeSession = signed.sessionId ? accounts.activeSession(signed.sessionId, signed.userId) : null;
+    if (signed.sessionId && !activeSession) return null;
     const addressHash = auth.fingerprintAddress(rawAddress);
-    if (!addressHash || !useOrBootstrapAddress(account, addressHash)) return null;
+    if (activeSession?.device_id) accounts.touchDevice(account.userId, activeSession.device_id, addressHash);
     return { ...signed, account };
   }
 
@@ -219,7 +274,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return challenge ? { ok: true } : { ok: false, error: "token-invalid" };
   }
 
-  async function verifyEmail(rawToken, rawAddress) {
+  async function verifyEmail(rawToken) {
     const tokenHash = hashActionToken(rawToken);
     const token = accounts.token(tokenHash);
     if (
@@ -232,8 +287,6 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     }
     if (!accounts.consumeToken(tokenHash)) return { ok: false, error: "token-invalid" };
     accounts.verifyEmail(token.user_id);
-    const addressHash = auth.fingerprintAddress(rawAddress);
-    if (addressHash) accounts.trustAddress(token.user_id, addressHash);
     return { ok: true };
   }
 
@@ -255,7 +308,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     return { ok: true };
   }
 
-  async function completePassword(rawToken, password, rawAddress, headers = {}) {
+  async function completePassword(rawToken, password, rawAddress, headers = {}, deviceToken = null) {
     if (!validPassword(password)) return { ok: false, error: "bad-password-format" };
     const addressHash = auth.fingerprintAddress(rawAddress);
     if (!addressHash) return { ok: false, error: "address-unavailable" };
@@ -272,16 +325,25 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     const passwordHash = await hashPassword(password);
     if (!accounts.consumeToken(tokenHash)) return { ok: false, error: "token-invalid" };
     const account = accounts.setPassword(token.user_id, passwordHash);
-    accounts.trustAddress(account.userId, addressHash);
+    const metadata = clientMetadata(headers);
+    const { device, deviceToken: issuedDeviceToken } = issueDevice(
+      account, addressHash, metadata, deviceToken,
+    );
     const issued = auth.issue(account.userId, account.sessionVersion);
     accounts.createSession({
       id: issued.sessionId,
       userId: account.userId,
       tokenHash: hashActionToken(issued.token),
-      ...clientMetadata(headers),
+      ...metadata,
+      deviceId: device.id,
       expiresAt: auth.verify(issued.token).expiresAt,
     });
-    return { ok: true, token: issued.token, account: publicAccount(account) };
+    return {
+      ok: true,
+      token: issued.token,
+      account: publicAccount(account),
+      ...(!deviceToken ? { deviceToken: issuedDeviceToken } : {}),
+    };
   }
 
   function listSessions(token, rawAddress) {
@@ -306,6 +368,12 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     if (!authenticated) return { ok: false, error: "not-authenticated" };
     accounts.revokeAllSessions(authenticated.userId);
     return { ok: true };
+  }
+
+  function logout(token, rawAddress) {
+    const authenticated = session(token, rawAddress);
+    if (!authenticated?.sessionId) return { ok: false, error: "not-authenticated" };
+    return { ok: accounts.revokeCurrentSession(authenticated.userId, authenticated.sessionId) };
   }
 
   async function bootstrapSystemAdmin() {
@@ -341,6 +409,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     listSessions,
     revokeSession,
     revokeAllSessions,
+    logout,
     bootstrapSystemAdmin,
     publicAccount,
     emailReady: Boolean(mailer?.ready),

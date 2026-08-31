@@ -237,7 +237,7 @@ export function SettingsModal() {
                         if (!reply.ok) return setAccountMessage("Não foi possível encerrar a sessão.");
                         if (session.id === currentSessionId) { closeSettings(); logout(); }
                         else setSessions((current) => current.filter((item) => item.id !== session.id));
-                      })}>Encerrar</button>
+                      })}>Remover dispositivo</button>
                     </div>)}
                     <button type="button" className="secondary-button danger" onClick={() => void revokeAllConnectedSessions().then((reply) => { if (reply.ok) { closeSettings(); logout(); } })}>Sair de todos os dispositivos</button>
                   </div>

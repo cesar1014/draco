@@ -2,8 +2,10 @@ import { useCallback, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import {
   ExitFullscreenIcon,
+  EyeIcon,
   FlipIcon,
   FullscreenIcon,
+  HeadphoneOffIcon,
   MicOffIcon,
   PinIcon,
   PlayIcon,
@@ -22,7 +24,9 @@ import { useStreamRef } from "@/hooks/useStreamRef";
 import { useZoomPan } from "@/hooks/useZoomPan";
 import { statsGrade } from "@/rtc/stats";
 import { prefsFor, useStore } from "@/state/store";
-import type { MediaSlot, Member } from "@/types";
+import type { MediaSlot, Member, ScreenViewer } from "@/types";
+
+const NO_VIEWERS: ScreenViewer[] = [];
 
 export interface TileData {
   key: string;
@@ -32,6 +36,7 @@ export interface TileData {
   stream: MediaStream | null;
   self: boolean;
   connecting: boolean;
+  mediaState: "connecting" | "connected" | "reconnecting" | "failed";
 }
 
 interface Props {
@@ -41,7 +46,7 @@ interface Props {
 }
 
 export function VideoTile({ tile, focused, onToggleFocus }: Props) {
-  const { key, member, slot, stream, self, connecting } = tile;
+  const { key, member, slot, stream, self, connecting, mediaState } = tile;
 
   const mirrorSelf = useStore((state) => state.settings.mirrorSelf);
   const showStats = useStore((state) => state.settings.showStats);
@@ -54,9 +59,12 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
   const people = useStore((state) => state.people);
   const watching = useStore((state) => state.watching[key]);
   const watch = useStore((state) => state.watch);
+  const viewers = useStore((state) => state.screenViewers[member.id] ?? NO_VIEWERS);
+  const retryMedia = useStore((state) => state.retryMedia);
   const toggleScreenMuted = useStore((state) => state.toggleScreenMuted);
   const hasScreenAudio = useStore((state) => Boolean(state.remote[member.id]?.streams.screenAudio));
   const [menuOpen, setMenuOpen] = useState(false);
+  const [viewersOpen, setViewersOpen] = useState(false);
   const [shell, setShell] = useState<HTMLDivElement | null>(null);
   const full = useFullscreen(shell);
 
@@ -132,9 +140,10 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
       )}
 
       {connecting && playing && (
-        <div className="tile-connecting">
-          <span className="tile-spinner" />
-          Conectando…
+        <div className="tile-connecting" data-state={mediaState}>
+          {mediaState !== "failed" && <span className="tile-spinner" />}
+          {mediaState === "reconnecting" ? "Reconectando…" : mediaState === "failed" ? "Não foi possível conectar a mídia." : "Conectando…"}
+          {mediaState === "failed" && <button type="button" className="secondary-button" onClick={retryMedia}>Tentar novamente</button>}
         </div>
       )}
 
@@ -259,6 +268,7 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
       <div className="tile-footer">
         <span className="tile-name">
           {member.muted && <MicOffIcon size={14} />}
+          {member.deafened && <HeadphoneOffIcon size={14} />}
           {quiet && !self && <SpeakerOffIcon size={14} />}
           {slot === "screen" && <ScreenIcon size={14} />}
           {speaking && !member.muted && (
@@ -271,6 +281,35 @@ export function VideoTile({ tile, focused, onToggleFocus }: Props) {
           {self ? "Você" : member.username}
           {slot === "screen" && <em>tela</em>}
         </span>
+
+        {slot === "screen" && (
+          <span
+            className="tile-viewer-wrap"
+            onMouseEnter={() => setViewersOpen(true)}
+            onMouseLeave={() => setViewersOpen(false)}
+          >
+            <button
+              type="button"
+              className="tile-viewers"
+              aria-expanded={viewersOpen}
+              onClick={() => setViewersOpen((open) => !open)}
+              onFocus={() => setViewersOpen(true)}
+            >
+              <EyeIcon size={13} /> {viewers.length} assistindo
+            </button>
+            {viewersOpen && (
+              <span className="tile-viewer-popover">
+                <strong>Assistindo</strong>
+                {viewers.length === 0 ? <em>Ninguém no momento</em> : viewers.map((viewer) => (
+                  <span key={viewer.id} className="tile-viewer-person">
+                    <Avatar member={{ ...viewer, speaking: false }} size={22} />
+                    {viewer.username}
+                  </span>
+                ))}
+              </span>
+            )}
+          </span>
+        )}
 
         {showStats && !self && stats && (
           <span className="tile-stats" data-grade={statsGrade(stats)}>
@@ -316,6 +355,8 @@ export function TileThumb({
       )}
       <span className="thumb-name">
         {slot === "screen" && <ScreenIcon size={11} />}
+        {member.muted && <MicOffIcon size={11} />}
+        {member.deafened && <HeadphoneOffIcon size={11} />}
         {self ? "Você" : member.username}
       </span>
     </button>

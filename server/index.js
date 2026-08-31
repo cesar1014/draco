@@ -14,13 +14,21 @@ import { createSessionAuthority } from "./auth.js";
 import { logger, reason } from "./log.js";
 import { createMailer } from "./mail.js";
 import { resolveIceConfig } from "./ice.js";
-import { RateLimiter } from "./security.js";
+import { PersistentRateLimiter } from "./security.js";
 import { attachSignaling } from "./signaling.js";
 import { closeState, colorForName, listMembers, readSetting, writeSetting } from "./state.js";
 import { Telemetry } from "./telemetry.js";
 import { ObjectStorage } from "./object-storage.js";
 import { AttachmentRepository } from "./data/attachment-repository.js";
 import { CommunicationRepository } from "./data/communication-repository.js";
+import {
+  clearSessionCookie,
+  ensureDeviceCookie,
+  sessionCookie,
+  setSessionCookie,
+} from "./cookies.js";
+import { hashActionToken, normalizeEmail } from "./passwords.js";
+import { BotProtection } from "./bot-protection.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = join(here, "..", "dist");
@@ -37,6 +45,7 @@ const useHttps = process.argv.includes("--https");
  * pro vazio. Sem `--dev` (produção) manda o `PORT` da plataforma de deploy.
  */
 const isDev = process.argv.includes("--dev");
+const isProduction = process.env.NODE_ENV === "production";
 const port = isDev ? DEV_API_PORT : Number(process.env.PORT ?? DEV_API_PORT);
 const host = isDev ? "0.0.0.0" : (process.env.HOST ?? "0.0.0.0");
 
@@ -50,17 +59,39 @@ const allowedOrigins = (process.env.ORIGIN ?? "")
   .map((value) => value.trim())
   .filter(Boolean);
 
+for (const origin of allowedOrigins) {
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error(`ORIGIN inválida: ${origin}`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== origin) {
+    throw new Error(`ORIGIN deve conter somente protocolo e host: ${origin}`);
+  }
+}
+if (isProduction && allowedOrigins.length === 0) {
+  throw new Error("ORIGIN é obrigatória em produção");
+}
+if (isProduction && allowedOrigins.some((origin) => !origin.startsWith("https://"))) {
+  throw new Error("todas as origens de produção precisam usar HTTPS");
+}
+const appUrl = process.env.APP_URL?.replace(/\/+$/, "") ?? allowedOrigins[0] ?? null;
+if (isProduction && (!appUrl || !allowedOrigins.includes(appUrl))) {
+  throw new Error("APP_URL deve ser uma das origens HTTPS permitidas em produção");
+}
+
 /**
  * Em desenvolvimento a origem é livre: quem abre é o Vite, um túnel ou o celular
- * na rede local, e cada um chega com um endereço diferente. Em produção sem
- * `ORIGIN` a checagem por origem também fica aberta — não há como adivinhar o
- * endereço publicado — e é por isso que o boot avisa em voz alta. A autenticação
- * das contas continua obrigatória mesmo quando a origem não foi restringida.
+ * na rede local, e cada um chega com um endereço diferente. Em produção o boot
+ * acima recusa uma lista vazia ou sem HTTPS.
  */
 const originIsOpen = allowedOrigins.length === 0;
 const externallySecure = useHttps || (!isDev && allowedOrigins.some((origin) => origin.startsWith("https://")));
 const objectStorage = new ObjectStorage(process.env);
-const objectStorageOrigin = objectStorage.ready ? new URL(objectStorage.publicBase).origin : null;
+const objectStorageOrigin = objectStorage.ready ? new URL(objectStorage.endpoint).origin : null;
+const botProtection = new BotProtection(process.env);
+const turnstileOrigin = botProtection.ready ? "https://challenges.cloudflare.com" : null;
 
 /**
  * Um pedido sem `Origin` não é um navegador de outro site: é o próprio app de
@@ -115,6 +146,14 @@ const app = express();
 app.disable("x-powered-by");
 if (process.env.TRUSTED_PROXY === "1") app.set("trust proxy", 1);
 
+app.use((req, res, next) => {
+  if (!isProduction || req.secure) return next();
+  if (["GET", "HEAD"].includes(req.method) && appUrl) {
+    return res.redirect(308, `${appUrl}${req.originalUrl}`);
+  }
+  return res.status(426).set("Cache-Control", "no-store").json({ error: "https-required" });
+});
+
 /**
  * Cabeçalhos de segurança. A CSP é escrita à mão porque a de fábrica do Helmet
  * quebraria três coisas deste app: o `connect-src` precisa aceitar `ws:`/`wss:`
@@ -134,14 +173,17 @@ app.use(
         "base-uri": ["'self'"],
         "object-src": ["'none'"],
         "frame-ancestors": ["'none'"],
+        "frame-src": ["'self'", ...(turnstileOrigin ? [turnstileOrigin] : [])],
         "form-action": ["'self'"],
-        "script-src": ["'self'"],
+        "script-src": ["'self'", ...(turnstileOrigin ? [turnstileOrigin] : [])],
         "style-src": ["'self'", "'unsafe-inline'"],
         "img-src": ["'self'", "data:", "blob:", ...(objectStorageOrigin ? [objectStorageOrigin] : [])],
         "media-src": ["'self'", "blob:", "mediastream:"],
         "font-src": ["'self'", "data:"],
         "worker-src": ["'self'", "blob:"],
-        "connect-src": isDev ? ["'self'", "ws:", "wss:"] : ["'self'"],
+        "connect-src": isDev
+          ? ["'self'", "ws:", "wss:", ...(objectStorageOrigin ? [objectStorageOrigin] : []), ...(turnstileOrigin ? [turnstileOrigin] : [])]
+          : ["'self'", ...(objectStorageOrigin ? [objectStorageOrigin] : []), ...(turnstileOrigin ? [turnstileOrigin] : [])],
         // Sem HTTPS o navegador tentaria promover o websocket e a call não subiria
         // em `http://localhost` nem na rede local.
         ...(useHttps ? { "upgrade-insecure-requests": [] } : {}),
@@ -204,26 +246,83 @@ app.use("/api", (req, res, next) => {
 const { auth, source: secretSource } = createSessionAuthority({ readSetting, writeSetting });
 const mailer = createMailer(process.env);
 const accountService = createAccountService({ auth, mailer, colorForName, env: process.env });
-const accountLimiter = new RateLimiter();
+const accountLimiter = new PersistentRateLimiter(accountService.repository.database);
 const telemetry = new Telemetry();
-const attachments = new AttachmentRepository(accountService.repository.database);
-const communication = new CommunicationRepository(accountService.repository.database);
+const attachments = new AttachmentRepository(accountService.repository.database, objectStorage, process.env);
+const communication = new CommunicationRepository(accountService.repository.database, attachments);
+let uploadCleanupRunning = false;
+
+async function removeExpiredUploads() {
+  if (uploadCleanupRunning) return;
+  uploadCleanupRunning = true;
+  try {
+    for (const attachment of [...attachments.expiredPending(), ...attachments.orphaned()]) {
+      attachments.remove(attachment.id);
+    }
+    if (!objectStorage.ready) return;
+    for (const queued of attachments.queuedDeletions()) {
+      try {
+        if (await objectStorage.remove(queued.storage_key)) {
+          attachments.completeDeletion(queued.storage_key);
+        } else {
+          attachments.failDeletion(queued.storage_key);
+        }
+      } catch (error) {
+        attachments.failDeletion(queued.storage_key);
+        log.warn("falha ao remover upload pendente", { motivo: reason(error) });
+      }
+    }
+  } finally {
+    uploadCleanupRunning = false;
+  }
+}
+
+void removeExpiredUploads();
+const uploadCleanup = setInterval(() => void removeExpiredUploads(), 5 * 60_000);
+uploadCleanup.unref();
 
 function bearer(req) {
   const value = req.headers.authorization;
   return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : null;
 }
 
-function accountRoute(handler, { burst = 8, perSec = 0.2 } = {}) {
+function sessionToken(req) {
+  return sessionCookie(req.headers.cookie) ?? bearer(req);
+}
+
+function deviceCredential(req, res, email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const browserSecret = ensureDeviceCookie(req, res, externallySecure);
+  return auth.fingerprintIdentity(`${browserSecret}\0${normalized}`, "device-cookie");
+}
+
+function accountRoute(handler, {
+  burst = 8, perSec = 0.2, clearSession = false, identity = null, botAction = null,
+} = {}) {
   return async (req, res) => {
     res.set("Cache-Control", "no-store");
-    const key = `${req.ip}:${req.path}`;
-    if (!accountLimiter.allow(key, burst, perSec)) {
+    const addressKey = auth.fingerprintAddress(req.ip)
+      ?? auth.fingerprintIdentity(req.ip, "rate-address");
+    const path = req.route?.path ?? req.path;
+    const addressAllowed = accountLimiter.allow(`ip:${path}:${addressKey}`, burst, perSec);
+    const rawIdentity = identity?.(req);
+    const identityKey = rawIdentity
+      ? auth.fingerprintIdentity(String(rawIdentity).trim().toLowerCase(), "rate-identity")
+      : null;
+    const identityAllowed = !identityKey
+      || accountLimiter.allow(`identity:${path}:${identityKey}`, burst, perSec);
+    if (!addressAllowed || !identityAllowed) {
       return res.status(429).json({ ok: false, error: "rate-limited" });
     }
     try {
-      const result = await handler(req);
-      const { detail: _detail, ...safe } = result;
+      if (botAction && !await botProtection.verify(req.body?.botToken, req.ip, botAction)) {
+        return res.status(400).json({ ok: false, error: "bot-verification-failed" });
+      }
+      const result = await handler(req, res);
+      if (result.ok && result.token) setSessionCookie(res, result.token, externallySecure);
+      if (clearSession) clearSessionCookie(res, externallySecure);
+      const { detail: _detail, token: _token, deviceToken: _deviceToken, ...safe } = result;
       const status = result.ok
         ? 200
         : result.error === "not-authenticated"
@@ -240,11 +339,26 @@ function accountRoute(handler, { burst = 8, perSec = 0.2 } = {}) {
 }
 
 app.get("/api/config", (_req, res) => {
-  res.json({ auth: "accounts", emailReady: accountService.emailReady, guestInvites: true });
+  res.json({
+    auth: "accounts",
+    emailReady: accountService.emailReady,
+    guestInvites: true,
+    turnstileSiteKey: botProtection.siteKey,
+  });
 });
 
-app.post("/api/auth/register", accountRoute((req) => accountService.register(req.body, req.ip)));
-app.post("/api/auth/login", accountRoute((req) => accountService.login(req.body, req.ip, req.headers)));
+const emailIdentity = (req) => normalizeEmail(req.body?.email);
+
+app.post("/api/auth/register", accountRoute(
+  (req) => accountService.register(req.body, req.ip),
+  { identity: emailIdentity, botAction: "register" },
+));
+app.post("/api/auth/login", accountRoute((req, res) => accountService.login({
+  email: req.body?.email,
+  password: req.body?.password,
+  legacyDeviceToken: req.body?.legacyDeviceToken ?? req.body?.deviceToken ?? null,
+  deviceToken: deviceCredential(req, res, req.body?.email),
+}, req.ip, req.headers), { identity: emailIdentity, botAction: "login" }));
 app.post("/api/auth/verify", accountRoute((req) => accountService.verifyEmail(req.body?.token, req.ip)));
 app.post(
   "/api/auth/login-address/confirm",
@@ -255,12 +369,12 @@ app.post(
 );
 app.get("/api/admin/health", (req, res) => {
   res.set("Cache-Control", "no-store");
-  const authenticated = accountService.session(bearer(req), req.ip);
+  const authenticated = accountService.session(sessionToken(req), req.ip);
   if (!authenticated?.account?.isSystemAdmin) return res.status(403).json({ ok: false, error: "forbidden" });
   return res.json({ ok: true, metrics: telemetry.snapshot(io, accountService.repository.database, listMembers().filter((member) => !member.guest).length) });
 });
 app.post("/api/attachments/presign", accountRoute((req) => {
-  const authenticated = accountService.session(bearer(req), req.ip);
+  const authenticated = accountService.session(sessionToken(req), req.ip);
   if (!authenticated) return { ok: false, error: "not-authenticated" };
   if (!objectStorage.ready) return { ok: false, error: "storage-unavailable" };
   const scope = req.body?.scope;
@@ -272,9 +386,10 @@ app.post("/api/attachments/presign", accountRoute((req) => {
   const attachment = attachments.create({
     scope, messageId, ownerId: authenticated.userId,
     filename: valid.filename, mime: valid.mime, size: valid.size,
-    storageKey, publicUrl: objectStorage.publicUrl(storageKey),
+    storageKey,
   });
   if (!attachment) return { ok: false, error: "not-author" };
+  if (attachment.quotaExceeded) return { ok: false, error: "attachment-quota" };
   return {
     ok: true,
     attachmentId: attachment.id,
@@ -284,13 +399,14 @@ app.post("/api/attachments/presign", accountRoute((req) => {
 }, { burst: 8, perSec: 0.3 }));
 
 app.post("/api/attachments/complete", accountRoute(async (req) => {
-  const authenticated = accountService.session(bearer(req), req.ip);
+  const authenticated = accountService.session(sessionToken(req), req.ip);
   if (!authenticated) return { ok: false, error: "not-authenticated" };
   const pending = attachments.pending(req.body?.attachmentId, authenticated.userId);
   if (!pending || pending.uploaded_at) return { ok: false, error: "no-attachment" };
   const verified = await objectStorage.verify(pending.storage_key, pending.mime_type, pending.byte_size);
   if (!verified) {
     attachments.removePending(pending.id, authenticated.userId);
+    void removeExpiredUploads();
     return { ok: false, error: "attachment-invalid" };
   }
   attachments.complete(pending.id, authenticated.userId);
@@ -305,27 +421,74 @@ app.post("/api/attachments/complete", accountRoute(async (req) => {
 }, { burst: 12, perSec: 0.5 }));
 app.post(
   "/api/auth/password/request",
-  accountRoute((req) => accountService.requestPassword(req.body?.email), { burst: 4, perSec: 0.03 }),
+  accountRoute((req) => accountService.requestPassword(req.body?.email), {
+    burst: 4, perSec: 0.03, identity: emailIdentity, botAction: "password-request",
+  }),
 );
 app.post(
   "/api/auth/password/change-request",
-  accountRoute((req) => accountService.requestOwnPassword(bearer(req), req.ip), { burst: 4, perSec: 0.03 }),
+  accountRoute((req) => accountService.requestOwnPassword(sessionToken(req), req.ip), { burst: 4, perSec: 0.03 }),
 );
 app.post(
   "/api/auth/password/complete",
-  accountRoute((req) => accountService.completePassword(req.body?.token, req.body?.password, req.ip, req.headers)),
+  accountRoute((req, res) => {
+    const action = accountService.repository.token(hashActionToken(req.body?.token));
+    const account = action ? accountService.repository.accountById(action.user_id) : null;
+    const credential = account ? deviceCredential(req, res, account.email) : null;
+    return accountService.completePassword(
+      req.body?.token, req.body?.password, req.ip, req.headers, credential,
+    );
+  }),
 );
+app.post("/api/auth/session/migrate", accountRoute((req) => {
+  const legacy = bearer(req);
+  return accountService.session(legacy, req.ip)
+    ? { ok: true, token: legacy }
+    : { ok: false, error: "not-authenticated" };
+}, { burst: 6, perSec: 0.2 }));
+app.post("/api/auth/session", accountRoute((req) => {
+  const current = sessionToken(req);
+  const authenticated = accountService.session(current, req.ip);
+  if (!authenticated) return { ok: false, error: "not-authenticated" };
+  const renewed = auth.renewIfNeeded(authenticated);
+  return {
+    ok: true,
+    token: renewed?.token ?? current,
+    account: accountService.publicAccount(authenticated.account),
+  };
+}, { burst: 10, perSec: 0.5 }));
+app.post("/api/auth/device/migrate", accountRoute((req, res) => {
+  const authenticated = accountService.session(sessionToken(req), req.ip);
+  if (!authenticated?.sessionId) return { ok: false, error: "not-authenticated" };
+  const credential = deviceCredential(req, res, authenticated.account.email);
+  const changed = credential && accountService.repository.replaceSessionDeviceCredential(
+    authenticated.userId,
+    authenticated.sessionId,
+    hashActionToken(credential),
+  );
+  return changed
+    ? { ok: true }
+    : { ok: false, error: "device-migration-unavailable" };
+}, { burst: 4, perSec: 0.1 }));
 app.get(
   "/api/auth/sessions",
-  accountRoute((req) => accountService.listSessions(bearer(req), req.ip), { burst: 20, perSec: 1 }),
+  accountRoute((req) => accountService.listSessions(sessionToken(req), req.ip), { burst: 20, perSec: 1 }),
 );
 app.delete(
   "/api/auth/sessions/:sessionId",
-  accountRoute((req) => accountService.revokeSession(bearer(req), req.ip, req.params.sessionId), { burst: 10, perSec: 0.5 }),
+  accountRoute((req) => accountService.revokeSession(sessionToken(req), req.ip, req.params.sessionId), { burst: 10, perSec: 0.5 }),
 );
 app.post(
   "/api/auth/sessions/revoke-all",
-  accountRoute((req) => accountService.revokeAllSessions(bearer(req), req.ip), { burst: 3, perSec: 0.05 }),
+  accountRoute((req) => accountService.revokeAllSessions(sessionToken(req), req.ip), {
+    burst: 3, perSec: 0.05, clearSession: true,
+  }),
+);
+app.post(
+  "/api/auth/logout",
+  accountRoute((req) => accountService.logout(sessionToken(req), req.ip), {
+    burst: 10, perSec: 0.5, clearSession: true,
+  }),
 );
 
 /**
@@ -378,10 +541,19 @@ const io = new SocketServer(server, {
     origin: (origin, callback) => callback(null, originAllowed(origin)),
     methods: ["GET", "POST"],
   },
+  allowRequest: (req, callback) => {
+    if (!originAllowed(req.headers.origin)) return callback("origin-not-allowed", false);
+    if (!isProduction) return callback(null, true);
+    const forwarded = process.env.TRUSTED_PROXY === "1"
+      ? String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim()
+      : null;
+    const secure = forwarded ? forwarded === "https" : req.socket.encrypted === true;
+    return callback(secure ? null : "https-required", secure);
+  },
 });
 
 const adminBootstrap = await accountService.bootstrapSystemAdmin();
-attachSignaling(io, process.env, { auth, accountService, telemetry });
+attachSignaling(io, process.env, { auth, accountService, telemetry, attachments });
 
 server.listen(port, host, async () => {
   const scheme = credentials ? "https" : "http";
@@ -406,9 +578,6 @@ server.listen(port, host, async () => {
   console.log(`  sessões        ·  segredo ${secretSource === "env" ? "do ambiente" : "guardado no banco"}`);
   console.log(`  TURN           ·  ${ice.hasTurn ? `ativo (${ice.source})` : "ausente, só STUN"}`);
   if (ice.warning) console.log(`  atenção        ·  ${ice.warning}`);
-  if (!isDev && originIsOpen) {
-    console.log("  atenção        ·  ORIGIN vazio: qualquer site pode falar com este servidor");
-  }
   console.log("");
 });
 
@@ -427,6 +596,7 @@ async function shutdown(signal) {
 
   try {
     await new Promise((resolve) => io.close(resolve));
+    clearInterval(uploadCleanup);
     accountService.close();
     telemetry.close();
     closeState();

@@ -12,9 +12,10 @@ function reactionSummary(database, table, messageId) {
 }
 
 export class CommunicationRepository {
-  constructor(database) {
+  constructor(database, attachments = null) {
     this.database = database;
-    this.attachments = new AttachmentRepository(database);
+    this.cipher = database.dracoFieldCipher;
+    this.attachments = attachments ?? new AttachmentRepository(database);
     this.statements = {
       channelMessage: database.prepare(`
         SELECT m.sequence, m.id, m.channel_id, c.guild_id, m.author_id,
@@ -88,7 +89,7 @@ export class CommunicationRepository {
       authorId: row.author_id,
       username: row.username_snapshot,
       color: row.color_snapshot,
-      content: row.deleted_at ? "" : row.content,
+      content: row.deleted_at ? "" : this.cipher.decrypt(row.content, `messages:${row.id}`),
       at: row.created_at,
       editedAt: row.edited_at,
       deletedAt: row.deleted_at,
@@ -109,7 +110,7 @@ export class CommunicationRepository {
       authorId: row.author_id,
       username: row.username,
       color: row.color,
-      content: row.deleted_at ? "" : row.content,
+      content: row.deleted_at ? "" : this.cipher.decrypt(row.content, `direct_messages:${row.id}`),
       at: row.created_at,
       editedAt: row.edited_at,
       deletedAt: row.deleted_at,
@@ -124,7 +125,10 @@ export class CommunicationRepository {
     const row = this.statements.channelMessage.get(id);
     return row ? {
       id: row.id, authorId: row.author_id, username: row.username_snapshot,
-      content: row.deleted_at ? null : row.content.slice(0, 160), deleted: Boolean(row.deleted_at),
+      content: row.deleted_at
+        ? null
+        : this.cipher.decrypt(row.content, `messages:${row.id}`).slice(0, 160),
+      deleted: Boolean(row.deleted_at),
     } : null;
   }
 
@@ -132,17 +136,20 @@ export class CommunicationRepository {
     const row = this.statements.directMessage.get(id);
     return row ? {
       id: row.id, authorId: row.author_id, username: row.username,
-      content: row.deleted_at ? null : row.content.slice(0, 160), deleted: Boolean(row.deleted_at),
+      content: row.deleted_at
+        ? null
+        : this.cipher.decrypt(row.content, `direct_messages:${row.id}`).slice(0, 160),
+      deleted: Boolean(row.deleted_at),
     } : null;
   }
 
   editChannel(id, content) {
-    this.statements.editChannel.run(content, Date.now(), id);
+    this.statements.editChannel.run(this.cipher.encrypt(content, `messages:${id}`), Date.now(), id);
     return this.channelMessage(id);
   }
 
   editDirect(id, content) {
-    this.statements.editDirect.run(content, Date.now(), id);
+    this.statements.editDirect.run(this.cipher.encrypt(content, `direct_messages:${id}`), Date.now(), id);
     return this.directMessage(id);
   }
 
@@ -216,7 +223,9 @@ export class CommunicationRepository {
         id: row.id,
         authorId: row.author_id,
         username: row.username,
-        content: row.deleted_at ? null : row.content.slice(0, 160),
+        content: row.deleted_at
+          ? null
+          : this.cipher.decrypt(row.content, `${table}:${row.id}`).slice(0, 160),
         deleted: Boolean(row.deleted_at),
       });
     }

@@ -4,10 +4,11 @@ import { ScreenIcon, SpeakerIcon, SpeakerOffIcon } from "@/components/Icons";
 import { useDismiss } from "@/hooks/useDismiss";
 import { statsGrade } from "@/rtc/stats";
 import { MAX_PERSON_VOLUME, prefsFor, useStore } from "@/state/store";
-import type { Member, Role } from "@/types";
+import type { GuildPermission, Member, Role } from "@/types";
 
 const NO_ROLES: Role[] = [];
 const NO_ROLE_IDS: string[] = [];
+const NO_PERMISSIONS: GuildPermission[] = [];
 
 /**
  * Volume e mute de uma pessoa só, pra quem está ouvindo. Nada disso viaja pela
@@ -28,12 +29,17 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
   const resetPerson = useStore((state) => state.resetPerson);
   const selfId = useStore((state) => state.selfId);
   const activeGuildId = useStore((state) => state.activeGuildId);
+  const guild = useStore((state) => state.guilds.find((item) => item.id === state.activeGuildId));
+  const permissions = useStore((state) => state.permissions[state.activeGuildId] ?? NO_PERMISSIONS);
+  const account = useStore((state) => state.account);
   const roles = useStore((state) => state.roles[activeGuildId] ?? NO_ROLES);
   const memberRoleIds = useStore((state) => state.memberRoles[activeGuildId]?.[member.id] ?? NO_ROLE_IDS);
   const relationships = useStore((state) => state.relationships);
   const openDirect = useStore((state) => state.openDirect);
   const requestFriend = useStore((state) => state.requestFriend);
   const changeFriendship = useStore((state) => state.changeFriendship);
+  const kickMember = useStore((state) => state.kickMember);
+  const banMember = useStore((state) => state.banMember);
 
   useDismiss(box, onClose);
 
@@ -48,6 +54,25 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
   const outgoing = relationships.outgoingRequests.some((person) => person.id === member.id);
   const blocked = relationships.blocked.some((person) => person.id === member.id);
   const visibleRoles = roles.filter((role) => memberRoleIds.includes(role.id) && !role.isDefault);
+  const myRoleIds = useStore((state) => state.memberRoles[activeGuildId]?.[selfId ?? ""] ?? NO_ROLE_IDS);
+  const highest = (ids: string[]) => Math.max(0, ...roles.filter((role) => ids.includes(role.id)).map((role) => role.position));
+  const canAct = member.id !== guild?.ownerId && (
+    account?.isSystemAdmin === true || selfId === guild?.ownerId || highest(myRoleIds) > highest(memberRoleIds)
+  );
+  const canKick = !mine && canAct && (permissions.includes("moderate_members") || selfId === guild?.ownerId || account?.isSystemAdmin === true);
+  const canBan = !mine && canAct && (permissions.includes("ban_members") || selfId === guild?.ownerId || account?.isSystemAdmin === true);
+
+  const moderate = async (action: "kick" | "ban") => {
+    const label = action === "ban" ? "banir" : "expulsar";
+    if (!window.confirm(`Deseja realmente ${label} ${member.username} deste servidor?`)) return;
+    const reason = window.prompt("Motivo (opcional):");
+    if (reason === null) return;
+    const error = action === "ban"
+      ? await banMember(member.id, reason.trim() || undefined)
+      : await kickMember(member.id, reason.trim() || undefined);
+    if (error) window.alert(error);
+    else onClose();
+  };
 
   return (
     <div className="person-menu" ref={box} role="dialog" aria-label={`Áudio de ${member.username}`}>
@@ -148,6 +173,13 @@ export function PersonMenu({ member, onClose }: { member: Member; onClose: () =>
           Padrão
         </button>
       </div>
+
+      {(canKick || canBan) && (
+        <div className="person-moderation-actions">
+          {canKick && <button type="button" className="person-button danger" onClick={() => void moderate("kick")}>Expulsar do servidor</button>}
+          {canBan && <button type="button" className="person-button danger" onClick={() => void moderate("ban")}>Banir do servidor</button>}
+        </div>
+      )}
 
       {showStats && (
         <ul className="person-stats" data-grade={statsGrade(stats)}>

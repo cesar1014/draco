@@ -74,9 +74,9 @@ export class AdminRepository {
   }
 
   canActOn(guildId, actorId, targetId, { systemAdmin = false } = {}) {
-    if (systemAdmin) return true;
     const owner = this.statements.guildOwner.get(guildId)?.owner_id;
     if (targetId === owner) return false;
+    if (systemAdmin) return true;
     if (actorId === owner) return true;
     return this.hierarchy(guildId, actorId) > this.hierarchy(guildId, targetId);
   }

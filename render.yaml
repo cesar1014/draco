@@ -36,6 +36,10 @@ services:
       # instância desconectaria todo mundo da própria identidade.
       - key: SESSION_SECRET
         generateValue: true
+      - key: DATA_ENCRYPTION_KEY
+        sync: false
+      - key: BACKUP_ENCRYPTION_KEY
+        sync: false
 
 # Duas variáveis ficam de fora daqui de propósito, porque só fazem sentido depois
 # que o serviço existe. Adicione as duas em Environment, no painel:

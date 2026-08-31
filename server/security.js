@@ -220,3 +220,45 @@ export class RateLimiter {
     }
   }
 }
+
+/**
+ * Balde persistente para autenticação HTTP. O SQLite é o armazenamento
+ * compartilhado pelas instâncias que usam o mesmo volume e impede que reiniciar
+ * o processo zere tentativas de senha. As chaves recebidas já são HMACs opacos.
+ */
+export class PersistentRateLimiter {
+  constructor(database) {
+    this.database = database;
+    this.read = database.prepare(
+      "SELECT tokens, updated_at FROM security_rate_limits WHERE scope_key = ? AND expires_at > ?",
+    );
+    this.write = database.prepare(`
+      INSERT INTO security_rate_limits(scope_key, tokens, updated_at, expires_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(scope_key) DO UPDATE SET
+        tokens = excluded.tokens,
+        updated_at = excluded.updated_at,
+        expires_at = excluded.expires_at
+    `);
+    this.prune = database.prepare("DELETE FROM security_rate_limits WHERE expires_at <= ?");
+    this.lastPrune = 0;
+    this.consume = database.transaction((key, burst, perSec, now) => {
+      const row = this.read.get(key, now);
+      const available = row
+        ? Math.min(burst, row.tokens + ((now - row.updated_at) / 1000) * perSec)
+        : burst;
+      const permitted = available >= 1;
+      this.write.run(key, permitted ? available - 1 : available, now, now + BUCKET_TTL_MS);
+      return permitted;
+    });
+  }
+
+  allow(key, burst, perSec) {
+    const now = Date.now();
+    if (now - this.lastPrune >= SWEEP_EVERY_MS) {
+      this.prune.run(now);
+      this.lastPrune = now;
+    }
+    return this.consume(key, burst, perSec, now);
+  }
+}

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { encryptExistingContent, fieldCipherFromEnv } from "./field-crypto.js";
 
 /**
  * Conexão única com o SQLite e execução das migrations. É síncrono de propósito:
@@ -107,6 +108,9 @@ export function openDatabase(configuredPath = process.env.DATABASE_PATH) {
   // `FULL` custaria um fsync por mensagem enviada, e mensagem de chat não vale isso.
   database.pragma("synchronous = NORMAL");
   applyMigrations(database);
+  const fieldCipher = fieldCipherFromEnv(process.env);
+  encryptExistingContent(database, fieldCipher);
+  Object.defineProperty(database, "dracoFieldCipher", { value: fieldCipher });
   if (filename !== ":memory:") {
     restrictPermissions(filename, 0o600);
     restrictPermissions(`${filename}-wal`, 0o600);

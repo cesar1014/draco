@@ -5,6 +5,10 @@
 app = "draco-sp"
 primary_region = "gru"
 
+# Antes do primeiro deploy, configure fora do Git:
+# fly secrets set ORIGIN=https://SEU-APP.fly.dev APP_URL=https://SEU-APP.fly.dev \
+#   SESSION_SECRET=... DATA_ENCRYPTION_KEY=... BACKUP_ENCRYPTION_KEY=...
+
 [build]
 
 # `PORT` tem que bater com `internal_port`. O servidor lê essa variável; se as

@@ -35,11 +35,10 @@ export class ObjectStorage {
     this.accessKey = env.OBJECT_STORAGE_ACCESS_KEY_ID?.trim() ?? null;
     this.secretKey = env.OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim() ?? null;
     this.region = env.OBJECT_STORAGE_REGION?.trim() || "auto";
-    this.publicBase = env.OBJECT_STORAGE_PUBLIC_BASE_URL?.replace(/\/+$/, "") ?? null;
   }
 
   get ready() {
-    return Boolean(this.endpoint && this.bucket && this.accessKey && this.secretKey && this.publicBase && this.endpoint.startsWith("https://") && this.publicBase.startsWith("https://"));
+    return Boolean(this.endpoint && this.bucket && this.accessKey && this.secretKey && this.endpoint.startsWith("https://"));
   }
 
   validate(filename, mime, size) {
@@ -81,8 +80,15 @@ export class ObjectStorage {
     return `${url.origin}${canonicalUri}?${query.toString()}`;
   }
 
-  publicUrl(key) {
-    return `${this.publicBase}/${key.split("/").map(encode).join("/")}`;
+  downloadUrl(key, { expires = 900 } = {}) {
+    return this.presign("GET", key, { expires });
+  }
+
+  async remove(key) {
+    const url = this.presign("DELETE", key, { expires: 60 });
+    if (!url) return false;
+    const response = await fetch(url, { method: "DELETE", signal: AbortSignal.timeout(8000) });
+    return response.ok || response.status === 404;
   }
 
   async verify(key, mime, size) {

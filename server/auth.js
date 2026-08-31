@@ -64,6 +64,15 @@ export class SessionAuthority {
       .digest("base64url");
   }
 
+  /** HMAC opaco para limites e credenciais derivadas, sem persistir o dado bruto. */
+  fingerprintIdentity(value, domain = "identity") {
+    if (typeof value !== "string" || value.length === 0 || value.length > 1024) return null;
+    return createHmac("sha256", this.#secret)
+      .update(`draco:${domain}:v1\0`)
+      .update(value)
+      .digest("base64url");
+  }
+
   /** Token novo pra uma identidade. `userId` ausente cria uma. */
   issue(userId = randomUUID(), sessionVersion = 0, sessionId = randomUUID()) {
     const payload = encode(
@@ -123,6 +132,10 @@ export function resolveSessionSecret(repository, env = process.env) {
       throw new Error("SESSION_SECRET precisa ter pelo menos 32 caracteres");
     }
     return { secret: configured, source: "env" };
+  }
+
+  if (env.NODE_ENV === "production") {
+    throw new Error("SESSION_SECRET é obrigatória em produção");
   }
 
   const stored = repository.readSetting(SECRET_SETTING);

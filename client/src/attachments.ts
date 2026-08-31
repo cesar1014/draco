@@ -12,20 +12,12 @@ interface ApiReply {
   headers?: Record<string, string>;
 }
 
-function token(): string | null {
-  try {
-    const value = JSON.parse(localStorage.getItem("draco:session") ?? "null");
-    return typeof value === "string" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 function explain(code?: string): string {
   if (code === "storage-unavailable") return "O armazenamento de anexos ainda não foi configurado.";
   if (code === "attachment-type") return "Use JPG, PNG, GIF, WebP ou PDF.";
   if (code === "attachment-size") return "Cada arquivo pode ter no máximo 25 MB.";
   if (code === "attachment-invalid") return "O conteúdo do arquivo não corresponde ao formato informado.";
+  if (code === "attachment-quota") return "Sua quota de armazenamento de anexos foi atingida.";
   if (code === "not-authenticated") return "Sua sessão expirou. Entre novamente.";
   return "Não foi possível enviar o anexo.";
 }
@@ -33,7 +25,8 @@ function explain(code?: string): string {
 async function json(path: string, body: unknown): Promise<ApiReply> {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token() ?? ""}` },
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify(body),
   });
   const result = await response.json() as ApiReply;

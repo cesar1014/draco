@@ -56,6 +56,12 @@ export const HeadphoneOffIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const EyeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M12 4C6.5 4 2.5 8.1 1.2 11.3a1.8 1.8 0 0 0 0 1.4C2.5 15.9 6.5 20 12 20s9.5-4.1 10.8-7.3a1.8 1.8 0 0 0 0-1.4C21.5 8.1 17.5 4 12 4Zm0 13a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Z" />
+  </Icon>
+);
+
 export const CameraIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M4 6.5A2.5 2.5 0 0 0 1.5 9v6A2.5 2.5 0 0 0 4 17.5h9A2.5 2.5 0 0 0 15.5 15V9A2.5 2.5 0 0 0 13 6.5H4Zm13 4.2 4.1-2.6a1 1 0 0 1 1.4.9v6a1 1 0 0 1-1.4.9L17 13.3v-2.6Z" />

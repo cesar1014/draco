@@ -4,9 +4,11 @@ import {
   completePasswordReset,
   describeAuthError,
   loginAccount,
+  logoutAccount,
   registerAccount,
   requestOwnPasswordChange,
   requestPasswordReset,
+  resumeAccountSession,
   verifyAccountEmail,
 } from "@/auth";
 import {
@@ -80,6 +82,7 @@ import {
   revokeInvite,
   sendDirect,
   sendChannel,
+  setScreenWatching,
   sfuJoin,
   sfuPublish,
   sfuRenegotiate,
@@ -116,6 +119,7 @@ import {
   type AuditEntry,
   type ChannelOverwrite,
   type SfuHealth,
+  type ScreenViewer,
 } from "@/types";
 
 /**
@@ -150,6 +154,7 @@ const adaptive = new AdaptiveController();
  */
 let joining = false;
 let lastRestart = 0;
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
 /** Reentradas gastas nesta permanência no canal. Zera ao entrar por clique. */
 let restartAttempts = 0;
 /**
@@ -251,11 +256,6 @@ function writeJson(key: string, value: unknown): void {
  * servidor, que só a devolve pra quem apresenta a assinatura dele: antes bastava
  * conhecer o id de alguém pra entrar como essa pessoa.
  */
-function readSessionToken(): string | null {
-  const raw = readJson(SESSION_KEY);
-  return typeof raw === "string" && raw.length > 0 && raw.length <= 512 ? raw : null;
-}
-
 function clearSessionToken(): void {
   try {
     localStorage.removeItem(SESSION_KEY);
@@ -331,6 +331,7 @@ interface Store {
   joinError: string | null;
   reconnecting: boolean;
   emailReady: boolean;
+  turnstileSiteKey: string | null;
 
   // --- servidor -----------------------------------------------------------
   guilds: Guild[];
@@ -407,6 +408,7 @@ interface Store {
    * paga decodificação de 1440p que não pediu.
    */
   watching: Record<string, boolean>;
+  screenViewers: Record<string, ScreenViewer[]>;
   /** Espelhamento manual por tile, aplicado sobre o padrão. */
   flipped: Record<string, boolean>;
 
@@ -414,6 +416,7 @@ interface Store {
   settings: Settings;
   devices: DeviceList;
   mediaError: string | null;
+  mediaRecovery: "idle" | "reconnecting" | "failed";
   /** Aviso discreto que não interrompe nada, some sozinho na interface. */
   notice: string | null;
   ice: IceConfigResponse | null;
@@ -430,7 +433,7 @@ interface Store {
 
   // --- ações --------------------------------------------------------------
   bootstrap: () => Promise<void>;
-  connect: (email: string, password: string) => Promise<void>;
+  connect: (email: string, password: string, botToken?: string | null) => Promise<void>;
   connectGuest: (username: string, inviteCode: string, age: number) => Promise<void>;
   register: (
     email: string,
@@ -438,10 +441,11 @@ interface Store {
     age: number,
     password: string,
     passwordConfirmation: string,
+    botToken?: string | null,
   ) => Promise<string | null>;
   verifyEmail: (token: string) => Promise<string | null>;
   confirmLoginAddress: (token: string) => Promise<string | null>;
-  requestPassword: (email: string) => Promise<string | null>;
+  requestPassword: (email: string, botToken?: string | null) => Promise<string | null>;
   completePassword: (token: string, password: string) => Promise<string | null>;
   requestOwnPassword: () => Promise<string | null>;
   logout: () => void;
@@ -465,6 +469,7 @@ interface Store {
   updatePresence: (mode: PresenceMode, status: string | null, expiresAt?: number | null) => Promise<string | null>;
   loadOlderMessages: (channelId: string) => Promise<void>;
   joinVoice: (channelId: string) => Promise<void>;
+  retryMedia: () => void;
   leaveVoice: () => void;
   toggleMute: () => void;
   toggleDeafen: () => void;
@@ -545,6 +550,7 @@ export interface AdminState {
 
 /** Nível atual do próprio microfone (0 a 1), pro medidor das configurações. */
 export const micLevel = () => detector?.level ?? 0;
+const trackEnded = (track: MediaStreamTrack) => track.readyState === "ended";
 
 const byId = (members: Member[]) => Object.fromEntries(members.map((m) => [m.id, m]));
 
@@ -662,6 +668,8 @@ export const useStore = create<Store>()((set, get) => {
           continue;
         }
         if (!member.sfuSessionId || !member.sfuTracks?.[slot]) continue;
+        if (slot === "camera" && !member.camOn) continue;
+        if ((slot === "screen" || slot === "screenAudio") && !member.screenOn) continue;
         refs.push({ memberId: member.id, slot, sessionId: member.sfuSessionId });
       }
     }
@@ -675,18 +683,20 @@ export const useStore = create<Store>()((set, get) => {
     engine?.removePeer(memberId);
     forgetStats(memberId);
     set((state) => {
-      if (!state.remote[memberId] && !state.peerStates[memberId] && !state.stats[memberId]) {
+      if (!state.remote[memberId] && !state.peerStates[memberId] && !state.stats[memberId] && !state.screenViewers[memberId]) {
         return state;
       }
       const remote = { ...state.remote };
       const peerStates = { ...state.peerStates };
       const stats = { ...state.stats };
+      const screenViewers = { ...state.screenViewers };
       delete remote[memberId];
       // O estado da conexão de quem saiu ficaria pendurado em `disconnected`, e a
       // barra de voz leria isso como a call inteira com problema.
       delete peerStates[memberId];
       delete stats[memberId];
-      return { remote, peerStates, stats };
+      delete screenViewers[memberId];
+      return { remote, peerStates, stats, screenViewers };
     });
   };
 
@@ -709,6 +719,10 @@ export const useStore = create<Store>()((set, get) => {
         },
       };
     });
+    if (slot === "screen" && peerId !== get().selfId) {
+      const watching = live && get().watching[`${peerId}:screen`] === true;
+      if (socket) void setScreenWatching(socket, peerId, watching);
+    }
   };
 
   /**
@@ -735,7 +749,13 @@ export const useStore = create<Store>()((set, get) => {
         .map((ref) => ({ memberId: ref.memberId, slot: ref.slot, sessionId: ref.sessionId! }));
       if (tracks.length === 0) return null;
       const reply = await sfuSubscribe(s, tracks);
-      if (!reply.ok) return null;
+      if (!reply.ok) {
+        if (reply.error === "no-tracks") return null;
+        const reason = reply.error === "stale-session" || reply.error === "no-session"
+          ? "a sessão de recepção do SFU expirou"
+          : "o servidor de mídia recusou a assinatura";
+        throw new Error(reason);
+      }
       return { description: reply.description ?? null, tracks: reply.tracks ?? [] };
     },
     renegotiate: async (role, description) => (await sfuRenegotiate(s, role, description)).ok,
@@ -748,14 +768,28 @@ export const useStore = create<Store>()((set, get) => {
    * limite é o que impede que isso vire um laço de reentradas.
    */
   const restartCall = (channelId: string, reason: string) => {
-    if (get().voiceChannelId !== channelId || joining) return;
+    if (get().voiceChannelId !== channelId) return;
+    if (joining) {
+      restartTimer ??= setTimeout(() => {
+        restartTimer = null;
+        restartCall(channelId, reason);
+      }, 250);
+      return;
+    }
     const now = Date.now();
-    if (now - lastRestart < RESTART_COOLDOWN_MS) return;
+    if (now - lastRestart < RESTART_COOLDOWN_MS) {
+      restartTimer ??= setTimeout(() => {
+        restartTimer = null;
+        restartCall(channelId, reason);
+      }, RESTART_COOLDOWN_MS - (now - lastRestart));
+      return;
+    }
     lastRestart = now;
 
     if (restartAttempts >= MAX_RESTARTS) {
       set({
         notice: null,
+        mediaRecovery: "failed",
         mediaError: `A conexão de mídia não se restabeleceu (${reason}). Saia e entre no canal de voz de novo.`,
       });
       return;
@@ -764,7 +798,7 @@ export const useStore = create<Store>()((set, get) => {
     // A configuração guardada pode ser justamente o problema: credencial de TURN
     // revogada ou vencida derruba o ICE, e insistir na mesma repetiria a falha.
     refreshIce = true;
-    set({ notice: `A conexão de mídia caiu (${reason}). Reconectando…` });
+    set({ mediaRecovery: "reconnecting", notice: `A conexão de mídia caiu (${reason}). Reconectando…` });
     void get().joinVoice(channelId);
   };
 
@@ -799,7 +833,7 @@ export const useStore = create<Store>()((set, get) => {
     engine?.close();
     engine = null;
     stopStats();
-    set({ remote: {}, peerStates: {}, stats: {} });
+    set({ remote: {}, peerStates: {}, stats: {}, screenViewers: {} });
 
     const configuration: RTCConfiguration = {
       iceServers: ice.iceServers,
@@ -823,6 +857,7 @@ export const useStore = create<Store>()((set, get) => {
       activeChannelId: channelId,
       sidebarOpen: false,
       viaServer: sfuAvailable,
+      screenViewers: reply.screenViewers ?? {},
     });
 
     const call: CallEngine = sfuAvailable
@@ -833,7 +868,10 @@ export const useStore = create<Store>()((set, get) => {
           onConnectionState: (role, connectionState) => {
             // Conectou: o que veio antes está resolvido, e a próxima queda merece
             // as tentativas de novo em vez de esbarrar num limite antigo.
-            if (role === "send" && connectionState === "connected") restartAttempts = 0;
+            if (connectionState === "connected") {
+              restartAttempts = 0;
+              set({ mediaRecovery: "idle", notice: null });
+            }
             set((state) => ({
               peerStates: { ...state.peerStates, [`sfu:${role}`]: connectionState },
             }));
@@ -846,7 +884,14 @@ export const useStore = create<Store>()((set, get) => {
           sendSignal: (to, payload) => s.emit("rtc:signal", { to, ...payload }),
           onRemoteTrack,
           onPeerConnectionState: (peerId, connectionState) => {
-            if (connectionState === "connected") restartAttempts = 0;
+            if (connectionState === "connected") {
+              restartAttempts = 0;
+              set({ mediaRecovery: "idle", notice: null });
+            }
+            if (connectionState === "failed") {
+              if (get().watching[`${peerId}:screen`]) void setScreenWatching(s, peerId, false);
+              restartCall(channelId, `conexão com ${get().members[peerId]?.username ?? "participante"} caiu`);
+            }
             set((state) => ({ peerStates: { ...state.peerStates, [peerId]: connectionState } }));
           },
         });
@@ -959,19 +1004,13 @@ export const useStore = create<Store>()((set, get) => {
               identity.guest.age,
               identity.guest.token,
             )
-          : await identify(s, identity.token ?? readSessionToken());
+          : await identify(s, null);
         if (!reply.ok || !reply.state || !reply.selfId) {
           set({ status: "join", joinError: describeSocketError(reply.error), reconnecting: false });
           s.disconnect();
           return;
         }
 
-        // Guardar o token é o que faz a próxima reconexão voltar como a mesma
-        // pessoa. Ele só vem quando muda; o de antes continua valendo.
-        if (reply.token) {
-          writeJson(SESSION_KEY, reply.token);
-          identity = { token: reply.token };
-        }
         if (reply.guestToken && identity.guest) {
           identity = { guest: { ...identity.guest, token: reply.guestToken } };
         }
@@ -1126,6 +1165,10 @@ export const useStore = create<Store>()((set, get) => {
     s.on("sfu:health", (sfuHealth) => {
       set({ sfuHealth, notice: sfuHealth.status === "UNAVAILABLE" ? "O servidor de mídia está indisponível. A chamada tentará se recuperar sem trocar o modo dos participantes." : null });
     });
+    s.on("screen:viewers", ({ channelId, ownerId, viewers }) => {
+      if (get().voiceChannelId !== channelId) return;
+      set((state) => ({ screenViewers: { ...state.screenViewers, [ownerId]: viewers } }));
+    });
 
     s.on("voice:peer-joined", ({ channelId, member }) => {
       remember([member]);
@@ -1174,10 +1217,16 @@ export const useStore = create<Store>()((set, get) => {
       set({ notice: "O canal de voz em que você estava foi apagado." });
     });
 
-    s.on("voice:moderated", ({ channelId }) => {
+    s.on("voice:moderated", ({ channelId, reason }) => {
       if (get().voiceChannelId !== channelId) return;
       get().leaveVoice();
-      set({ notice: "Você foi removido da chamada durante uma restrição temporária." });
+      set({
+        notice: reason === "ban"
+          ? "Você foi removido da chamada após um banimento."
+          : reason === "kick"
+            ? "Você foi removido da chamada após ser expulso do servidor."
+            : "Você foi removido da chamada durante uma restrição temporária.",
+      });
     });
 
     s.on("guild:member-joined", ({ guildId, member }) => {
@@ -1309,6 +1358,7 @@ export const useStore = create<Store>()((set, get) => {
     joinError: null,
     reconnecting: false,
     emailReady: false,
+    turnstileSiteKey: null,
 
     guilds: [],
     channels: [],
@@ -1349,11 +1399,13 @@ export const useStore = create<Store>()((set, get) => {
     people: loadPeople(),
     focusedTiles: [],
     watching: {},
+    screenViewers: {},
     flipped: {},
 
     settings: initialSettings,
     devices: { mics: [], cameras: [], speakers: [] },
     mediaError: null,
+    mediaRecovery: "idle",
     notice: null,
     ice: null,
     viaServer: false,
@@ -1365,27 +1417,29 @@ export const useStore = create<Store>()((set, get) => {
     async bootstrap() {
       try {
         const response = await fetch("/api/config");
-        const config = (await response.json()) as { emailReady?: boolean };
-        set({ emailReady: config.emailReady === true });
+        const config = (await response.json()) as { emailReady?: boolean; turnstileSiteKey?: string | null };
+        set({
+          emailReady: config.emailReady === true,
+          turnstileSiteKey: typeof config.turnstileSiteKey === "string" ? config.turnstileSiteKey : null,
+        });
       } catch {
-        set({ emailReady: false });
+        set({ emailReady: false, turnstileSiteKey: null });
       }
-      const token = readSessionToken();
-      if (token && get().status === "join") {
-        identity = { token };
+      if (get().status === "join" && await resumeAccountSession()) {
+        identity = { token: null };
         await startConnection();
       }
     },
 
-    async connect(email, password) {
+    async connect(email, password, botToken = null) {
       set({ status: "connecting", joinError: null });
-      const reply = await loginAccount(email.trim(), password);
-      if (!reply.ok || !reply.token) {
+      const reply = await loginAccount(email.trim(), password, botToken);
+      if (!reply.ok) {
         set({ status: "join", joinError: describeAuthError(reply.error) });
         return;
       }
-      writeJson(SESSION_KEY, reply.token);
-      identity = { token: reply.token };
+      clearSessionToken();
+      identity = { token: null };
       await startConnection();
     },
 
@@ -1397,8 +1451,8 @@ export const useStore = create<Store>()((set, get) => {
       await startConnection();
     },
 
-    async register(email, username, age, password, passwordConfirmation) {
-      const reply = await registerAccount(email, username, age, password, passwordConfirmation);
+    async register(email, username, age, password, passwordConfirmation, botToken = null) {
+      const reply = await registerAccount(email, username, age, password, passwordConfirmation, botToken);
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
@@ -1412,26 +1466,27 @@ export const useStore = create<Store>()((set, get) => {
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
-    async requestPassword(email) {
-      const reply = await requestPasswordReset(email);
+    async requestPassword(email, botToken = null) {
+      const reply = await requestPasswordReset(email, botToken);
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
     async completePassword(token, password) {
       const reply = await completePasswordReset(token, password);
-      if (!reply.ok || !reply.token) return describeAuthError(reply.error);
-      writeJson(SESSION_KEY, reply.token);
-      identity = { token: reply.token };
+      if (!reply.ok) return describeAuthError(reply.error);
+      clearSessionToken();
+      identity = { token: null };
       await startConnection();
       return get().status === "ready" ? null : get().joinError;
     },
 
     async requestOwnPassword() {
-      const reply = await requestOwnPasswordChange(readSessionToken());
+      const reply = await requestOwnPasswordChange();
       return reply.ok ? null : describeAuthError(reply.error);
     },
 
     logout() {
+      void logoutAccount();
       get().leaveVoice();
       socket?.disconnect();
       socket = null;
@@ -1628,7 +1683,18 @@ export const useStore = create<Store>()((set, get) => {
       }
     },
 
+    retryMedia() {
+      const channelId = get().voiceChannelId;
+      if (!channelId || joining) return;
+      restartAttempts = 0;
+      lastRestart = 0;
+      set({ mediaRecovery: "reconnecting", mediaError: null });
+      void get().joinVoice(channelId);
+    },
+
     leaveVoice() {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = null;
       detector?.stop();
       detector = null;
       engine?.close();
@@ -1650,9 +1716,11 @@ export const useStore = create<Store>()((set, get) => {
         stats: {},
         focusedTiles: [],
         watching: {},
+        screenViewers: {},
         flipped: {},
         screenPickerOpen: false,
         viaServer: false,
+        mediaRecovery: "idle",
       });
     },
 
@@ -1698,9 +1766,15 @@ export const useStore = create<Store>()((set, get) => {
         const track = await media.openCamera(cameraDeviceId, options, cameraFacing);
         // Webcam desconectada no meio da call: some o tile em vez de congelar.
         track.onended = () => {
-          if (get().camOn) void get().toggleCamera();
+          if (media.cameraTrack !== track) return;
+          media.closeCamera();
+          void engine?.setLocalTrack("camera", null);
+          dropProfile("camera");
+          set({ camOn: false, liveFacing: null });
+          publishVoiceState({ camOn: false });
         };
         await engine?.setLocalTrack("camera", track);
+        if (trackEnded(track) || media.cameraTrack !== track) return;
         await setProfile("camera", {
           maxBitrate: cameraBitrate(options),
           degradationPreference: "maintain-framerate",
@@ -1773,15 +1847,23 @@ export const useStore = create<Store>()((set, get) => {
         // O "Parar de compartilhar" do navegador termina a trilha: sem escutar
         // isso, os outros ficariam vendo o último quadro pra sempre.
         video.onended = () => {
-          if (get().screenOn) void get().toggleScreen();
+          if (media.screenTrack !== video) return;
+          media.closeScreen();
+          void engine?.setLocalTrack("screen", null);
+          void engine?.setLocalTrack("screenAudio", null);
+          dropProfile("screen");
+          set({ screenOn: false });
+          publishVoiceState({ screenOn: false });
         };
         await engine?.setLocalTrack("screen", video);
+        if (trackEnded(video) || media.screenTrack !== video) return;
         await engine?.setLocalTrack("screenAudio", audio);
         await setProfile("screen", {
           maxBitrate: screenBitrate(options),
           maxFramerate: options.frameRate,
           degradationPreference: screenDegradation(options.content),
         });
+        if (trackEnded(video) || media.screenTrack !== video) return;
         set({
           screenOn: true,
           notice: systemAudioFailure ? describeSystemAudioFailure(systemAudioFailure) : null,
@@ -1937,6 +2019,11 @@ export const useStore = create<Store>()((set, get) => {
 
     watch(tile, on) {
       set((state) => ({ watching: { ...state.watching, [tile]: on } }));
+      const [ownerId, slot] = tile.split(":");
+      if (slot === "screen" && ownerId !== get().selfId && socket) {
+        const connected = get().remote[ownerId]?.live.screen === true;
+        void setScreenWatching(socket, ownerId, on && connected);
+      }
     },
 
     /**
@@ -1944,8 +2031,13 @@ export const useStore = create<Store>()((set, get) => {
      * reaberta voltaria já tocando e ainda fixada de uma sessão anterior.
      */
     pruneTiles(keys) {
+      const liveKeys = new Set(keys);
+      for (const [key, watching] of Object.entries(get().watching)) {
+        if (!watching || liveKeys.has(key) || !key.endsWith(":screen") || !socket) continue;
+        void setScreenWatching(socket, key.slice(0, -":screen".length), false);
+      }
       set((state) => {
-        const live = new Set(keys);
+        const live = liveKeys;
         const focusedTiles = state.focusedTiles.filter((key) => live.has(key));
         const watching = Object.fromEntries(
           Object.entries(state.watching).filter(([key]) => live.has(key)),
@@ -2151,15 +2243,14 @@ export const useStore = create<Store>()((set, get) => {
     async banMember(userId, reason) {
       const s = socket;
       const admin = get().admin;
-      if (!s || !admin || admin.busy) return "Nada a fazer agora.";
+      const guildId = admin?.guildId ?? get().activeGuildId;
+      if (!s || !guildId || admin?.busy) return "Nada a fazer agora.";
 
-      set({ admin: { ...admin, busy: true, error: null } });
-      const reply = await banMember(s, admin.guildId, userId, reason);
+      if (admin) set({ admin: { ...admin, busy: true, error: null } });
+      const reply = await banMember(s, guildId, userId, reason);
       const current = get().admin;
-      if (current?.guildId !== admin.guildId) return null;
-
       const error = reply.ok ? null : describeSocketError(reply.error);
-      set({
+      if (current?.guildId === guildId) set({
         admin: {
           ...current,
           roster: reply.ok ? current.roster.filter((entry) => entry.id !== userId) : current.roster,
@@ -2193,10 +2284,13 @@ export const useStore = create<Store>()((set, get) => {
     async kickMember(userId, reason) {
       const s = socket;
       const admin = get().admin;
-      if (!s || !admin) return "Sem conexão com o servidor.";
-      const reply = await kickGuildMember(s, admin.guildId, userId, reason);
+      const guildId = admin?.guildId ?? get().activeGuildId;
+      if (!s || !guildId) return "Sem conexão com o servidor.";
+      const reply = await kickGuildMember(s, guildId, userId, reason);
       if (!reply.ok) return describeSocketError(reply.error);
-      set({ admin: { ...admin, roster: admin.roster.filter((entry) => entry.id !== userId) } });
+      if (admin?.guildId === guildId) {
+        set({ admin: { ...admin, roster: admin.roster.filter((entry) => entry.id !== userId) } });
+      }
       return null;
     },
 

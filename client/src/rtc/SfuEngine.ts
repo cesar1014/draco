@@ -120,6 +120,7 @@ export class SfuEngine implements CallEngine {
     recv: null,
   };
   #closed = false;
+  #failed = false;
 
   constructor(private options: SfuEngineOptions) {
     this.#send = new RTCPeerConnection(options.configuration);
@@ -136,7 +137,7 @@ export class SfuEngine implements CallEngine {
       // voltam com `replaceTrack`, e marcar aqui é o que faz a próxima tentativa
       // republicar em vez de escrever numa trilha que não existe mais.
       if (state === "failed" || state === "closed") this.#invalidatePublications();
-      if (state === "failed") this.options.onFailure?.("envio caiu");
+      if (state === "failed") this.#fail("envio caiu");
     };
 
     this.#recv.onconnectionstatechange = () => {
@@ -145,7 +146,7 @@ export class SfuEngine implements CallEngine {
       // sempre. Anunciar isso apareceria como "conectando" que nunca termina.
       if (this.#subscriptions.size > 0) this.options.onConnectionState?.("recv", state);
       if (state === "connected") this.#iceRestarts.recv = 0;
-      if (state === "failed") this.options.onFailure?.("recepção caiu");
+      if (state === "failed") this.#fail("recepção caiu");
     };
 
     this.#send.oniceconnectionstatechange = () => this.#watchIce("send", this.#send);
@@ -186,15 +187,29 @@ export class SfuEngine implements CallEngine {
 
   /** Cria as duas sessões no SFU. Uma vez só: as chamadas seguintes reaproveitam. */
   start(): Promise<boolean> {
-    this.#ready ??= this.options.transport.join();
+    this.#ready ??= this.options.transport.join().then((ready) => {
+      if (!ready) this.#fail("não foi possível criar uma sessão de mídia");
+      return ready;
+    });
     return this.#ready;
   }
 
   async setLocalTrack(slot: MediaSlot, track: MediaStreamTrack | null): Promise<void> {
-    if (this.#closed) return;
+    if (this.#closed || this.#failed) return;
     this.#localTracks.set(slot, track);
 
     const publication = this.#publications.get(slot);
+    if (!track && publication && slot !== "mic") {
+      publication.state = "stale";
+      this.#publications.delete(slot);
+      try {
+        await publication.sender.replaceTrack(null);
+        publication.transceiver.stop();
+      } catch {
+        // A conexão pode ter fechado junto com a trilha; ela já foi invalidada.
+      }
+      return;
+    }
     // Publicação viva aceita a troca sem renegociar, que é o caminho barato: é o
     // que faz mutar e desmutar, ou trocar de câmera, não custar uma negociação.
     if (publication && this.#usable(publication)) {
@@ -223,13 +238,12 @@ export class SfuEngine implements CallEngine {
 
   /**
    * Alinha as assinaturas com o que existe na call. Uma trilha que o dono
-   * desligou continua assinada e vira silêncio, e quem decide se o tile existe é
-   * o estado que veio pelo socket, então derrubá-la só compraria uma renegociação
-   * a cada mute. O que sai são as trilhas de sessões que já não valem: quem
-   * reconectou tem sessão nova, e a antiga não entrega mais nada.
+   * desligou sai da lista desejada; áudio mutado continua assinado porque mute é
+   * estado, não fim de trilha. Também saem as referências de sessões substituídas,
+   * que nunca voltariam a entregar mídia mesmo mantendo o mesmo membro.
    */
   syncRemote(tracks: RemoteTrackRef[]): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#failed) return;
 
     const wanted = new Map(tracks.map((ref) => [slotKey(ref.memberId, ref.slot), ref]));
     for (const [key, current] of [...this.#subscriptions]) {
@@ -317,22 +331,22 @@ export class SfuEngine implements CallEngine {
   }
 
   async #restartIce(role: "send" | "recv", pc: RTCPeerConnection): Promise<void> {
-    if (this.#closed || pc.signalingState === "closed") return;
+    if (this.#closed || this.#failed || pc.signalingState === "closed") return;
     if (this.#iceRestarts[role] >= MAX_ICE_RESTARTS) {
-      this.options.onFailure?.(role === "send" ? "envio não reconectou" : "recepção não reconectou");
+      this.#fail(role === "send" ? "envio não reconectou" : "recepção não reconectou");
       return;
     }
     this.#iceRestarts[role] += 1;
 
     const work = async () => {
-      if (this.#closed || pc.signalingState === "closed") return;
+      if (this.#closed || this.#failed || pc.signalingState === "closed") return;
       const offer = await pc.createOffer({ iceRestart: true });
       await this.#setLocal(pc, offer);
       const accepted = await this.options.transport.renegotiate(role, pc.localDescription!);
       if (accepted) return;
       // O SFU não aceitou o ICE novo: a sessão do outro lado não existe mais.
       if (role === "send") this.#invalidatePublications();
-      this.options.onFailure?.(role === "send" ? "envio caiu" : "recepção caiu");
+      this.#fail(role === "send" ? "envio caiu" : "recepção caiu");
     };
 
     await (role === "send" ? this.#enqueueSend(work) : this.#enqueueRecv(work));
@@ -341,6 +355,24 @@ export class SfuEngine implements CallEngine {
   /** Toda publicação passa a exigir republicação. Não mexe nas trilhas locais. */
   #invalidatePublications(): void {
     for (const publication of this.#publications.values()) publication.state = "stale";
+  }
+
+  #fail(reason: string): void {
+    if (this.#closed || this.#failed) return;
+    this.#failed = true;
+    this.#invalidatePublications();
+    for (const [key, subscription] of [...this.#subscriptions]) {
+      if (subscription.track) {
+        this.options.onRemoteTrack(
+          subscription.ref.memberId,
+          subscription.ref.slot,
+          new MediaStream([subscription.track]),
+          false,
+        );
+      }
+      this.#release(key);
+    }
+    this.options.onFailure?.(reason);
   }
 
   /**
@@ -378,7 +410,7 @@ export class SfuEngine implements CallEngine {
    */
   #publish(slot: MediaSlot, track: MediaStreamTrack): Promise<void> {
     return this.#enqueueSend(async () => {
-      if (this.#closed || !(await this.start())) return;
+      if (this.#closed || this.#failed || !(await this.start())) return;
       // A trilha pode ter sido trocada (ou desligada) enquanto esta subia na fila.
       if (this.#localTracks.get(slot) !== track) return;
 
@@ -425,7 +457,7 @@ export class SfuEngine implements CallEngine {
         // jeito; qualquer outra recusa é o SFU dizendo que esta conexão não
         // publica mais, e insistir aqui só empilharia `m=` que ninguém atende.
         this.#invalidatePublications();
-        this.options.onFailure?.(
+        this.#fail(
           stale ? "a sessão de mídia foi substituída" : "o servidor de mídia recusou a transmissão",
         );
         throw new Error(`o SFU não aceitou ${slot}`);
@@ -456,7 +488,7 @@ export class SfuEngine implements CallEngine {
     // Uma pessoa pode ter saído entre o pedido e a vez dele na fila.
     const live = refs.filter((ref) => this.#pending(ref));
     if (live.length === 0) return;
-    if (this.#closed || !(await this.start())) {
+    if (this.#closed || this.#failed || !(await this.start())) {
       for (const ref of live) this.#forget(ref);
       return;
     }
@@ -468,7 +500,8 @@ export class SfuEngine implements CallEngine {
       // Falha aqui não pode deixar a trilha marcada como assinada, senão ela
       // nunca seria tentada de novo nesta call.
       for (const ref of live) this.#forget(ref);
-      throw error;
+      this.#fail(error instanceof Error ? error.message : "a sessão de recepção caiu");
+      return;
     }
     if (!result) {
       for (const ref of live) this.#forget(ref);
@@ -482,6 +515,7 @@ export class SfuEngine implements CallEngine {
       const accepted = await this.options.transport.renegotiate("recv", this.#recv.localDescription!);
       if (!accepted) {
         for (const ref of live) this.#forget(ref);
+        this.#fail("a sessão de recepção caiu durante a renegociação");
         return;
       }
     }

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Avatar } from "@/components/Avatar";
-import { CameraIcon, CloseIcon, MicOffIcon, ScreenIcon, SpeakerIcon } from "@/components/Icons";
+import { CameraIcon, CloseIcon, HeadphoneOffIcon, MicOffIcon, ScreenIcon, SpeakerIcon } from "@/components/Icons";
 import { useStore } from "@/state/store";
 import type { Member, Role, RosterEntry } from "@/types";
 
@@ -120,7 +120,8 @@ function OnlineRow({ member, self, room, onDirect }: { member: Member; self: boo
           {room && <em className="member-where"><SpeakerIcon size={11} />{room}</em>}
         </span>
         <span className="member-state-icons" aria-label="Estado na chamada">
-          {(member.muted || member.deafened) && <MicOffIcon size={12} />}
+          {member.muted && <MicOffIcon size={12} />}
+          {member.deafened && <HeadphoneOffIcon size={12} />}
           {member.camOn && <CameraIcon size={12} />}
           {member.screenOn && <ScreenIcon size={12} />}
         </span>

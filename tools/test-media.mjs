@@ -105,6 +105,7 @@ class FakeTrack {
   }
   stop() {
     this.readyState = "ended";
+    this.onended?.();
   }
 }
 
@@ -198,7 +199,7 @@ class FakePeerConnection {
 /** Transporte que conta o que o motor pediu ao servidor, e pode recusar o que se pedir. */
 function transportWith(overrides = {}) {
   const calls = { join: 0, publish: [], subscribe: [], renegotiate: [] };
-  const state = { rejectPublish: false, stale: false, acceptRenegotiate: true, ...overrides };
+  const state = { rejectPublish: false, stale: false, acceptRenegotiate: true, subscribeError: null, ...overrides };
   return {
     calls,
     state,
@@ -213,6 +214,7 @@ function transportWith(overrides = {}) {
     },
     subscribe: async (refs) => {
       calls.subscribe.push(refs.map((ref) => `${ref.memberId}|${ref.slot}`));
+      if (state.subscribeError) throw new Error(state.subscribeError);
       return { description: null, tracks: [] };
     },
     renegotiate: async (role) => {
@@ -260,7 +262,7 @@ function makeEngine(transport, options = {}) {
   return { engine, send, recv, failures };
 }
 
-await test("desligar e religar a câmera republica em vez de reusar a publicação morta", async () => {
+await test("desligar e religar a câmera cria publicação nova", async () => {
   const transport = transportWith();
   const { engine, send } = makeEngine(transport);
 
@@ -268,23 +270,17 @@ await test("desligar e religar a câmera republica em vez de reusar a publicaç�
   await engine.setLocalTrack("camera", new FakeTrack("video"));
   assert.deepEqual(transport.calls.publish, [["mic"], ["camera"]]);
 
-  // Desligar é `replaceTrack(null)`: a publicação continua viva e não custa
-  // negociação, que é o caminho barato de mutar e desmutar.
   await engine.setLocalTrack("camera", null);
   assert.equal(transport.calls.publish.length, 2, "desligar não republica");
+  assert.equal(send.getTransceivers()[1].currentDirection, "stopped", "a publicação antiga é encerrada");
 
   await engine.setLocalTrack("camera", new FakeTrack("video"));
-  assert.equal(transport.calls.publish.length, 2, "religar numa publicação viva também não");
+  assert.equal(transport.calls.publish.length, 3, "religar publica uma trilha nova");
 
-  // Agora o transporte de envio cai: toda publicação deixa de valer.
+  // Uma conexão definitivamente falha não é reutilizada; o dono recria a call.
   send.setConnectionState("failed");
-  await engine.setLocalTrack("camera", null);
   await engine.setLocalTrack("camera", new FakeTrack("video"));
-  assert.deepEqual(
-    transport.calls.publish.at(-1),
-    ["mic", "camera"],
-    "depois da queda as duas trilhas sobem de novo",
-  );
+  assert.equal(transport.calls.publish.length, 3, "a sessão morta não recebe nova publicação");
 });
 
 await test("transceiver encerrado pelo navegador força republicação", async () => {
@@ -308,7 +304,30 @@ await test("liga e desliga a tela cinco vezes sem acumular publicação", async 
     await engine.setLocalTrack("screen", new FakeTrack("video"));
     await engine.setLocalTrack("screen", null);
   }
-  assert.equal(transport.calls.publish.length, 1, "uma publicação serve pras cinco voltas");
+  assert.equal(transport.calls.publish.length, 5, "cada captura nova recebe publicação própria");
+  assert.ok(
+    FakePeerConnection.instances[0].getTransceivers().every((entry) => entry.currentDirection === "stopped"),
+    "nenhuma publicação encerrada continua ativa",
+  );
+});
+
+await test("erro de sessão desconectada invalida a recepção e não repete na sessão morta", async () => {
+  const transport = transportWith({
+    subscribeError: "Session appears to be disconnected. Please check if the PeerConnection is connected.",
+  });
+  const { engine, failures } = makeEngine(transport);
+
+  await quiet(async () => {
+    engine.syncRemote([{ memberId: "alguem", slot: "screen", sessionId: "sessao-morta" }]);
+    await sleep(20);
+    engine.syncRemote([{ memberId: "alguem", slot: "screen", sessionId: "sessao-morta" }]);
+    await sleep(20);
+  });
+
+  assert.equal(transport.calls.subscribe.length, 1, "a assinatura não entra em retry na sessão morta");
+  assert.deepEqual(failures, [
+    "Session appears to be disconnected. Please check if the PeerConnection is connected.",
+  ]);
 });
 
 await test("recusa do SFU avisa o dono e invalida o que estava publicado", async () => {
@@ -589,6 +608,25 @@ await test("a trilha do caminho legado entra na mesma stream, pra parar junto co
 
   assert.equal(capture.audio.readyState, "ended", "sem isto o app seguiria ouvindo o computador");
   assert.equal(capture.video.readyState, "ended");
+});
+
+await test("trocar a fonte não deixa o ended da captura antiga fechar a nova", async () => {
+  const first = new FakeTrack("video");
+  const second = new FakeTrack("video");
+  let ended = 0;
+  first.onended = () => { ended += 1; };
+  fakeMedia({
+    display: (_constraints, call) => screenStream([call === 1 ? first : second]),
+  });
+
+  const media = new MediaManager();
+  await media.openScreen({ ...SHARE, systemAudio: false });
+  first.onended = () => { ended += 1; };
+  await media.openScreen({ ...SHARE, systemAudio: false });
+
+  assert.equal(first.readyState, "ended");
+  assert.equal(ended, 0, "cleanup interno não se confunde com o botão nativo de parar");
+  assert.equal(media.screenTrack, second, "a segunda captura continua sendo a fonte real");
 });
 
 await test("sem som nos dois caminhos, a transmissão começa muda e diz o porquê", async () => {

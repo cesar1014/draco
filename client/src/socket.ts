@@ -23,6 +23,7 @@ import type {
   AuditEntry,
   ChannelOverwrite,
   SfuHealth,
+  ScreenViewer,
 } from "@/types";
 
 /**
@@ -40,7 +41,7 @@ interface ServerEvents {
   "voice:peer-joined": (payload: { channelId: string; member: Member }) => void;
   "voice:peer-left": (payload: { channelId: string; memberId: string }) => void;
   "voice:channel-closed": (payload: { channelId: string }) => void;
-  "voice:moderated": (payload: { channelId: string }) => void;
+  "voice:moderated": (payload: { channelId: string; reason: "kick" | "ban" | "timeout" }) => void;
   "rtc:signal": (payload: SignalPayload & { from: string }) => void;
   "channel:created": (payload: { channel: Channel }) => void;
   "channel:deleted": (payload: { guildId: string; channelId: string }) => void;
@@ -60,6 +61,7 @@ interface ServerEvents {
   "relationship:update": (relationships: Relationships) => void;
   "notification:new": (notification: DracoNotification) => void;
   "sfu:health": (health: SfuHealth) => void;
+  "screen:viewers": (payload: { channelId: string; ownerId: string; viewers: ScreenViewer[] }) => void;
 }
 
 export interface VoiceFlags {
@@ -95,6 +97,7 @@ export interface VoiceJoinReply {
   peers?: Member[];
   sfu?: boolean;
   sfuHealth?: SfuHealth;
+  screenViewers?: Record<string, ScreenViewer[]>;
 }
 
 export interface ChatHistoryReply {
@@ -106,7 +109,7 @@ export interface ChatHistoryReply {
   more?: boolean;
 }
 
-/** Resposta comum dos eventos `sfu:*`. Erro nunca é fatal: o cliente cai pra malha. */
+/** Resposta comum dos eventos `sfu:*`; sessão inválida aciona a recuperação da call. */
 interface SfuReply {
   ok: boolean;
   error?: string;
@@ -221,6 +224,7 @@ interface ClientEvents {
   "voice:join": (payload: { channelId: string }, ack: (reply: VoiceJoinReply) => void) => void;
   "voice:leave": () => void;
   "voice:state": (payload: Partial<VoiceFlags>) => void;
+  "screen:view": (payload: { ownerId: string; watching: boolean }, ack: (reply: Ack) => void) => void;
   "rtc:signal": (payload: SignalPayload & { to: string }) => void;
   "sfu:join": (payload: Record<string, never>, ack: (reply: SfuReply) => void) => void;
   "sfu:publish": (
@@ -370,6 +374,9 @@ export const identifyGuest = (
 
 export const joinVoiceChannel = (socket: AppSocket, channelId: string) =>
   new Promise<VoiceJoinReply>((resolve) => socket.emit("voice:join", { channelId }, resolve));
+
+export const setScreenWatching = (socket: AppSocket, ownerId: string, watching: boolean) =>
+  ask<Ack>((resolve) => socket.emit("screen:view", { ownerId, watching }, resolve));
 
 export const requestIceConfig = async (socket: AppSocket, refresh: boolean) => {
   const reply = await ask<{ ok: boolean; error?: string; config?: IceConfigResponse }>((resolve) =>

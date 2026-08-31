@@ -500,10 +500,16 @@ export class MediaManager {
       failure = "refused";
     }
 
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      const error = Object.assign(new Error("captura sem trilha de vídeo"), { name: "NotReadableError" });
+      fail("getDisplayMedia", error);
+      this.#stop(stream);
+      throw error;
+    }
+
     this.#stop(this.#screen);
     this.#screen = stream;
-
-    const track = stream.getVideoTracks()[0];
     track.contentHint = SCREEN_CONTENT_HINT[options.content];
 
     let audio: MediaStreamTrack | null = stream.getAudioTracks()[0] ?? null;
@@ -667,6 +673,12 @@ export class MediaManager {
   }
 
   #stop(stream: MediaStream | null): void {
-    stream?.getTracks().forEach((track) => track.stop());
+    stream?.getTracks().forEach((track) => {
+      // Encerramento iniciado pelo Draco não é o botão nativo do navegador. Sem
+      // desligar o handler, trocar câmera/tela dispara o callback da trilha velha
+      // depois de a nova já estar ativa e acaba fechando a captura recém-aberta.
+      track.onended = null;
+      track.stop();
+    });
   }
 }

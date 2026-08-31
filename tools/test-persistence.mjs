@@ -19,6 +19,7 @@ const stage = process.argv[2];
 const userId = "11111111-1111-4111-8111-111111111111";
 /** Mais que uma página, pra provar que o resto ficou no banco e volta por pedido. */
 const TOTAL_MESSAGES = 130;
+const DATA_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 async function writeState() {
   const state = await import("../server/state.js");
@@ -151,6 +152,9 @@ async function readState() {
   const stored = database
     .prepare("SELECT COUNT(*) AS total FROM messages WHERE channel_id = ?")
     .get(chatId).total;
+  const encryptedContent = database
+    .prepare("SELECT content FROM messages WHERE channel_id = ? ORDER BY sequence LIMIT 1")
+    .get(chatId).content;
   const tables = database
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all()
@@ -163,7 +167,10 @@ async function readState() {
   // Contado a partir dos arquivos, pra uma migration nova não quebrar o teste.
   assert.equal(migrations, readdirSync(join(root, "server", "data", "migrations")).length);
   assert.equal(stored, TOTAL_MESSAGES, "o banco guarda além da página recente");
+  assert.match(encryptedContent, /^enc:v1:/u, "mensagens ficam cifradas no arquivo SQLite");
+  assert.equal(encryptedContent.includes("mensagem-0"), false);
   assert.deepEqual(tables, [
+    "account_devices",
     "account_login_challenges",
     "account_sessions",
     "account_tokens",
@@ -197,6 +204,8 @@ async function readState() {
     "read_states",
     "roles",
     "schema_migrations",
+    "security_rate_limits",
+    "storage_deletion_queue",
     "user_blocks",
     "user_settings",
     "users",
@@ -278,7 +287,7 @@ if (stage === "write") {
     for (const childStage of ["write", "read", "legacy"]) {
       const result = spawnSync(process.execPath, [scriptPath, childStage], {
         cwd: root,
-        env: { ...process.env, DATABASE_PATH: databasePath },
+        env: { ...process.env, DATABASE_PATH: databasePath, DATA_ENCRYPTION_KEY: DATA_KEY },
         encoding: "utf8",
       });
       if (result.status !== 0) {

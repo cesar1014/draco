@@ -1,7 +1,8 @@
 import "dotenv/config";
 import Database from "better-sqlite3";
-import { chmodSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname, extname, join, parse, resolve } from "node:path";
+import { backupKey, encryptBackup } from "./backup-crypto.mjs";
 
 const databasePath = resolve(process.env.DATABASE_PATH?.trim() || "data/draco.sqlite");
 const backupDirectory = resolve(process.argv[2] || "backups");
@@ -16,17 +17,18 @@ if (backupDirectory === parse(backupDirectory).root) {
 
 mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const finalPath = join(backupDirectory, `draco-${stamp}.sqlite`);
+const finalPath = join(backupDirectory, `draco-${stamp}.sqlite.enc`);
+const temporaryDatabase = join(backupDirectory, `.draco-${stamp}.sqlite.partial`);
 const temporaryPath = `${finalPath}.partial`;
 
 const source = new Database(databasePath, { readonly: true, fileMustExist: true });
 try {
-  await source.backup(temporaryPath);
+  await source.backup(temporaryDatabase);
 } finally {
   source.close();
 }
 
-const verification = new Database(temporaryPath, { readonly: true, fileMustExist: true });
+const verification = new Database(temporaryDatabase, { readonly: true, fileMustExist: true });
 try {
   const integrity = verification.pragma("quick_check", { simple: true });
   const foreignKeyErrors = verification.pragma("foreign_key_check").length;
@@ -35,16 +37,24 @@ try {
   }
 } catch (error) {
   verification.close();
-  unlinkSync(temporaryPath);
+  unlinkSync(temporaryDatabase);
   throw error;
 }
 verification.close();
 
+try {
+  await encryptBackup(temporaryDatabase, temporaryPath, backupKey());
+} catch (error) {
+  if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+  throw error;
+} finally {
+  unlinkSync(temporaryDatabase);
+}
 renameSync(temporaryPath, finalPath);
 if (process.platform !== "win32") chmodSync(finalPath, 0o600);
 
 const backups = readdirSync(backupDirectory)
-  .filter((name) => /^draco-.*\.sqlite$/.test(name) && extname(name) === ".sqlite")
+  .filter((name) => /^draco-.*\.sqlite\.enc$/.test(name) && extname(name) === ".enc")
   .map((name) => ({ path: join(backupDirectory, name), modified: statSync(join(backupDirectory, name)).mtimeMs }))
   .sort((left, right) => right.modified - left.modified);
 

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Avatar } from "@/components/Avatar";
-import { CameraIcon, MicOffIcon, ScreenIcon, SpeakerOffIcon } from "@/components/Icons";
+import { CameraIcon, HeadphoneOffIcon, MicOffIcon, ScreenIcon, SpeakerOffIcon } from "@/components/Icons";
 import { PersonMenu } from "@/components/PersonMenu";
 import { Popover } from "@/components/Popover";
 import { membersInVoice, prefsFor, useStore } from "@/state/store";
@@ -45,6 +45,7 @@ export function VoiceChannelMembers({ channelId }: { channelId: string }) {
                 {member.screenOn && <ScreenIcon size={14} />}
                 {member.camOn && <CameraIcon size={14} />}
                 {member.muted && <MicOffIcon size={14} />}
+                {member.deafened && <HeadphoneOffIcon size={14} />}
               </span>
             </button>
 

@@ -113,6 +113,16 @@ export function GuildAdminModal() {
   }, [copied]);
 
   if (!admin) return null;
+
+  const confirmModeration = async (entry: RosterEntry, action: "kick" | "ban") => {
+    const verb = action === "ban" ? "banir" : "expulsar";
+    if (!window.confirm(`Deseja realmente ${verb} ${entry.username} deste servidor?`)) return;
+    const reason = window.prompt("Motivo (opcional):");
+    if (reason === null) return;
+    await (action === "ban"
+      ? banMember(entry.id, reason.trim() || undefined)
+      : kickMember(entry.id, reason.trim() || undefined));
+  };
   const guild = guilds.find((item) => item.id === admin.guildId);
   const canInvite = admin.permissions.includes("create_invites");
   const canBan = admin.permissions.includes("ban_members");
@@ -122,6 +132,15 @@ export function GuildAdminModal() {
   const canAudit = admin.permissions.includes("view_audit_log");
   const guildChannels = channels.filter((channel) => channel.guildId === admin.guildId);
   const editableRoles = admin.roles.filter((role) => !role.isDefault);
+  const highestRole = (userId: string) => Math.max(
+    0,
+    ...admin.roles
+      .filter((role) => (admin.memberRoles[userId] ?? []).includes(role.id))
+      .map((role) => role.position),
+  );
+  const canActOn = (targetId: string) => targetId !== guild?.ownerId && (
+    admin.owner || systemAdmin || highestRole(selfId ?? "") > highestRole(targetId)
+  );
 
   /**
    * O link inteiro, não só o código: é o que se cola numa conversa. A origem vem
@@ -314,19 +333,19 @@ export function GuildAdminModal() {
                   <span className="admin-name">{entry.username}</span>
                   {entry.id === selfId && <span className="admin-tag">você</span>}
                   {entry.id === guild?.ownerId && <span className="admin-tag">dono</span>}
-                  {canBan && entry.id !== selfId && (
+                  {canBan && entry.id !== selfId && canActOn(entry.id) && (
                     <button
                       type="button"
                       className="link-button danger"
                       disabled={admin.busy}
-                      onClick={() => void banMember(entry.id)}
+                      onClick={() => void confirmModeration(entry, "ban")}
                     >
                       Banir
                     </button>
                   )}
-                  {canModerate && entry.id !== selfId && entry.id !== guild?.ownerId && <>
+                  {canModerate && entry.id !== selfId && canActOn(entry.id) && <>
                     <button type="button" className="link-button" disabled={admin.busy} onClick={() => void timeoutMember(entry.id, 10 * 60 * 1000)}>Timeout 10 min</button>
-                    <button type="button" className="link-button danger" disabled={admin.busy} onClick={() => void kickMember(entry.id)}>Expulsar</button>
+                    <button type="button" className="link-button danger" disabled={admin.busy} onClick={() => void confirmModeration(entry, "kick")}>Expulsar</button>
                   </>}
                   {canRoles && admin.roles.filter((role) => !role.isDefault).map((role) => (
                     <label key={role.id} className="member-role" title={`Cargo ${role.name}`}>
@@ -385,13 +404,16 @@ export function GuildAdminModal() {
                   <li key={ban.userId}>
                     <span className="admin-name">{ban.username ?? "Pessoa removida"}</span>
                     {ban.reason && <span>{ban.reason}</span>}
+                    <span>
+                      por {ban.moderatorUsername ?? "moderador removido"} · {new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(ban.createdAt)}
+                    </span>
                     <button
                       type="button"
                       className="link-button"
                       disabled={admin.busy}
                       onClick={() => void unbanMember(ban.userId)}
                     >
-                      Readmitir
+                      Desbanir
                     </button>
                   </li>
                 ))}

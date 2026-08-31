@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Constellation } from "@/components/Constellation";
 import { BrandMark } from "@/components/Icons";
 import { mediaSupported } from "@/rtc/MediaManager";
@@ -9,6 +9,32 @@ type Mode = "login" | "register" | "forgot" | "guest" | "password" | "verified" 
 const validNewPassword = (value: string) =>
   value.length >= 8 && value.length <= 128 && /\p{Ll}/u.test(value) && /\p{Lu}/u.test(value);
 
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (element: HTMLElement, options: Record<string, unknown>) => string;
+      reset: (id: string) => void;
+      remove: (id: string) => void;
+    };
+  }
+}
+
+let turnstileLoader: Promise<void> | null = null;
+function loadTurnstile(): Promise<void> {
+  if (window.turnstile) return Promise.resolve();
+  if (turnstileLoader) return turnstileLoader;
+  turnstileLoader = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("turnstile-unavailable"));
+    document.head.append(script);
+  });
+  return turnstileLoader;
+}
+
 export function JoinScreen() {
   const query = new URLSearchParams(window.location.search);
   const action = query.get("conta");
@@ -18,6 +44,7 @@ export function JoinScreen() {
   const status = useStore((state) => state.status);
   const joinError = useStore((state) => state.joinError);
   const emailReady = useStore((state) => state.emailReady);
+  const turnstileSiteKey = useStore((state) => state.turnstileSiteKey);
   const bootstrap = useStore((state) => state.bootstrap);
   const connect = useStore((state) => state.connect);
   const connectGuest = useStore((state) => state.connectGuest);
@@ -30,7 +57,7 @@ export function JoinScreen() {
   const [mode, setMode] = useState<Mode>(() =>
     action === "senha" || action === "ativar"
       ? "password"
-      : action === "novo-ip"
+      : action === "novo-dispositivo" || action === "novo-ip"
         ? "login-address"
         : action === "verificar"
           ? "verified"
@@ -43,6 +70,9 @@ export function JoinScreen() {
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [botToken, setBotToken] = useState<string | null>(null);
+  const turnstileHost = useRef<HTMLDivElement>(null);
+  const turnstileWidget = useRef<string | null>(null);
 
   useEffect(() => {
     void bootstrap();
@@ -59,14 +89,39 @@ export function JoinScreen() {
   }, [action, actionToken, verifyEmail]);
 
   useEffect(() => {
-    if (action !== "novo-ip" || !actionToken) return;
+    if (!["novo-dispositivo", "novo-ip"].includes(action ?? "") || !actionToken) return;
     setBusy(true);
     void confirmLoginAddress(actionToken).then((error) => {
       setBusy(false);
-      setMessage(error ?? "Novo IP confirmado. Volte ao aparelho que tentou entrar e faça o login novamente.");
+      setMessage(error ?? "Dispositivo confirmado. Volte ao aparelho que tentou entrar e faça o login novamente.");
       if (!error) window.history.replaceState(null, "", window.location.pathname);
     });
   }, [action, actionToken, confirmLoginAddress]);
+
+  const botProtected = mode === "login" || mode === "register" || mode === "forgot";
+  useEffect(() => {
+    setBotToken(null);
+    if (!turnstileSiteKey || !botProtected || !turnstileHost.current) return;
+    let active = true;
+    void loadTurnstile().then(() => {
+      if (!active || !window.turnstile || !turnstileHost.current) return;
+      turnstileWidget.current = window.turnstile.render(turnstileHost.current, {
+        sitekey: turnstileSiteKey,
+        action: mode === "forgot" ? "password-request" : mode,
+        theme: "dark",
+        callback: (token: string) => setBotToken(token),
+        "expired-callback": () => setBotToken(null),
+        "error-callback": () => setBotToken(null),
+      });
+    }).catch(() => setMessage("A proteção antirobô não carregou. Recarregue a página."));
+    return () => {
+      active = false;
+      if (turnstileWidget.current && window.turnstile) {
+        window.turnstile.remove(turnstileWidget.current);
+        turnstileWidget.current = null;
+      }
+    };
+  }, [botProtected, mode, turnstileSiteKey]);
 
   const connecting = status === "connecting" || busy;
   const ageRequired = mode === "register" || mode === "guest";
@@ -76,10 +131,14 @@ export function JoinScreen() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (connecting) return;
+    if (turnstileSiteKey && botProtected && !botToken) {
+      setMessage("Conclua a verificação antirobô.");
+      return;
+    }
     setBusy(true);
     setMessage(null);
     if (mode === "login") {
-      await connect(email, password);
+      await connect(email, password, botToken);
     } else if (mode === "register") {
       if (!validNewPassword(password)) {
         setMessage("A senha precisa ter no mínimo 8 caracteres, uma letra maiúscula e uma minúscula.");
@@ -88,12 +147,12 @@ export function JoinScreen() {
       } else if (!adultAge) {
         setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
       } else {
-        const error = await register(email, username, numericAge, password, confirmation);
+        const error = await register(email, username, numericAge, password, confirmation, botToken);
         setMessage(error ?? "Conta criada. Abra o e-mail de confirmação para liberar o acesso.");
         if (!error) setMode("login");
       }
     } else if (mode === "forgot") {
-      const error = await requestPassword(email);
+      const error = await requestPassword(email, botToken);
       setMessage(error ?? "Se o e-mail estiver cadastrado, o link de troca foi enviado.");
     } else if (mode === "guest") {
       if (!adultAge) setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
@@ -108,6 +167,8 @@ export function JoinScreen() {
         if (!error) window.history.replaceState(null, "", window.location.pathname);
       }
     }
+    if (turnstileWidget.current && window.turnstile) window.turnstile.reset(turnstileWidget.current);
+    setBotToken(null);
     setBusy(false);
   }
 
@@ -172,11 +233,12 @@ export function JoinScreen() {
         )}
 
         {mode === "guest" && <p className="join-warning">Ao continuar, você declara ter 18 anos ou mais. Visitantes podem entrar na voz e ler o canal, mas não podem escrever. A identidade desaparece ao sair.</p>}
+        {turnstileSiteKey && botProtected && <div ref={turnstileHost} className="turnstile" />}
         {!emailReady && mode !== "guest" && <p className="join-warning">O administrador ainda precisa configurar o envio de e-mail no servidor.</p>}
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
         {mode !== "verified" && mode !== "login-address" && (
-          <button type="submit" className="join-submit" disabled={connecting || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
+          <button type="submit" className="join-submit" disabled={connecting || Boolean(turnstileSiteKey && botProtected && !botToken) || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (ageRequired && !adultAge)}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>
         )}

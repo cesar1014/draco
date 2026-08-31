@@ -46,6 +46,13 @@ export interface Member {
   statusExpiresAt: number | null;
 }
 
+export interface ScreenViewer {
+  id: string;
+  username: string;
+  color: string;
+  startedAt: number;
+}
+
 export interface Message {
   sequence: number;
   id: string;
@@ -236,6 +243,8 @@ export interface Invite {
 export interface BanEntry {
   userId: string;
   username: string | null;
+  moderatorId: string | null;
+  moderatorUsername: string | null;
   reason: string | null;
   createdAt: number;
 }

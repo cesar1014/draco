@@ -18,6 +18,7 @@ function mapAccount(row) {
 export class AccountRepository {
   constructor(database) {
     this.database = database;
+    this.cipher = database.dracoFieldCipher;
     this.statements = {
       accountByEmail: database.prepare(`
         SELECT a.*, u.disabled_at
@@ -83,17 +84,6 @@ export class AccountRepository {
       makeSystemAdmin: database.prepare(`
         UPDATE accounts SET is_system_admin = 1, updated_at = ? WHERE user_id = ?
       `),
-      trustedAddress: database.prepare(`
-        SELECT 1 FROM account_trusted_addresses
-        WHERE user_id = ? AND address_hash = ?
-      `),
-      countTrustedAddresses: database.prepare(`
-        SELECT COUNT(*) AS total FROM account_trusted_addresses WHERE user_id = ?
-      `),
-      touchTrustedAddress: database.prepare(`
-        UPDATE account_trusted_addresses SET last_used_at = ?
-        WHERE user_id = ? AND address_hash = ?
-      `),
       trustAddress: database.prepare(`
         INSERT INTO account_trusted_addresses (
           user_id, address_hash, trusted_at, last_used_at
@@ -116,11 +106,16 @@ export class AccountRepository {
       `),
       insertLoginChallenge: database.prepare(`
         INSERT INTO account_login_challenges (
-          token_hash, user_id, address_hash, expires_at, created_at
-        ) VALUES (@tokenHash, @userId, @addressHash, @expiresAt, @now)
+          token_hash, user_id, address_hash, expires_at, created_at,
+          device_id, device_credential_hash, client_type, device_name
+        ) VALUES (
+          @tokenHash, @userId, @addressHash, @expiresAt, @now,
+          @deviceId, @deviceCredentialHash, @clientType, @deviceName
+        )
       `),
       loginChallenge: database.prepare(`
-        SELECT token_hash, user_id, address_hash, expires_at, used_at
+        SELECT token_hash, user_id, address_hash, expires_at, used_at,
+               device_id, device_credential_hash, client_type, device_name
         FROM account_login_challenges WHERE token_hash = ?
       `),
       consumeLoginChallenge: database.prepare(`
@@ -161,6 +156,11 @@ export class AccountRepository {
             WHERE dm.thread_id = t.id AND dm.deleted_at IS NULL
             ORDER BY dm.sequence DESC LIMIT 1
           ) AS last_content,
+          (
+            SELECT dm.id FROM direct_messages dm
+            WHERE dm.thread_id = t.id AND dm.deleted_at IS NULL
+            ORDER BY dm.sequence DESC LIMIT 1
+          ) AS last_message_id,
           (
             SELECT dm.created_at FROM direct_messages dm
             WHERE dm.thread_id = t.id AND dm.deleted_at IS NULL
@@ -204,12 +204,12 @@ export class AccountRepository {
       touchThread: database.prepare("UPDATE direct_threads SET updated_at = ? WHERE id = ?"),
       insertSession: database.prepare(`
         INSERT INTO account_sessions (
-          id, user_id, token_hash, client_type, device_name,
+          id, user_id, token_hash, client_type, device_name, device_id,
           created_at, last_seen_at, expires_at
-        ) VALUES (@id, @userId, @tokenHash, @clientType, @deviceName, @now, @now, @expiresAt)
+        ) VALUES (@id, @userId, @tokenHash, @clientType, @deviceName, @deviceId, @now, @now, @expiresAt)
       `),
       activeSession: database.prepare(`
-        SELECT id, user_id, client_type, device_name, created_at, last_seen_at, expires_at
+        SELECT id, user_id, client_type, device_name, device_id, created_at, last_seen_at, expires_at
         FROM account_sessions
         WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?
       `),
@@ -217,15 +217,63 @@ export class AccountRepository {
         UPDATE account_sessions SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL
       `),
       listSessions: database.prepare(`
-        SELECT id, client_type, device_name, created_at, last_seen_at, expires_at
-        FROM account_sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
-        ORDER BY last_seen_at DESC
+        SELECT s.id, s.device_id, s.client_type, s.device_name, s.created_at,
+               s.last_seen_at, s.expires_at, d.trusted_at
+        FROM account_sessions s
+        LEFT JOIN account_devices d ON d.id = s.device_id
+        WHERE s.user_id = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+          AND (d.id IS NULL OR d.revoked_at IS NULL)
+        ORDER BY s.last_seen_at DESC
       `),
       revokeSession: database.prepare(`
         UPDATE account_sessions SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL
       `),
       revokeAllSessions: database.prepare(`
         UPDATE account_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
+      `),
+      revokeSessionsByDevice: database.prepare(`
+        UPDATE account_sessions SET revoked_at = @now
+        WHERE user_id = @userId AND device_id = @deviceId AND revoked_at IS NULL
+      `),
+      activeDeviceByCredential: database.prepare(`
+        SELECT id, user_id, client_type, device_name, trusted_at, last_seen_at
+        FROM account_devices
+        WHERE credential_hash = ? AND revoked_at IS NULL
+      `),
+      countDevices: database.prepare(`
+        SELECT COUNT(*) AS total FROM account_devices WHERE user_id = ?
+      `),
+      insertDevice: database.prepare(`
+        INSERT INTO account_devices (
+          id, user_id, credential_hash, client_type, device_name,
+          trusted_at, last_seen_at, last_address_hash
+        ) VALUES (
+          @id, @userId, @credentialHash, @clientType, @deviceName,
+          @now, @now, @addressHash
+        )
+      `),
+      touchDevice: database.prepare(`
+        UPDATE account_devices
+        SET last_seen_at = @now, last_address_hash = COALESCE(@addressHash, last_address_hash)
+        WHERE id = @deviceId AND user_id = @userId AND revoked_at IS NULL
+      `),
+      replaceDeviceCredential: database.prepare(`
+        UPDATE account_devices SET credential_hash = ?, last_seen_at = ?
+        WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+      `),
+      replaceSessionDeviceCredential: database.prepare(`
+        UPDATE account_devices SET credential_hash = @credentialHash, last_seen_at = @now
+        WHERE user_id = @userId AND revoked_at IS NULL AND id = (
+          SELECT device_id FROM account_sessions
+          WHERE id = @sessionId AND user_id = @userId AND revoked_at IS NULL
+        )
+      `),
+      revokeDevice: database.prepare(`
+        UPDATE account_devices SET revoked_at = @now
+        WHERE id = @deviceId AND user_id = @userId AND revoked_at IS NULL
+      `),
+      revokeAllDevices: database.prepare(`
+        UPDATE account_devices SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL
       `),
       bumpSessionVersion: database.prepare(`
         UPDATE accounts SET session_version = session_version + 1, updated_at = ? WHERE user_id = ?
@@ -245,17 +293,6 @@ export class AccountRepository {
       this.statements.trustAddress.run(trusted);
       this.statements.trimTrustedAddresses.run(trusted);
     });
-    this.useOrBootstrapAddressTransaction = database.transaction((userId, addressHash, now) => {
-      if (this.statements.trustedAddress.get(userId, addressHash)) {
-        this.statements.touchTrustedAddress.run(now, userId, addressHash);
-        return true;
-      }
-      // Uma transação só impede que dois IPs simultâneos sejam ambos tratados
-      // como o primeiro endereço de uma conta migrada.
-      if (this.statements.countTrustedAddresses.get(userId).total !== 0) return false;
-      this.trustAddressTransaction({ userId, addressHash, now });
-      return true;
-    });
     this.createLoginChallengeTransaction = database.transaction((challenge) => {
       this.statements.expireLoginChallenges.run(challenge);
       this.statements.cleanLoginChallenges.run({ cutoff: challenge.now - 24 * 60 * 60 * 1000 });
@@ -266,11 +303,18 @@ export class AccountRepository {
       if (!challenge || challenge.used_at || challenge.expires_at <= now) return null;
       const consumed = this.statements.consumeLoginChallenge.run({ tokenHash, now }).changes > 0;
       if (!consumed) return null;
-      this.trustAddressTransaction({
-        userId: challenge.user_id,
-        addressHash: challenge.address_hash,
-        now,
-      });
+      if (challenge.device_id && challenge.device_credential_hash) {
+        this.statements.insertDevice.run({
+          id: challenge.device_id,
+          userId: challenge.user_id,
+          credentialHash: challenge.device_credential_hash,
+          clientType: challenge.client_type ?? "unknown",
+          deviceName: challenge.device_name ?? "Dispositivo desconhecido",
+          addressHash: challenge.address_hash,
+          now,
+        });
+      }
+      this.trustAddressTransaction({ userId: challenge.user_id, addressHash: challenge.address_hash, now });
       return challenge;
     });
     this.createThreadTransaction = database.transaction((left, right, now) => {
@@ -285,6 +329,39 @@ export class AccountRepository {
     this.addDirectMessageTransaction = database.transaction((message) => {
       this.statements.insertDirectMessage.run(message);
       this.statements.touchThread.run(message.now, message.threadId);
+    });
+    this.setPasswordTransaction = database.transaction((userId, passwordHash, now) => {
+      this.statements.setPassword.run({ userId, passwordHash, now });
+      this.statements.revokeAllSessions.run(now, userId);
+      this.statements.revokeAllDevices.run(now, userId);
+      this.statements.expireLoginChallenges.run({ userId, now });
+    });
+    this.createSessionTransaction = database.transaction((session) => {
+      if (session.deviceId) {
+        this.statements.revokeSessionsByDevice.run({
+          userId: session.userId,
+          deviceId: session.deviceId,
+          now: session.now,
+        });
+      }
+      this.statements.insertSession.run(session);
+    });
+    this.revokeDeviceTransaction = database.transaction((userId, deviceId, now) => {
+      const changed = this.statements.revokeDevice.run({ userId, deviceId, now }).changes > 0;
+      this.statements.revokeSessionsByDevice.run({ userId, deviceId, now });
+      return changed;
+    });
+    this.bootstrapDeviceTransaction = database.transaction((device) => {
+      if (this.statements.countDevices.get(device.userId).total !== 0) return null;
+      this.statements.insertDevice.run(device);
+      if (device.addressHash) {
+        this.trustAddressTransaction({
+          userId: device.userId,
+          addressHash: device.addressHash,
+          now: device.now,
+        });
+      }
+      return this.statements.activeDeviceByCredential.get(device.credentialHash);
     });
   }
 
@@ -351,25 +428,23 @@ export class AccountRepository {
   }
 
   setPassword(userId, passwordHash) {
-    this.statements.setPassword.run({ userId, passwordHash, now: Date.now() });
+    this.setPasswordTransaction(userId, passwordHash, Date.now());
     return this.accountById(userId);
   }
 
-  /** Retorna falso sem alterar nada quando o endereço ainda não foi confirmado. */
-  useOrBootstrapAddress(userId, addressHash) {
-    return this.useOrBootstrapAddressTransaction(userId, addressHash, Date.now());
-  }
-
-  trustAddress(userId, addressHash) {
-    this.trustAddressTransaction({ userId, addressHash, now: Date.now() });
-  }
-
-  createLoginChallenge({ tokenHash, userId, addressHash, expiresAt }) {
+  createLoginChallenge({
+    tokenHash,
+    userId,
+    addressHash,
+    expiresAt,
+    deviceId = null,
+    deviceCredentialHash = null,
+    clientType = null,
+    deviceName = null,
+  }) {
     this.createLoginChallengeTransaction({
-      tokenHash,
-      userId,
-      addressHash,
-      expiresAt,
+      tokenHash, userId, addressHash, expiresAt,
+      deviceId, deviceCredentialHash, clientType, deviceName,
       now: Date.now(),
     });
   }
@@ -395,7 +470,9 @@ export class AccountRepository {
     }).map((row) => ({
       id: row.id,
       peer: { id: row.peer_id, username: row.peer_username, color: row.peer_color },
-      lastContent: row.last_content ?? null,
+      lastContent: row.last_content === null
+        ? null
+        : this.cipher.decrypt(row.last_content, `direct_messages:${row.last_message_id}`),
       lastAt: row.last_at ?? null,
     }));
   }
@@ -416,7 +493,7 @@ export class AccountRepository {
       authorId: row.author_id,
       username: row.username,
       color: row.color,
-      content: row.deleted_at ? "" : row.content,
+      content: row.deleted_at ? "" : this.cipher.decrypt(row.content, `direct_messages:${row.id}`),
       at: row.created_at,
       editedAt: row.edited_at ?? null,
       deletedAt: row.deleted_at ?? null,
@@ -425,11 +502,12 @@ export class AccountRepository {
   }
 
   addDirectMessage(threadId, authorId, content, replyToId = null) {
+    const id = randomUUID();
     const message = {
-      id: randomUUID(),
+      id,
       threadId,
       authorId,
-      content,
+      content: this.cipher.encrypt(content, `direct_messages:${id}`),
       replyToId,
       now: Date.now(),
     };
@@ -452,7 +530,7 @@ export class AccountRepository {
   }
 
   createSession(session) {
-    this.statements.insertSession.run({ ...session, now: Date.now() });
+    this.createSessionTransaction({ ...session, deviceId: session.deviceId ?? null, now: Date.now() });
   }
 
   activeSession(id, userId) {
@@ -465,8 +543,10 @@ export class AccountRepository {
   listSessions(userId) {
     return this.statements.listSessions.all(userId, Date.now()).map((row) => ({
       id: row.id,
+      deviceId: row.device_id ?? null,
       clientType: row.client_type,
       deviceName: row.device_name,
+      trustedAt: row.trusted_at ?? null,
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
       expiresAt: row.expires_at,
@@ -474,13 +554,57 @@ export class AccountRepository {
   }
 
   revokeSession(userId, sessionId) {
+    const session = this.statements.activeSession.get(sessionId, userId, Date.now());
+    if (session?.device_id) return this.revokeDeviceTransaction(userId, session.device_id, Date.now());
     return this.statements.revokeSession.run(Date.now(), sessionId, userId).changes > 0;
+  }
+
+  revokeCurrentSession(userId, sessionId) {
+    return this.statements.revokeSession.run(Date.now(), sessionId, userId).changes > 0;
+  }
+
+  activeDevice(userId, credentialHash) {
+    const device = this.statements.activeDeviceByCredential.get(credentialHash);
+    return device?.user_id === userId ? device : null;
+  }
+
+  createDevice({ id = randomUUID(), userId, credentialHash, clientType, deviceName, addressHash }) {
+    const now = Date.now();
+    this.statements.insertDevice.run({
+      id, userId, credentialHash, clientType, deviceName, addressHash, now,
+    });
+    if (addressHash) this.trustAddressTransaction({ userId, addressHash, now });
+    return this.activeDevice(userId, credentialHash);
+  }
+
+  bootstrapDevice({ id = randomUUID(), userId, credentialHash, clientType, deviceName, addressHash }) {
+    return this.bootstrapDeviceTransaction({
+      id, userId, credentialHash, clientType, deviceName, addressHash, now: Date.now(),
+    });
+  }
+
+  touchDevice(userId, deviceId, addressHash) {
+    this.statements.touchDevice.run({ userId, deviceId, addressHash: addressHash ?? null, now: Date.now() });
+  }
+
+  replaceDeviceCredential(userId, deviceId, credentialHash) {
+    return this.statements.replaceDeviceCredential.run(
+      credentialHash, Date.now(), deviceId, userId,
+    ).changes > 0;
+  }
+
+  replaceSessionDeviceCredential(userId, sessionId, credentialHash) {
+    return this.statements.replaceSessionDeviceCredential.run({
+      userId, sessionId, credentialHash, now: Date.now(),
+    }).changes > 0;
   }
 
   revokeAllSessions(userId) {
     const now = Date.now();
     this.database.transaction(() => {
       this.statements.revokeAllSessions.run(now, userId);
+      this.statements.revokeAllDevices.run(now, userId);
+      this.statements.expireLoginChallenges.run({ userId, now });
       this.statements.bumpSessionVersion.run(now, userId);
     })();
     return this.accountById(userId);

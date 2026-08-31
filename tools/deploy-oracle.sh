@@ -94,6 +94,8 @@ TURN_SECRET="$(set_env TURN_SECRET "$(openssl rand -hex 32)")"
 # O segredo de sessão fica no .env, não sorteado a cada boot: assim os tokens já
 # emitidos continuam válidos depois de um deploy ou de um restart do serviço.
 set_env SESSION_SECRET "$(openssl rand -hex 32)" >/dev/null
+set_env DATA_ENCRYPTION_KEY "$(openssl rand -hex 32)" >/dev/null
+set_env BACKUP_ENCRYPTION_KEY "$(openssl rand -hex 32)" >/dev/null
 set_env DATABASE_PATH "$ROOT/data/draco.sqlite" >/dev/null
 # O Caddy é o proxy: sem isto o limite por IP veria o endereço dele, e todo mundo
 # compartilharia o mesmo balde.

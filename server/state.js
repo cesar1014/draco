@@ -216,6 +216,35 @@ export function listMembers() {
   return [...members.values()];
 }
 
+/**
+ * DTO público de presença. Objetos de membro também carregam ids internos de
+ * socket, a sessão receptora do SFU e privilégios globais; nenhum desses campos
+ * pode atravessar a fronteira do servidor. O modo invisível também é normalizado
+ * aqui para que snapshots e eventos incrementais tenham exatamente o mesmo
+ * contrato.
+ */
+export function publicMember(member) {
+  return {
+    id: member.id,
+    username: member.username,
+    color: member.color,
+    voiceChannelId: member.voiceChannelId,
+    muted: member.muted,
+    deafened: member.deafened,
+    camOn: member.camOn,
+    screenOn: member.screenOn,
+    speaking: member.speaking,
+    since: member.since,
+    presence: member.presenceMode === "invisible" ? "offline" : (member.presenceMode ?? "online"),
+    customStatus: member.customStatus ?? null,
+    statusExpiresAt: member.statusExpiresAt ?? null,
+    guest: member.guest === true,
+    guestGuildId: member.guest ? member.guestGuildId : null,
+    sfuSessionId: member.sfuSessionId,
+    sfuTracks: member.sfuTracks ?? {},
+  };
+}
+
 /** Quem mais está no mesmo canal de voz: com quem abrir peer connection. */
 export function peersInVoiceChannel(channelId, exceptUserId) {
   if (!channelId) return [];
@@ -245,6 +274,11 @@ export function setVoiceState(userId, patch) {
   for (const key of ["muted", "deafened", "camOn", "screenOn", "speaking"]) {
     if (typeof patch?.[key] === "boolean") member[key] = patch[key];
   }
+  if (patch?.camOn === false) delete member.sfuTracks.camera;
+  if (patch?.screenOn === false) {
+    delete member.sfuTracks.screen;
+    delete member.sfuTracks.screenAudio;
+  }
   return member;
 }
 
@@ -264,6 +298,18 @@ export function setSfuSession(userId, { sendSessionId, recvSessionId }) {
   member.sfuSessionId = sendSessionId;
   member.sfuRecvSessionId = recvSessionId;
   member.sfuTracks = {};
+  return member;
+}
+
+export function invalidateSfuSession(userId, role) {
+  const member = members.get(userId);
+  if (!member) return null;
+  if (role === "send") {
+    member.sfuSessionId = null;
+    member.sfuTracks = {};
+  } else {
+    member.sfuRecvSessionId = null;
+  }
   return member;
 }
 
@@ -353,7 +399,7 @@ export function snapshot(userId, { systemAdmin = false, guestGuildId = null } = 
   return {
     guilds: mine,
     channels: myChannels,
-    members: visibleMembers,
+    members: visibleMembers.map(publicMember),
     roster: Object.fromEntries(mine.map((guild) => [guild.id, repository.listGuildRoster(guild.id)])),
     roles: Object.fromEntries(mine.map((guild) => [guild.id, repository.listRoles(guild.id)])),
     memberRoles: Object.fromEntries(mine.map((guild) => [guild.id, repository.listMemberRoles(guild.id)])),
@@ -538,12 +584,7 @@ export const listInvites = (guildId) => repository.listInvites(guildId);
  */
 export function banMember(guildId, userId, moderatorId, reason) {
   repository.ban({ guildId, userId, moderatorId, reason: reason ?? null });
-  const member = members.get(userId);
-  if (member?.voiceChannelId) {
-    const channel = findChannel(member.voiceChannelId);
-    if (channel?.guildId === guildId) setVoiceChannel(userId, null);
-  }
-  return member ?? null;
+  return members.get(userId) ?? null;
 }
 
 export const unban = (guildId, userId) => repository.unban(guildId, userId);

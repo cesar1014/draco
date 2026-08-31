@@ -15,7 +15,12 @@ const backupDirectory = join(directory, "backups");
 function run(script, args = []) {
   const result = spawnSync(process.execPath, [join(root, "tools", script), ...args], {
     cwd: root,
-    env: { ...process.env, DATABASE_PATH: databasePath, BACKUP_RETENTION: "2" },
+    env: {
+      ...process.env,
+      DATABASE_PATH: databasePath,
+      BACKUP_RETENTION: "2",
+      BACKUP_ENCRYPTION_KEY: "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    },
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `${script}: ${result.stderr || result.stdout}`);
@@ -31,8 +36,20 @@ try {
   run("backup-sqlite.mjs", [backupDirectory]);
   run("backup-sqlite.mjs", [backupDirectory]);
 
-  const backups = readdirSync(backupDirectory).filter((name) => name.endsWith(".sqlite")).sort();
+  const backups = readdirSync(backupDirectory).filter((name) => name.endsWith(".sqlite.enc")).sort();
   assert.equal(backups.length, 2, "a retenção remove somente o backup excedente");
+  assert.throws(
+    () => {
+      const encrypted = new Database(join(backupDirectory, backups[0]), { readonly: true });
+      try {
+        encrypted.prepare("SELECT name FROM sqlite_master").all();
+      } finally {
+        encrypted.close();
+      }
+    },
+    /not a database|file is not a database/iu,
+    "o backup não pode ser aberto como SQLite sem a chave",
+  );
 
   const changed = new Database(databasePath);
   changed.prepare("UPDATE app_settings SET value_json = ? WHERE setting_key = ?")

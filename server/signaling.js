@@ -20,6 +20,7 @@ import { SocialRepository } from "./data/social-repository.js";
 import { CommunicationRepository } from "./data/communication-repository.js";
 import { AdminRepository } from "./data/admin-repository.js";
 import { createSession, createSfuHealth, newTracks, renegotiate, sfuConfig } from "./sfu.js";
+import { sessionCookie } from "./cookies.js";
 import {
   acceptInvite,
   acceptGuestInvite,
@@ -43,12 +44,14 @@ import {
   hasGuildPermission,
   isGuildMember,
   isGuildOwner,
+  invalidateSfuSession,
   leaveGuild,
   listBans,
   listInvites,
   loadHistory,
   memberRolesOf,
   peersInVoiceChannel,
+  publicMember,
   removeMember,
   revokeInvite,
   reorderChannels,
@@ -112,6 +115,10 @@ const log = logger("SIGNAL");
 const sfuLog = logger("SFU");
 
 const voiceRoom = (channelId) => `voice:${channelId}`;
+
+const deadSfuSession = (error) =>
+  /session.*(?:disconnected|invalid|not found|closed)|peerconnection.*(?:disconnected|failed|closed)/iu
+    .test(reason(error));
 /**
  * Uma sala de socket por servidor. É o que faz um servidor criado por alguém ser
  * privado de fato: canal novo, convite e banimento só chegam a quem é membro, em
@@ -122,31 +129,9 @@ const channelRoom = (channelId) => `channel:${channelId}`;
 const directRoom = (threadId) => `direct:${threadId}`;
 const userRoom = (userId) => `user:${userId}`;
 
-/** Só o que o outro lado precisa saber, sem vazar detalhe interno. */
-function publicMember(member) {
-  return {
-    id: member.id,
-    username: member.username,
-    color: member.color,
-    voiceChannelId: member.voiceChannelId,
-    muted: member.muted,
-    deafened: member.deafened,
-    camOn: member.camOn,
-    screenOn: member.screenOn,
-    speaking: member.speaking,
-    since: member.since,
-    presence: member.presenceMode === "invisible" ? "offline" : (member.presenceMode ?? "online"),
-    customStatus: member.customStatus ?? null,
-    statusExpiresAt: member.statusExpiresAt ?? null,
-    guest: member.guest === true,
-    guestGuildId: member.guest ? member.guestGuildId : null,
-    // Com SFU, é assim que os outros sabem o que existe pra assinar.
-    sfuSessionId: member.sfuSessionId,
-    sfuTracks: member.sfuTracks ?? {},
-  };
-}
-
-export function attachSignaling(io, env = process.env, { auth, accountService, telemetry = null } = {}) {
+export function attachSignaling(io, env = process.env, {
+  auth, accountService, telemetry = null, attachments = null,
+} = {}) {
   if (!auth || !accountService) {
     throw new Error("attachSignaling precisa das autoridades de sessão e conta");
   }
@@ -156,12 +141,49 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
   const sfu = sfuConfig(env);
   const sfuHealth = createSfuHealth(sfu, { intervalMs: 5 * 60_000 });
   const callModes = new Map();
+  const screenViewers = new Map();
   const accounts = accountService.repository;
   const social = new SocialRepository(accounts.database);
-  const communication = new CommunicationRepository(accounts.database);
+  const communication = new CommunicationRepository(accounts.database, attachments);
   const administration = new AdminRepository(accounts.database);
   const guestSessions = new Map();
   let lastForcedIceRefresh = 0;
+
+  const viewerKey = (channelId, ownerId) => `${channelId}:${ownerId}`;
+  const viewerList = (channelId, ownerId) => {
+    const viewers = screenViewers.get(viewerKey(channelId, ownerId));
+    if (!viewers) return [];
+    return [...viewers].flatMap(([viewerId, startedAt]) => {
+      const member = getMemberById(viewerId);
+      return member?.voiceChannelId === channelId
+        ? [{ id: member.id, username: member.username, color: member.color, startedAt }]
+        : [];
+    });
+  };
+  const emitViewers = (channelId, ownerId) => {
+    io.to(voiceRoom(channelId)).emit("screen:viewers", {
+      channelId,
+      ownerId,
+      viewers: viewerList(channelId, ownerId),
+    });
+  };
+  const clearViewer = (channelId, viewerId) => {
+    for (const [key, viewers] of [...screenViewers]) {
+      if (!key.startsWith(`${channelId}:`) || !viewers.delete(viewerId)) continue;
+      const ownerId = key.slice(channelId.length + 1);
+      if (viewers.size === 0) screenViewers.delete(key);
+      emitViewers(channelId, ownerId);
+    }
+  };
+  const clearScreenViewers = (channelId, ownerId) => {
+    if (!screenViewers.delete(viewerKey(channelId, ownerId))) return;
+    emitViewers(channelId, ownerId);
+  };
+  const screenViewerSnapshot = (channelId) => Object.fromEntries(
+    peersInVoiceChannel(channelId, null)
+      .filter((member) => member.screenOn)
+      .map((member) => [member.id, viewerList(channelId, member.id)]),
+  );
 
   const socketCanChannel = (client, channel, permission = "view_channels") => {
     const identity = client.data?.draco;
@@ -258,12 +280,30 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       const member = getMember(socket.id);
       if (!member?.voiceChannelId) return;
       const channelId = member.voiceChannelId;
+      clearViewer(channelId, member.id);
+      clearScreenViewers(channelId, member.id);
       socket.leave(voiceRoom(channelId));
       setVoiceChannel(member.id, null);
       telemetry?.leaveCall(channelId, member.id);
       io.to(voiceRoom(channelId)).emit("voice:peer-left", { channelId, memberId: member.id });
       if (peersInVoiceChannel(channelId, member.id).length === 0) callModes.delete(channelId);
       emitPresence("member:state", getMemberById(member.id));
+    }
+
+    function removeFromGuildVoice(targetId, guildId, moderationReason) {
+      const targetMember = getMemberById(targetId);
+      const channel = targetMember?.voiceChannelId ? findChannel(targetMember.voiceChannelId) : null;
+      if (!targetMember || channel?.guildId !== guildId) return;
+      const targetSocket = io.sockets.sockets.get(targetMember.socketId);
+      clearViewer(channel.id, targetId);
+      clearScreenViewers(channel.id, targetId);
+      targetSocket?.leave(voiceRoom(channel.id));
+      setVoiceChannel(targetId, null);
+      telemetry?.leaveCall(channel.id, targetId);
+      io.to(voiceRoom(channel.id)).emit("voice:peer-left", { channelId: channel.id, memberId: targetId });
+      targetSocket?.emit("voice:moderated", { channelId: channel.id, reason: moderationReason });
+      if (peersInVoiceChannel(channel.id, targetId).length === 0) callModes.delete(channel.id);
+      emitPresence("member:state", getMemberById(targetId));
     }
 
     /**
@@ -391,13 +431,14 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
           expiresAt: Date.now() + 60 * 60 * 1000,
         });
       } else {
-        const authenticated = accountService.session(payload?.token, address);
+        const cookieToken = sessionCookie(socket.request.headers.cookie);
+        const authenticated = accountService.session(cookieToken ?? payload?.token, address);
         if (!authenticated) return reply({ ok: false, error: "not-authenticated" });
         account = authenticated.account;
         identified = true;
         userId = account.userId;
         systemAdmin = account.isSystemAdmin;
-        renewed = auth.renewIfNeeded(authenticated);
+        renewed = cookieToken ? null : auth.renewIfNeeded(authenticated);
         ({ member, previousSocketId } = addMember(socket.id, userId, account.username, {
           systemAdmin,
           profile: social.profile(userId),
@@ -707,7 +748,14 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       socket.join(voiceRoom(channel.id));
 
       const member = getMember(socket.id);
-      reply({ ok: true, channelId: channel.id, peers, sfu: mode === "sfu", sfuHealth: sfuHealth.snapshot() });
+      reply({
+        ok: true,
+        channelId: channel.id,
+        peers,
+        screenViewers: screenViewerSnapshot(channel.id),
+        sfu: mode === "sfu",
+        sfuHealth: sfuHealth.snapshot(),
+      });
       socket.to(voiceRoom(channel.id)).emit("voice:peer-joined", {
         channelId: channel.id,
         member: publicMember(member),
@@ -724,9 +772,36 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       if (!identified || !allow("voiceState")) return;
       const member = setVoiceState(userId, payload);
       if (!member) return;
+      if (payload?.screenOn === false && member.voiceChannelId) {
+        clearScreenViewers(member.voiceChannelId, member.id);
+      }
       // Vai pra todos, não só pra quem está na call: a lista de canais mostra o
       // ícone de mudo de quem está em voz mesmo pra quem está lendo o chat.
       emitPresence("member:state", member);
+    });
+
+    socket.on("screen:view", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      if (!identified || !allow("voiceState")) return reply({ ok: false, error: "rate-limited" });
+      const viewer = getMember(socket.id);
+      const owner = getMemberById(payload?.ownerId);
+      if (!viewer?.voiceChannelId || !owner || owner.id === viewer.id ||
+          owner.voiceChannelId !== viewer.voiceChannelId) {
+        return reply({ ok: false, error: "not-in-voice" });
+      }
+      const key = viewerKey(viewer.voiceChannelId, owner.id);
+      if (payload?.watching === true) {
+        if (!owner.screenOn) return reply({ ok: false, error: "no-screen" });
+        const viewers = screenViewers.get(key) ?? new Map();
+        if (!viewers.has(viewer.id)) viewers.set(viewer.id, Date.now());
+        screenViewers.set(key, viewers);
+      } else {
+        const viewers = screenViewers.get(key);
+        viewers?.delete(viewer.id);
+        if (viewers?.size === 0) screenViewers.delete(key);
+      }
+      emitViewers(viewer.voiceChannelId, owner.id);
+      reply({ ok: true });
     });
 
     socket.on("rtc:signal", (payload) => {
@@ -851,6 +926,11 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       } catch (error) {
         sfuHealth.markFailure(error);
         sfuLog.error("falha ao publicar trilhas", { userId: member.id, motivo: reason(error) });
+        if (deadSfuSession(error)) {
+          const invalidated = invalidateSfuSession(member.id, "send");
+          if (invalidated) emitPresence("member:state", invalidated);
+          return reply({ ok: false, error: "stale-session" });
+        }
         reply({ ok: false, error: "sfu-failed" });
       }
     });
@@ -897,6 +977,10 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       } catch (error) {
         sfuHealth.markFailure(error);
         sfuLog.error("falha ao assinar trilhas", { userId: member.id, motivo: reason(error) });
+        if (deadSfuSession(error)) {
+          invalidateSfuSession(member.id, "recv");
+          return reply({ ok: false, error: "stale-session" });
+        }
         reply({ ok: false, error: "sfu-failed" });
       }
     });
@@ -928,6 +1012,11 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
           role,
           motivo: reason(error),
         });
+        if (deadSfuSession(error)) {
+          const invalidated = invalidateSfuSession(member.id, role);
+          if (role === "send" && invalidated) emitPresence("member:state", invalidated);
+          return reply({ ok: false, error: "stale-session" });
+        }
         reply({ ok: false, error: "sfu-failed" });
       }
     });
@@ -1091,7 +1180,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       const target = payload?.userId;
       if (!isId(target)) return reply({ ok: false, error: "bad-request" });
       if (target === userId) return reply({ ok: false, error: "cannot-ban-self" });
-      if (isGuildOwner(guildId, target) && !systemAdmin) {
+      if (isGuildOwner(guildId, target)) {
         return reply({ ok: false, error: "protected-user" });
       }
       if (accounts.accountById(target)?.isSystemAdmin && !systemAdmin) {
@@ -1102,6 +1191,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
         return reply({ ok: false, error: "role-hierarchy" });
       }
       const banned = banMember(guildId, target, userId, sanitizeReason(payload?.reason));
+      removeFromGuildVoice(target, guildId, "ban");
       administration.audit(guildId, userId, "member.ban", "member", target, { reason: sanitizeReason(payload?.reason) });
       io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId: target });
 
@@ -1137,6 +1227,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       if (!isId(target) || target === userId || !isGuildMember(guildId, target)) return reply({ ok: false, error: "bad-request" });
       if (!administration.canActOn(guildId, userId, target, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
       if (!administration.kick(guildId, target)) return reply({ ok: false, error: "not-member" });
+      removeFromGuildVoice(target, guildId, "kick");
       administration.audit(guildId, userId, "member.kick", "member", target, { reason: sanitizeReason(payload?.reason) });
       io.to(guildRoom(guildId)).emit("guild:member-left", { guildId, userId: target });
       const targetSocket = getMemberById(target)?.socketId ? io.sockets.sockets.get(getMemberById(target).socketId) : null;
@@ -1158,17 +1249,7 @@ export function attachSignaling(io, env = process.env, { auth, accountService, t
       if (!administration.canActOn(guildId, userId, target, { systemAdmin })) return reply({ ok: false, error: "role-hierarchy" });
       const expiresAt = administration.timeout(guildId, target, userId, durationMs, sanitizeReason(payload?.reason));
       administration.audit(guildId, userId, "member.timeout", "member", target, { expiresAt, reason: sanitizeReason(payload?.reason) });
-      const targetMember = getMemberById(target);
-      const voiceChannel = targetMember?.voiceChannelId ? findChannel(targetMember.voiceChannelId) : null;
-      if (voiceChannel?.guildId === guildId) {
-        const targetSocket = io.sockets.sockets.get(targetMember.socketId);
-        targetSocket?.leave(voiceRoom(voiceChannel.id));
-        setVoiceChannel(target, null);
-        telemetry?.leaveCall(voiceChannel.id, target);
-        io.to(voiceRoom(voiceChannel.id)).emit("voice:peer-left", { channelId: voiceChannel.id, memberId: target });
-        targetSocket?.emit("voice:moderated", { channelId: voiceChannel.id });
-        emitPresence("member:state", getMemberById(target));
-      }
+      removeFromGuildVoice(target, guildId, "timeout");
       reply({ ok: true, expiresAt, timeouts: administration.timeouts(guildId) });
     });
 
