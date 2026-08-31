@@ -1,6 +1,6 @@
 {
   "name": "draco",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Draco: voz, vídeo e compartilhamento de tela em grupo, direto entre os navegadores.",

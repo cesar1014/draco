@@ -8,8 +8,8 @@
 
 **Web · Mobile/PWA · Windows Desktop**
 
-[![Status](https://img.shields.io/badge/status-v1.0.0-22C55E?style=for-the-badge)](#)
-[![Desktop](https://img.shields.io/badge/desktop-v1.0.0-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
+[![Status](https://img.shields.io/badge/status-v1.0.1-22C55E?style=for-the-badge)](#)
+[![Desktop](https://img.shields.io/badge/desktop-v1.0.1-5865F2?style=for-the-badge&logo=windows11&logoColor=white)](#)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=111827)](#)
 [![Electron](https://img.shields.io/badge/Electron-Windows-47848F?style=for-the-badge&logo=electron&logoColor=white)](#)
 [![WebRTC](https://img.shields.io/badge/WebRTC-malha%20%C2%B7%20SFU-22C55E?style=for-the-badge)](#)
@@ -349,7 +349,7 @@ Alguns exemplos:
 
 A verificação fica na aba **Conexão** das configurações: ela compara a versão instalada com a última release publicada no repositório e, se houver uma nova, oferece o link. O endereço não vem da página, e sim do processo principal, que só aceita links do próprio repositório de releases.
 
-A **1.0.0 oficial** exige o instalador novo. Ela inclui a correção do áudio da tela inteira no Windows, a tela de Início, o caminho de baixa latência e uma versão do Electron sem alertas conhecidos na auditoria de dependências. O site recebe mudanças de interface e servidor automaticamente; recursos nativos continuam exigindo o instalador novo.
+A **1.0.1 atual** reúne o instalador da versão oficial com as correções finais do Draco v2 e o endurecimento de segurança. O site recebe mudanças de interface e servidor automaticamente; recursos nativos continuam exigindo o instalador novo.
 
 Os builds de teste 1.1.0 e 1.2.0 são tratados explicitamente como anteriores à 1.0.0 oficial. Assim, a aba **Conexão** oferece a release oficial mesmo que o número experimental pareça maior.
 
@@ -489,7 +489,7 @@ npm run app:build
 O instalador é gerado em:
 
 ```text
-desktop/out/draco-setup-1.0.0.exe
+desktop/out/draco-setup-1.0.1.exe
 ```
 
 A versão vem de `desktop/package.json`.

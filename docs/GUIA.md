@@ -97,7 +97,7 @@ npm --prefix desktop start -- --url=http://localhost:5173
 npm run app:build
 ```
 
-Sai em **`desktop/out/draco-setup-1.0.0.exe`**. Esse arquivo é o que você manda pra quem vai
+Sai em **`desktop/out/draco-setup-1.0.1.exe`**. Esse arquivo é o que você manda pra quem vai
 usar: dois cliques, escolhe a pasta, cria atalho na área de trabalho. Quem instala **não precisa
 de Node** nem do projeto, só do endereço do servidor estar no ar.
 
