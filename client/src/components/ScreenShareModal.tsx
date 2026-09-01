@@ -63,7 +63,7 @@ function systemAudioHint(where: {
   }
   if (where.screenOn) return "O som só pode ser ligado ou desligado ao começar a transmissão.";
   if (!where.desktop) {
-    return "No Chrome vem o som da aba ou da tela escolhida. O Firefox não manda áudio.";
+    return "No Chrome ou Edge, marque também 'Compartilhar áudio do sistema' na janela do navegador. Se essa opção não aparecer, compartilhe uma aba com áudio.";
   }
   if (where.wholeScreen) {
     return "Manda o áudio do Windows junto. Se ele não vier, compartilhe a janela do programa: o Windows libera o som dela mesmo quando recusa o da tela inteira.";

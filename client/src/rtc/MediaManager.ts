@@ -147,6 +147,36 @@ function screenConstraints(options: ScreenShareOptions): MediaTrackConstraints {
 }
 
 /**
+ * Hints de captura que Chromium/Edge já usam, mas que ainda não existem em
+ * todas as versões do `lib.dom.d.ts`. Outros navegadores ignoram os campos que
+ * não reconhecem e seguem com o comportamento padrão.
+ */
+type DisplayCaptureOptions = DisplayMediaStreamOptions & {
+  systemAudio?: "include" | "exclude";
+  windowAudio?: "system" | "window" | "exclude";
+  surfaceSwitching?: "include" | "exclude";
+  selfBrowserSurface?: "include" | "exclude";
+  monitorTypeSurfaces?: "include" | "exclude";
+};
+
+function displayCaptureOptions(
+  video: MediaTrackConstraints,
+  wantsAudio: boolean,
+): DisplayCaptureOptions {
+  return {
+    video,
+    // `audio: true` continua sendo a forma mais compatível. Os hints fazem o
+    // Chrome/Edge oferecer áudio também para monitor e janela, quando possível.
+    audio: wantsAudio,
+    systemAudio: wantsAudio ? "include" : "exclude",
+    windowAudio: wantsAudio ? "system" : "exclude",
+    surfaceSwitching: "include",
+    selfBrowserSurface: "exclude",
+    monitorTypeSurfaces: "include",
+  };
+}
+
+/**
  * Teto de envio pro SFU, que repassa a mesma camada pra todos: sobe uma vez, não
  * uma vez por pessoa. O painel mostra o número antes de começar.
  */
@@ -472,7 +502,9 @@ export class MediaManager {
     let failure: SystemAudioFailure | null = null;
 
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: wantsAudio });
+      stream = await navigator.mediaDevices.getDisplayMedia(
+        displayCaptureOptions(video, wantsAudio),
+      );
     } catch (error) {
       if (!wantsAudio || userCancelled(error)) {
         fail("getDisplayMedia", error);
@@ -492,7 +524,9 @@ export class MediaManager {
         }
       }
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+        stream = await navigator.mediaDevices.getDisplayMedia(
+          displayCaptureOptions(video, false),
+        );
       } catch (retryError) {
         fail("getDisplayMedia", retryError);
         throw retryError;

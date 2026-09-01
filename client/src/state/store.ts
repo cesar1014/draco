@@ -665,7 +665,7 @@ export const useStore = create<Store>()((set, get) => {
 
   /** Trilhas que devem estar chegando: quem está na call, com o que ligou. */
   const desiredRemote = (): RemoteTrackRef[] => {
-    const { members, voiceChannelId, selfId } = get();
+    const { members, voiceChannelId, selfId, watching } = get();
     const refs: RemoteTrackRef[] = [];
     for (const member of membersInVoice(members, voiceChannelId)) {
       if (member.id === selfId) continue;
@@ -678,7 +678,11 @@ export const useStore = create<Store>()((set, get) => {
         }
         if (!member.sfuSessionId || !member.sfuTracks?.[slot]) continue;
         if (slot === "camera" && !member.camOn) continue;
-        if ((slot === "screen" || slot === "screenAudio") && !member.screenOn) continue;
+        if (slot === "screen" || slot === "screenAudio") {
+          if (!member.screenOn) continue;
+          // Vídeo e áudio da tela só entram na assinatura SFU depois do clique.
+          if (watching[`${member.id}:screen`] !== true) continue;
+        }
         refs.push({ memberId: member.id, slot, sessionId: member.sfuSessionId });
       }
     }
@@ -728,9 +732,11 @@ export const useStore = create<Store>()((set, get) => {
         },
       };
     });
-    if (slot === "screen" && peerId !== get().selfId) {
-      const watching = live && get().watching[`${peerId}:screen`] === true;
-      if (socket) void setScreenWatching(socket, peerId, watching);
+    if (slot === "screen" && live && peerId !== get().selfId) {
+      // Reafirma o pedido quando a mídia finalmente chega; um estado `muted`
+      // transitório não cancela o clique do espectador.
+      const watching = get().watching[`${peerId}:screen`] === true;
+      if (socket && watching) void setScreenWatching(socket, peerId, true);
     }
   };
 
@@ -914,6 +920,10 @@ export const useStore = create<Store>()((set, get) => {
       return;
     }
 
+    await call.setScreenViewers?.(
+      (get().screenViewers[selfId] ?? []).map((viewer) => viewer.id),
+    );
+
     await call.setLocalTrack("mic", micTrack);
 
     // Reconexão em cima de uma câmera ou tela que já estava no ar: as trilhas
@@ -935,6 +945,12 @@ export const useStore = create<Store>()((set, get) => {
 
     // Só agora: com as trilhas anexadas, a primeira oferta já sai completa.
     syncRemote();
+    // Uma recuperação preserva os tiles que a pessoa escolheu assistir. Refaz
+    // o pedido para o transmissor da malha e restaura a lista de espectadores.
+    for (const [tile, watching] of Object.entries(get().watching)) {
+      if (!watching || !tile.endsWith(":screen")) continue;
+      void setScreenWatching(s, tile.slice(0, -":screen".length), true);
+    }
 
     startDetector();
     startStats();
@@ -1083,9 +1099,26 @@ export const useStore = create<Store>()((set, get) => {
             }
           : thread),
       }));
+      if (!member.screenOn) {
+        const tile = `${member.id}:screen`;
+        set((state) => {
+          if (!state.watching[tile] && !state.focusedTiles.includes(tile)) return state;
+          const watching = { ...state.watching };
+          delete watching[tile];
+          return {
+            watching,
+            focusedTiles: state.focusedTiles.filter((key) => key !== tile),
+          };
+        });
+      }
       // Uma trilha nova publicada no SFU aparece como mudança de estado: é o
       // gatilho pra assinar a câmera que a pessoa acabou de ligar.
-      if (sfuAvailable && member.voiceChannelId === get().voiceChannelId) syncRemote();
+      if (member.voiceChannelId === get().voiceChannelId) {
+        if (sfuAvailable) syncRemote();
+        if (member.screenOn && get().watching[`${member.id}:screen`] && socket) {
+          void setScreenWatching(socket, member.id, true);
+        }
+      }
     });
 
     s.on("member:left", ({ id }) => {
@@ -1196,6 +1229,9 @@ export const useStore = create<Store>()((set, get) => {
     s.on("screen:viewers", ({ channelId, ownerId, viewers }) => {
       if (get().voiceChannelId !== channelId) return;
       set((state) => ({ screenViewers: { ...state.screenViewers, [ownerId]: viewers } }));
+      if (!sfuAvailable && ownerId === get().selfId) {
+        void engine?.setScreenViewers?.(viewers.map((viewer) => viewer.id));
+      }
     });
 
     s.on("voice:peer-joined", ({ channelId, member }) => {
@@ -2119,8 +2155,11 @@ export const useStore = create<Store>()((set, get) => {
       set((state) => ({ watching: { ...state.watching, [tile]: on } }));
       const [ownerId, slot] = tile.split(":");
       if (slot === "screen" && ownerId !== get().selfId && socket) {
-        const connected = get().remote[ownerId]?.live.screen === true;
-        void setScreenWatching(socket, ownerId, on && connected);
+        // `desiredRemote` lê `watching`; o clique cria ou encerra a assinatura.
+        if (sfuAvailable) syncRemote();
+        // Na malha este evento também é o pedido que autoriza o transmissor a
+        // anexar a tela a este par; esperar a trilha chegar criaria um impasse.
+        void setScreenWatching(socket, ownerId, on);
       }
     },
 

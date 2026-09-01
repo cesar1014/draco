@@ -80,7 +80,8 @@ Contas, servidores, cargos, canais e conversas ficam em **SQLite**, então reini
 - **720p, 1080p ou resolução nativa**
 - **15, 24, 30 ou 60 FPS**
 - Controle de bitrate por qualidade
-- Áudio do sistema no app para Windows
+- Áudio de aba/sistema no Chrome, Edge e app para Windows
+- Tela remota só é enviada/assinada depois do clique para assistir
 - Seletor próprio com miniaturas no Electron
 - Ajustes sem precisar sair da transmissão
 - Transmissão começa mesmo se o áudio do sistema falhar
@@ -229,7 +230,7 @@ Trocar de Wi-Fi para 4G, ou uma oscilação de alguns segundos, não deveria cus
 3. **Não voltou** — a call é refeita inteira, com configuração de ICE nova.
 4. **Ainda não voltou** — aí a interface avisa, em vez de insistir para sempre.
 
-Uma publicação de câmera ou tela não é reaproveitada só porque o objeto local ainda existe. Se o transporte caiu, o transceiver foi encerrado pelo navegador ou o SFU trocou a sessão, ela é **republicada**. É esse o defeito que o ciclo "liga a câmera, desliga, espera, liga de novo" costuma esconder: o `replaceTrack` responde que deu certo, e a imagem não chega do outro lado.
+Uma publicação viva de câmera ou tela é pausada com `replaceTrack(null)` e reutilizada ao ligar de novo, sem acumular negociações. Se o transporte caiu, o transceiver foi encerrado pelo navegador ou o SFU trocou a sessão, ela é **republicada**. Isso impede o ciclo "desliga, liga de novo e fica em Conectando" sem tentar ressuscitar uma conexão realmente morta.
 
 ---
 

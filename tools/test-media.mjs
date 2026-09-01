@@ -2,9 +2,8 @@
  * Ciclo de vida das trilhas publicadas no SFU, e o som do sistema junto com a tela.
  *
  * O defeito que este teste existe pra impedir é específico e chato de achar à
- * mão: ligar a câmera, desligar, esperar, ligar de novo, e a imagem não chegar do
- * outro lado — sem erro nenhum, porque o `replaceTrack` "deu certo" numa
- * publicação que o SFU já tinha descartado.
+ * mão: ligar a câmera/tela, desligar e ligar de novo, acumulando publicações até
+ * a imagem ficar presa em "Conectando".
  *
  * A segunda metade cobre o outro defeito da mesma família: compartilhar a tela
  * inteira com o som marcado e a transmissão começar muda, porque o Windows recusa
@@ -61,6 +60,10 @@ async function quiet(run) {
 /** Compila o motor com as dependências dele, resolvendo o alias `@` do Vite. */
 async function loadEngine() {
   return (await bundle(join(root, "client", "src", "rtc", "SfuEngine.ts"))).SfuEngine;
+}
+
+async function loadVoiceEngine() {
+  return (await bundle(join(root, "client", "src", "rtc", "VoiceEngine.ts"))).VoiceEngine;
 }
 
 /**
@@ -225,6 +228,7 @@ function transportWith(overrides = {}) {
 }
 
 const SfuEngine = await loadEngine();
+const VoiceEngine = await loadVoiceEngine();
 
 globalThis.RTCPeerConnection = FakePeerConnection;
 globalThis.MediaStream = class {
@@ -262,7 +266,7 @@ function makeEngine(transport, options = {}) {
   return { engine, send, recv, failures };
 }
 
-await test("desligar e religar a câmera cria publicação nova", async () => {
+await test("desligar e religar a câmera reutiliza a publicação viva", async () => {
   const transport = transportWith();
   const { engine, send } = makeEngine(transport);
 
@@ -272,15 +276,18 @@ await test("desligar e religar a câmera cria publicação nova", async () => {
 
   await engine.setLocalTrack("camera", null);
   assert.equal(transport.calls.publish.length, 2, "desligar não republica");
-  assert.equal(send.getTransceivers()[1].currentDirection, "stopped", "a publicação antiga é encerrada");
+  assert.equal(send.getTransceivers()[1].sender.track, null, "o fluxo é interrompido");
+  assert.notEqual(send.getTransceivers()[1].currentDirection, "stopped", "o transceiver segue reutilizável");
 
-  await engine.setLocalTrack("camera", new FakeTrack("video"));
-  assert.equal(transport.calls.publish.length, 3, "religar publica uma trilha nova");
+  const reopened = new FakeTrack("video");
+  await engine.setLocalTrack("camera", reopened);
+  assert.equal(transport.calls.publish.length, 2, "religar não renegocia");
+  assert.equal(send.getTransceivers()[1].sender.track, reopened, "a nova captura ocupa a publicação existente");
 
   // Uma conexão definitivamente falha não é reutilizada; o dono recria a call.
   send.setConnectionState("failed");
   await engine.setLocalTrack("camera", new FakeTrack("video"));
-  assert.equal(transport.calls.publish.length, 3, "a sessão morta não recebe nova publicação");
+  assert.equal(transport.calls.publish.length, 2, "a sessão morta não recebe nova publicação");
 });
 
 await test("transceiver encerrado pelo navegador força republicação", async () => {
@@ -296,7 +303,21 @@ await test("transceiver encerrado pelo navegador força republicação", async (
   assert.equal(transport.calls.publish.length, 2, "a tela volta com publicação nova");
 });
 
-await test("liga e desliga a tela cinco vezes sem acumular publicação", async () => {
+await test("replaceTrack recusado republica a captura atual", async () => {
+  const transport = transportWith();
+  const { engine, send } = makeEngine(transport);
+
+  await engine.setLocalTrack("screen", new FakeTrack("video"));
+  send.getTransceivers()[0].sender.replaceTrack = async () => {
+    throw new Error("sender perdeu a publicação");
+  };
+
+  await quiet(() => engine.setLocalTrack("screen", new FakeTrack("video")));
+  assert.equal(transport.calls.publish.length, 2, "a falha não deixa a tela presa");
+  assert.equal(send.getTransceivers().length, 2, "uma publicação nova substitui a inválida");
+});
+
+await test("liga e desliga a tela cinco vezes sem acumular transceivers", async () => {
   const transport = transportWith();
   const { engine } = makeEngine(transport);
 
@@ -304,11 +325,49 @@ await test("liga e desliga a tela cinco vezes sem acumular publicação", async 
     await engine.setLocalTrack("screen", new FakeTrack("video"));
     await engine.setLocalTrack("screen", null);
   }
-  assert.equal(transport.calls.publish.length, 5, "cada captura nova recebe publicação própria");
-  assert.ok(
-    FakePeerConnection.instances[0].getTransceivers().every((entry) => entry.currentDirection === "stopped"),
-    "nenhuma publicação encerrada continua ativa",
-  );
+  assert.equal(transport.calls.publish.length, 1, "a publicação é criada uma vez");
+  assert.equal(FakePeerConnection.instances[0].getTransceivers().length, 1, "não acumula m-lines");
+  assert.equal(FakePeerConnection.instances[0].getTransceivers()[0].sender.track, null);
+});
+
+await test("malha só envia tela e som ao par que clicou para assistir", async () => {
+  FakePeerConnection.instances = [];
+  const engine = new VoiceEngine({
+    selfId: "transmissor",
+    configuration: {},
+    sendSignal: () => {},
+    onRemoteTrack: () => {},
+  });
+  engine.syncRemote([{ memberId: "espectador", slot: "mic", sessionId: null }]);
+  const [peer] = FakePeerConnection.instances;
+  const video = new FakeTrack("video");
+  const audio = new FakeTrack("audio");
+
+  await engine.setLocalTrack("screen", video);
+  await engine.setLocalTrack("screenAudio", audio);
+  assert.equal(peer.getTransceivers()[2].sender.track, null, "antes do clique não envia vídeo");
+  assert.equal(peer.getTransceivers()[3].sender.track, null, "antes do clique não envia áudio");
+
+  await engine.setScreenViewers(["espectador"]);
+  assert.equal(peer.getTransceivers()[2].sender.track, video);
+  assert.equal(peer.getTransceivers()[3].sender.track, audio);
+
+  await engine.setScreenViewers([]);
+  assert.equal(peer.getTransceivers()[2].sender.track, null, "fechar a tela interrompe o envio");
+  assert.equal(peer.getTransceivers()[3].sender.track, null);
+
+  const screenSender = peer.getTransceivers()[2].sender;
+  let replacements = 0;
+  screenSender.replaceTrack = async (next) => {
+    replacements += 1;
+    if (replacements === 1) await sleep(10);
+    screenSender.track = next;
+  };
+  const opening = engine.setScreenViewers(["espectador"]);
+  const closing = engine.setScreenViewers([]);
+  await Promise.all([opening, closing]);
+  assert.equal(screenSender.track, null, "um clique antigo não vence o fechamento mais novo");
+  engine.close();
 });
 
 await test("erro de sessão desconectada invalida a recepção e não repete na sessão morta", async () => {
@@ -482,7 +541,7 @@ const refuseUserMedia = () => {
  * chamada faz: devolver trilhas, ou estourar o erro que o Windows estouraria.
  */
 function fakeMedia({ display, user = refuseUserMedia, platform = "win32" }) {
-  const calls = { display: [], user: [], claims: [], failures: [] };
+  const calls = { display: [], displayOptions: [], user: [], claims: [], failures: [] };
   // Node 22 passou a expor `navigator` como getter sem setter. Definir a
   // propriedade deixa o mesmo mock funcionar nele e no Node 24 da estação.
   Object.defineProperty(globalThis, "navigator", {
@@ -492,6 +551,7 @@ function fakeMedia({ display, user = refuseUserMedia, platform = "win32" }) {
       mediaDevices: {
         getDisplayMedia: async (constraints) => {
           calls.display.push(constraints.audio);
+          calls.displayOptions.push(constraints);
           return display(constraints, calls.display.length);
         },
         getUserMedia: async (constraints) => {
@@ -553,6 +613,8 @@ await test("Windows recusando o som da tela inteira ainda traz áudio pelo camin
   assert.equal(capture.systemAudioFailure, null, "o som veio, então não há aviso a dar");
   assert.ok(capture.audio, "e a trilha de som existe");
   assert.equal(capture.audio.contentHint, "music", "marcada como música, não como fala");
+  assert.equal(calls.displayOptions[0].systemAudio, "include", "o navegador oferece áudio da tela inteira");
+  assert.equal(calls.displayOptions[0].windowAudio, "system", "e áudio junto da janela");
   assert.equal(calls.user.length, 1, "o caminho legado foi tentado uma vez");
   assert.deepEqual(calls.claims, [true, false], "a segunda reserva já não pede som");
   // Vídeo pedido, e com o id da fonte: sem a trilha de vídeo no pedido, o
@@ -667,6 +729,7 @@ await test("quem não pediu som não ganha tentativa nenhuma de áudio", async (
   );
 
   assert.deepEqual(calls.display, [false]);
+  assert.equal(calls.displayOptions[0].systemAudio, "exclude");
   assert.equal(calls.user.length, 0);
   assert.equal(capture.systemAudioFailure, null, "não pedir som não é falha");
 });

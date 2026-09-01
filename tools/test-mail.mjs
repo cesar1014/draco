@@ -34,6 +34,13 @@ assert.throws(() => renderActionEmail({
 }), /ação de e-mail inválida/u);
 
 const deliveries = [];
+const smtpOptions = [];
+const mailEvents = [];
+const testLog = Object.fromEntries(
+  ["info", "warn", "error"].map((level) => [level, (message, detail) => {
+    mailEvents.push({ level, message, detail });
+  }]),
+);
 const mailer = createMailer({
   SMTP_HOST: "smtp.example.test",
   SMTP_PORT: "587",
@@ -41,16 +48,24 @@ const mailer = createMailer({
   SMTP_PASS: "segredo",
 }, {
   logoAvailable: false,
-  createTransport: () => ({
+  log: testLog,
+  createTransport: (options) => {
+    smtpOptions.push(options);
+    return {
     verify: async () => true,
     sendMail: async (mail) => {
       deliveries.push(mail);
-      return { accepted: [mail.to], rejected: [], messageId: "mail-test" };
+      return {
+        accepted: [mail.to], rejected: [], messageId: "mail-test",
+        response: "250 2.0.0 enfileirado",
+      };
     },
-  }),
+    };
+  },
 });
 assert.equal(mailer.ready, true, "a própria conta SMTP serve como remetente padrão");
 assert.equal(await mailer.verify(), true);
+assert.equal(smtpOptions[0].requireTLS, true, "STARTTLS é obrigatório fora da porta 465");
 assert.deepEqual(await mailer.send({
   to: "destino@example.test",
   subject: "[DracoCall] Teste",
@@ -58,12 +73,23 @@ assert.deepEqual(await mailer.send({
   text: "Mensagem transacional.",
   action,
   actionLabel: "Abrir",
-}), { messageId: "mail-test", accepted: 1 });
+}), {
+  messageId: "mail-test",
+  accepted: 1,
+  rejected: 0,
+  pending: 0,
+  response: "250 2.0.0 enfileirado",
+});
 assert.equal(deliveries[0].from, "DracoCall <conta@example.test>");
 assert.deepEqual(deliveries[0].envelope, {
   from: "conta@example.test",
   to: "destino@example.test",
 });
+assert.equal(deliveries[0].headers["Auto-Submitted"], "auto-generated");
+const acceptedEvent = mailEvents.find((event) => event.message.includes("entrega final depende"));
+assert.equal(acceptedEvent.detail.aceitos, 1);
+assert.equal(acceptedEvent.detail.rejeitados, 0);
+assert.equal(acceptedEvent.detail.resposta, "250 2.0.0 enfileirado");
 
 const unavailable = createMailer({
   SMTP_HOST: "smtp.example.test",
@@ -71,6 +97,7 @@ const unavailable = createMailer({
   SMTP_PASS: "segredo",
 }, {
   logoAvailable: false,
+  log: testLog,
   createTransport: () => ({
     verify: async () => { throw new Error("credencial recusada"); },
     sendMail: async () => { throw new Error("não deveria enviar"); },
@@ -85,9 +112,14 @@ const rejected = createMailer({
   SMTP_PASS: "segredo",
 }, {
   logoAvailable: false,
+  log: testLog,
   createTransport: () => ({
     verify: async () => true,
-    sendMail: async () => ({ accepted: [], rejected: ["destino@example.test"] }),
+    sendMail: async () => ({
+      accepted: [],
+      rejected: ["destino@example.test"],
+      response: "550 destino@example.test recusado",
+    }),
   }),
 });
 await assert.rejects(() => rejected.send({
@@ -98,5 +130,66 @@ await assert.rejects(() => rejected.send({
   action,
   actionLabel: "Abrir",
 }), /não aceitou o destinatário/u);
+const failedEvent = mailEvents.findLast((event) => event.message === "envio SMTP falhou");
+assert.equal(failedEvent.detail.destinatario, "example.test");
+assert.equal(failedEvent.detail.aceitos, 0);
+assert.equal(failedEvent.detail.rejeitados, 1);
+assert.equal(failedEvent.detail.resposta.includes("destino@example.test"), false, "logs não vazam o destinatário");
 
-console.log("template, remetente, aceite SMTP e rejeição de destinatário: ok");
+const revokedCredential = createMailer({
+  SMTP_HOST: "smtp.example.test",
+  SMTP_USER: "conta@example.test",
+  SMTP_PASS: "senha-revogada",
+}, {
+  logoAvailable: false,
+  log: testLog,
+  createTransport: () => ({
+    verify: async () => true,
+    sendMail: async () => {
+      const error = new Error("535 5.7.8 credenciais recusadas");
+      error.code = "EAUTH";
+      error.responseCode = 535;
+      throw error;
+    },
+  }),
+});
+await assert.rejects(() => revokedCredential.send({
+  to: "destino@example.test",
+  subject: "[DracoCall] Teste",
+  title: "Teste",
+  text: "Mensagem transacional.",
+  action,
+  actionLabel: "Abrir",
+}), /credenciais recusadas/u);
+assert.equal(revokedCredential.ready, false, "credencial SMTP revogada deixa de ser anunciada como pronta");
+
+const gmailDeliveries = [];
+const gmailMailer = createMailer({
+  SMTP_HOST: "smtp.gmail.com",
+  SMTP_PORT: "587",
+  SMTP_USER: "conta@gmail.com",
+  SMTP_PASS: "senha-de-app",
+  EMAIL_FROM: "DracoCall <nao-verificado@outro.example>",
+}, {
+  logoAvailable: false,
+  log: testLog,
+  createTransport: () => ({
+    verify: async () => true,
+    sendMail: async (mail) => {
+      gmailDeliveries.push(mail);
+      return { accepted: [mail.to], rejected: [], messageId: "gmail-test" };
+    },
+  }),
+});
+await gmailMailer.send({
+  to: "destino@example.test",
+  subject: "[DracoCall] Teste Gmail",
+  title: "Teste",
+  text: "Mensagem transacional.",
+  action,
+  actionLabel: "Abrir",
+});
+assert.equal(gmailDeliveries[0].from, "DracoCall <conta@gmail.com>", "Gmail não usa From divergente");
+assert.equal(mailEvents.some((event) => event.message === "EMAIL_FROM divergente ignorado para o Gmail"), true);
+
+console.log("template, TLS, remetente alinhado, diagnóstico e rejeição SMTP: ok");

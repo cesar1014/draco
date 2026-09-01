@@ -55,9 +55,11 @@ interface Peer {
 export class VoiceEngine implements CallEngine {
   readonly #peers = new Map<string, Peer>();
   readonly #localTracks = new Map<MediaSlot, MediaStreamTrack | null>();
+  readonly #screenViewers = new Set<string>();
   readonly #profiles = new Map<MediaSlot, TrackProfile>(
     Object.entries(DEFAULT_PROFILES) as [MediaSlot, TrackProfile][],
   );
+  #screenQueue: Promise<void> = Promise.resolve();
   #closed = false;
 
   constructor(private options: VoiceEngineOptions) {}
@@ -220,18 +222,35 @@ export class VoiceEngine implements CallEngine {
   /** `replaceTrack` em todos os pares: liga e desliga mídia sem renegociar. */
   async setLocalTrack(slot: MediaSlot, track: MediaStreamTrack | null): Promise<void> {
     this.#localTracks.set(slot, track);
+    if (slot === "screen" || slot === "screenAudio") {
+      await this.#syncScreenSenders();
+      return;
+    }
     await Promise.all(
       [...this.#peers.values()].map(async (peer) => {
         const sender = peer.senders.get(slot);
         if (!sender) return;
         try {
-          await sender.replaceTrack(track);
+          await sender.replaceTrack(this.#outgoingTrack(peer.id, slot, track));
         } catch (error) {
           console.error(`[rtc] replaceTrack(${slot}) falhou para ${peer.id}:`, error);
         }
       }),
     );
     if (track) await Promise.all([...this.#peers.values()].map((peer) => this.#applyEncodings(peer)));
+  }
+
+  /**
+   * A malha não tem assinatura no servidor: o próprio transmissor corta a tela
+   * de cada sender até aquele par clicar em assistir. Microfone e câmera não
+   * passam por esta lista.
+   */
+  async setScreenViewers(viewerIds: string[]): Promise<void> {
+    this.#screenViewers.clear();
+    for (const viewerId of viewerIds) {
+      if (viewerId !== this.options.selfId) this.#screenViewers.add(viewerId);
+    }
+    await this.#syncScreenSenders();
   }
 
   localTrack(slot: MediaSlot): MediaStreamTrack | null {
@@ -370,14 +389,50 @@ export class VoiceEngine implements CallEngine {
   async #attachLocalTracks(peer: Peer): Promise<void> {
     await Promise.all(
       [...this.#localTracks].map(async ([slot, track]) => {
-        if (!track) return;
+        const outgoing = this.#outgoingTrack(peer.id, slot, track);
+        if (!outgoing) return;
         try {
-          await peer.senders.get(slot)?.replaceTrack(track);
+          await peer.senders.get(slot)?.replaceTrack(outgoing);
         } catch (error) {
           console.error(`[rtc] não deu pra anexar ${slot} em ${peer.id}:`, error);
         }
       }),
     );
+  }
+
+  #outgoingTrack(
+    peerId: string,
+    slot: MediaSlot,
+    track: MediaStreamTrack | null,
+  ): MediaStreamTrack | null {
+    if ((slot === "screen" || slot === "screenAudio") && !this.#screenViewers.has(peerId)) {
+      return null;
+    }
+    return track;
+  }
+
+  /** Serializa cliques e liga/desliga para a última intenção sempre vencer. */
+  #syncScreenSenders(): Promise<void> {
+    this.#screenQueue = this.#screenQueue.then(async () => {
+      if (this.#closed) return;
+      await Promise.all(
+        [...this.#peers.values()].flatMap((peer) =>
+          (["screen", "screenAudio"] as const).map(async (slot) => {
+            const sender = peer.senders.get(slot);
+            if (!sender) return;
+            try {
+              await sender.replaceTrack(
+                this.#outgoingTrack(peer.id, slot, this.#localTracks.get(slot) ?? null),
+              );
+            } catch (error) {
+              console.error(`[rtc] não deu pra ajustar ${slot} para ${peer.id}:`, error);
+            }
+          }),
+        ),
+      );
+      await Promise.all([...this.#peers.values()].map((peer) => this.#applyEncodings(peer)));
+    });
+    return this.#screenQueue;
   }
 
   async #applyEncodings(peer: Peer): Promise<void> {
@@ -390,5 +445,6 @@ export class VoiceEngine implements CallEngine {
     this.#closed = true;
     for (const id of [...this.#peers.keys()]) this.removePeer(id);
     this.#localTracks.clear();
+    this.#screenViewers.clear();
   }
 }

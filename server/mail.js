@@ -2,14 +2,45 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import nodemailer from "nodemailer";
+import { logger } from "./log.js";
 
 const BRAND_NAME = "DracoCall";
 const LOGO_CID = "dracocall-logo@dracocall";
 const here = dirname(fileURLToPath(import.meta.url));
 const logoPath = join(here, "..", "client", "public", "brand", "logo-256.png");
+const mailLog = logger("MAIL");
 
 function boolean(value) {
   return /^(1|true|yes)$/i.test(String(value ?? ""));
+}
+
+function mailbox(value) {
+  const input = String(value ?? "").trim();
+  const bracketed = input.match(/<\s*([^<>\s]+@[^<>\s]+)\s*>$/u)?.[1];
+  const plain = input.match(/^([^<>\s]+@[^<>\s]+)$/u)?.[1];
+  return (bracketed ?? plain ?? "").toLowerCase();
+}
+
+function domain(value) {
+  return mailbox(value).split("@")[1] ?? "desconhecido";
+}
+
+function safeSmtpText(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[endereco]")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+function smtpFailure(error) {
+  return {
+    codigo: typeof error?.code === "string" ? error.code : "SMTP_ERROR",
+    respostaCodigo: Number.isInteger(error?.responseCode) ? error.responseCode : null,
+    comando: typeof error?.command === "string" ? error.command : null,
+    resposta: safeSmtpText(error?.response ?? error?.message),
+  };
 }
 
 function escapeHtml(value) {
@@ -142,20 +173,36 @@ export function renderActionEmail({
 export function createMailer(env = process.env, {
   createTransport = (options) => nodemailer.createTransport(options),
   logoAvailable = existsSync(logoPath),
+  log = mailLog,
 } = {}) {
   const host = env.SMTP_HOST?.trim();
   const user = env.SMTP_USER?.trim();
   const pass = env.SMTP_PASS?.trim();
   // Para Gmail/Outlook simples, omitir EMAIL_FROM usa a própria conta
   // autenticada e evita um remetente fictício que falha em SPF/DMARC.
-  const from = env.EMAIL_FROM?.trim() || (user?.includes("@") ? `${BRAND_NAME} <${user}>` : "");
+  const requestedFrom = env.EMAIL_FROM?.trim();
+  const authenticatedAddress = mailbox(user);
+  const requestedAddress = mailbox(requestedFrom);
+  const gmail = /(^|\.)gmail\.com$|(^|\.)googlemail\.com$/iu.test(host ?? "");
+  // Não há como validar aliases do Gmail via SMTP. Se EMAIL_FROM divergir da
+  // conta autenticada, usar a própria conta evita From falso e falha de DMARC.
+  const adjustedGmailFrom = Boolean(
+    gmail && authenticatedAddress && requestedFrom && requestedAddress !== authenticatedAddress,
+  );
+  const from = adjustedGmailFrom
+    ? `${BRAND_NAME} <${authenticatedAddress}>`
+    : requestedFrom || (authenticatedAddress ? `${BRAND_NAME} <${authenticatedAddress}>` : "");
+  const fromAddress = mailbox(from);
   const port = Number(env.SMTP_PORT ?? 587);
-  const configured = Boolean(host && user && pass && from && Number.isInteger(port));
+  const validPort = Number.isInteger(port) && port > 0 && port <= 65_535;
+  const configured = Boolean(host && user && pass && fromAddress && validPort);
+  const implicitTls = boolean(env.SMTP_SECURE) || port === 465;
   const transport = configured
     ? createTransport({
         host,
         port,
-        secure: boolean(env.SMTP_SECURE) || port === 465,
+        secure: implicitTls,
+        ...(!implicitTls ? { requireTLS: true } : {}),
         auth: { user, pass },
         connectionTimeout: 10_000,
         greetingTimeout: 10_000,
@@ -164,6 +211,12 @@ export function createMailer(env = process.env, {
     : null;
   const includeLogo = logoAvailable;
   let available = configured;
+
+  if (adjustedGmailFrom) {
+    log.warn("EMAIL_FROM divergente ignorado para o Gmail", {
+      remetente: domain(authenticatedAddress),
+    });
+  }
 
   return {
     get ready() {
@@ -177,6 +230,12 @@ export function createMailer(env = process.env, {
       try {
         await transport.verify();
         available = true;
+        log.info("SMTP autenticado", {
+          servidor: host,
+          porta: port,
+          tls: implicitTls ? "direto" : "STARTTLS obrigatório",
+          remetente: domain(fromAddress),
+        });
         return true;
       } catch (error) {
         available = false;
@@ -186,22 +245,63 @@ export function createMailer(env = process.env, {
     async send({ to, subject, ...content }) {
       if (!transport || !available) throw new Error("SMTP não está disponível");
       const rendered = renderActionEmail({ ...content, includeLogo });
-      const result = await transport.sendMail({
-        from,
-        to,
-        subject,
-        ...rendered,
-        // O remetente do envelope alinhado à conta autenticada melhora SPF/DMARC
-        // quando o nome visível foi personalizado em EMAIL_FROM.
-        ...(user.includes("@") ? { envelope: { from: user, to } } : {}),
-        ...(includeLogo
-          ? { attachments: [{ filename: "dracocall.png", path: logoPath, cid: LOGO_CID }] }
-          : {}),
-      });
-      if (!Array.isArray(result.accepted) || result.accepted.length === 0) {
-        throw new Error("SMTP não aceitou o destinatário");
+      let result;
+      try {
+        result = await transport.sendMail({
+          from,
+          to,
+          subject,
+          ...rendered,
+          // A conta autenticada recebe eventuais bounces. No uso padrão do
+          // Gmail, ela também é o From visível e mantém SPF/DMARC alinhados.
+          ...(authenticatedAddress ? { envelope: { from: authenticatedAddress, to } } : {}),
+          headers: {
+            "Auto-Submitted": "auto-generated",
+            "X-Auto-Response-Suppress": "All",
+          },
+          ...(includeLogo
+            ? { attachments: [{ filename: "dracocall.png", path: logoPath, cid: LOGO_CID }] }
+            : {}),
+        });
+        if (!Array.isArray(result.accepted) || result.accepted.length === 0) {
+          const rejection = new Error("SMTP não aceitou o destinatário");
+          rejection.code = "ERECIPIENT";
+          rejection.responseCode = Number.isInteger(result.responseCode) ? result.responseCode : null;
+          rejection.response = result.response;
+          throw rejection;
+        }
+      } catch (error) {
+        const detail = smtpFailure(error);
+        // Credencial revogada não é temporária. O front deixa de anunciar que
+        // consegue enviar até que a configuração seja corrigida e reiniciada.
+        if (detail.codigo === "EAUTH" || detail.respostaCodigo === 535) available = false;
+        log.error("envio SMTP falhou", {
+          destinatario: domain(to),
+          assunto: subject,
+          aceitos: Array.isArray(result?.accepted) ? result.accepted.length : 0,
+          rejeitados: Array.isArray(result?.rejected) ? result.rejected.length : 0,
+          pendentes: Array.isArray(result?.pending) ? result.pending.length : 0,
+          ...detail,
+        });
+        throw error;
       }
-      return { messageId: result.messageId ?? null, accepted: result.accepted.length };
+      const delivery = {
+        messageId: result.messageId ?? null,
+        accepted: result.accepted.length,
+        rejected: Array.isArray(result.rejected) ? result.rejected.length : 0,
+        pending: Array.isArray(result.pending) ? result.pending.length : 0,
+        response: safeSmtpText(result.response),
+      };
+      log.info("e-mail aceito pelo SMTP; entrega final depende do provedor destinatário", {
+        destinatario: domain(to),
+        assunto: subject,
+        messageId: delivery.messageId,
+        aceitos: delivery.accepted,
+        rejeitados: delivery.rejected,
+        pendentes: delivery.pending,
+        resposta: delivery.response,
+      });
+      return delivery;
     },
   };
 }

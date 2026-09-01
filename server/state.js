@@ -282,11 +282,8 @@ export function setVoiceState(userId, patch) {
   for (const key of ["muted", "deafened", "camOn", "screenOn", "speaking"]) {
     if (typeof patch?.[key] === "boolean") member[key] = patch[key];
   }
-  if (patch?.camOn === false) delete member.sfuTracks.camera;
-  if (patch?.screenOn === false) {
-    delete member.sfuTracks.screen;
-    delete member.sfuTracks.screenAudio;
-  }
+  // Câmera e tela desligadas usam `replaceTrack(null)`: a publicação continua
+  // válida e volta sem renegociar. Os flags impedem assiná-la enquanto desligada.
   return member;
 }
 

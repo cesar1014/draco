@@ -21,6 +21,7 @@ export const CATEGORIES = [
   "AUTH",
   "DB",
   "ELECTRON",
+  "MAIL",
   "SCREEN",
   "SFU",
   "SIGNAL",

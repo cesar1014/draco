@@ -51,6 +51,11 @@ export interface CallEngine {
   setTrackProfile(slot: MediaSlot, profile: TrackProfile): Promise<void>;
   /** Ajusta o conjunto de trilhas remotas recebidas. Idempotente. */
   syncRemote(tracks: RemoteTrackRef[]): void;
+  /**
+   * Em malha, envia tela/som somente aos pares que pediram para assistir. No
+   * SFU a mesma seleção é feita pela assinatura remota, então o método é opcional.
+   */
+  setScreenViewers?(viewerIds: string[]): Promise<void>;
   /** Esquece tudo o que vinha desta pessoa, inclusive o que já foi assinado. */
   removePeer(memberId: string): void;
   /** Sinalização em malha. O SFU ignora: quem negocia com ele é o servidor. */

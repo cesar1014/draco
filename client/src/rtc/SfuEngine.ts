@@ -84,6 +84,7 @@ interface Subscription {
   ref: RemoteTrackRef;
   mid: string | null;
   track: MediaStreamTrack | null;
+  stream: MediaStream | null;
 }
 
 /** Recorte do que sobe daqui. Não é o id de ninguém: não colide com um `memberId`. */
@@ -199,29 +200,26 @@ export class SfuEngine implements CallEngine {
     this.#localTracks.set(slot, track);
 
     const publication = this.#publications.get(slot);
-    if (!track && publication && slot !== "mic") {
-      publication.state = "stale";
-      this.#publications.delete(slot);
-      try {
-        await publication.sender.replaceTrack(null);
-        publication.transceiver.stop();
-      } catch {
-        // A conexão pode ter fechado junto com a trilha; ela já foi invalidada.
-      }
-      return;
-    }
-    // Publicação viva aceita a troca sem renegociar, que é o caminho barato: é o
-    // que faz mutar e desmutar, ou trocar de câmera, não custar uma negociação.
+    // Publicação viva aceita inclusive `null`: o transceiver e o nome conhecido
+    // pelo SFU continuam de pé, só o fluxo para. Compartilhar novamente usa a
+    // mesma publicação, sem acumular `m=` nem deixar o servidor na captura velha.
     if (publication && this.#usable(publication)) {
-      try {
-        await publication.sender.replaceTrack(track);
-        if (track) await this.#applyEncodings();
-        return;
-      } catch (error) {
-        // A troca falhou: a publicação não serve mais, mesmo que o objeto exista.
-        console.warn(`[sfu] replaceTrack(${slot}) falhou; republicando:`, error);
-        publication.state = "stale";
-      }
+      await this.#enqueueSend(async () => {
+        // Liga/desliga pode acontecer enquanto outra operação ainda está na
+        // fila. Só a intenção mais recente deve chegar ao sender.
+        if (this.#localTracks.get(slot) !== track || !this.#usable(publication)) return;
+        try {
+          await publication.sender.replaceTrack(track);
+          if (track) await this.#applyEncodings();
+        } catch (error) {
+          // A troca falhou: a publicação não serve mais, mesmo que o objeto exista.
+          console.warn(`[sfu] replaceTrack(${slot}) falhou; republicando:`, error);
+          publication.state = "stale";
+        }
+      });
+      // Uma falha de `replaceTrack` com uma trilha nova cai imediatamente na
+      // republicação abaixo; não exige que a pessoa clique uma terceira vez.
+      if (publication.state !== "stale" || this.#localTracks.get(slot) !== track) return;
     }
 
     // Sem trilha ainda não há o que publicar: o SFU precisa de mídia real no
@@ -257,7 +255,12 @@ export class SfuEngine implements CallEngine {
       .map(([, ref]) => ref);
     if (missing.length === 0) return;
     for (const ref of missing) {
-      this.#subscriptions.set(slotKey(ref.memberId, ref.slot), { ref, mid: null, track: null });
+      this.#subscriptions.set(slotKey(ref.memberId, ref.slot), {
+        ref,
+        mid: null,
+        track: null,
+        stream: null,
+      });
     }
     void this.#enqueueRecv(() => this.#subscribe(missing));
   }
@@ -300,6 +303,17 @@ export class SfuEngine implements CallEngine {
     track.onunmute = null;
     track.onmute = null;
     track.onended = null;
+    if (current.stream) {
+      this.options.onRemoteTrack(
+        current.ref.memberId,
+        current.ref.slot,
+        current.stream,
+        false,
+      );
+    }
+    // Uma tela fora da lista desejada não deve continuar sendo decodificada em
+    // segundo plano. Um novo clique pede outra trilha ao SFU.
+    track.stop();
   }
 
   // --- recuperação de rede ---------------------------------------------------
@@ -361,17 +375,7 @@ export class SfuEngine implements CallEngine {
     if (this.#closed || this.#failed) return;
     this.#failed = true;
     this.#invalidatePublications();
-    for (const [key, subscription] of [...this.#subscriptions]) {
-      if (subscription.track) {
-        this.options.onRemoteTrack(
-          subscription.ref.memberId,
-          subscription.ref.slot,
-          new MediaStream([subscription.track]),
-          false,
-        );
-      }
-      this.#release(key);
-    }
+    for (const key of [...this.#subscriptions.keys()]) this.#release(key);
     this.options.onFailure?.(reason);
   }
 
@@ -557,8 +561,8 @@ export class SfuEngine implements CallEngine {
   #attach(ref: RemoteTrackRef, track: MediaStreamTrack, mid: string): void {
     const key = slotKey(ref.memberId, ref.slot);
     this.#release(key);
-    this.#subscriptions.set(key, { ref, mid, track });
     const stream = new MediaStream([track]);
+    this.#subscriptions.set(key, { ref, mid, track, stream });
     const report = (live: boolean) =>
       this.options.onRemoteTrack(ref.memberId, ref.slot, stream, live);
     // `muted` aqui é "ainda não chega mídia", não o mute do usuário.
