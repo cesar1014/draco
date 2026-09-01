@@ -16,6 +16,7 @@ const IP_B = "198.51.100.25";
 const IP_V6 = "2001:db8::77";
 const headers = { "user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/140.0" };
 let repository;
+let failMail = false;
 
 const mailToken = () => new URL(sent.at(-1).action).searchParams.get("token");
 
@@ -30,10 +31,48 @@ try {
   const service = createAccountService({
     repository,
     auth: authority,
-    mailer: { ready: true, send: async (mail) => sent.push(mail) },
+    mailer: {
+      ready: true,
+      send: async (mail) => {
+        if (failMail) throw new Error("SMTP indisponível no teste");
+        sent.push(mail);
+      },
+    },
     colorForName: () => "#5b6cff",
     env: { APP_URL: "https://draco.teste" },
   });
+
+  failMail = true;
+  assert.equal((await service.register({
+    email: "falha@example.com", displayName: "Falha", publicId: "id.falha", age: 18,
+    password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
+  }, IP_A)).error, "email-failed");
+  assert.equal(repository.accountByEmail("falha@example.com"), null, "falha no envio libera o e-mail");
+  assert.equal(repository.accountByPublicId("id.falha"), null, "falha no envio libera o ID");
+  failMail = false;
+
+  assert.deepEqual(await service.register({
+    email: "temporaria@example.com", displayName: "Temporária", publicId: "id.temporario", age: 18,
+    password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
+  }, IP_A), { ok: true });
+  const expiredRegistrationToken = mailToken();
+  assert.equal((await service.register({
+    email: "outra@example.com", displayName: "Outra", publicId: "ID.TEMPORARIO", age: 18,
+    password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
+  }, IP_A)).error, "public-id-taken", "IDs pendentes também são únicos sem diferenciar maiúsculas");
+  repository.database.prepare("UPDATE accounts SET created_at = ? WHERE email = ?").run(
+    Date.now() - 16 * 60 * 1000,
+    "temporaria@example.com",
+  );
+  assert.equal(service.cleanupExpiredRegistrations(), 1);
+  assert.equal(repository.accountByEmail("temporaria@example.com"), null, "cadastro não confirmado é apagado após 15 minutos");
+  assert.equal(repository.accountByPublicId("id.temporario"), null, "ID do cadastro expirado volta a ficar livre");
+  assert.deepEqual(await service.verifyEmail(expiredRegistrationToken), { ok: false, error: "token-invalid" });
+  assert.deepEqual(await service.register({
+    email: "temporaria@example.com", displayName: "Temporária", publicId: "id.temporario", age: 18,
+    password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
+  }, IP_A), { ok: true }, "e-mail e ID expirados podem ser cadastrados novamente");
+  repository.deletePendingAccount(repository.accountByEmail("temporaria@example.com").userId);
 
   assert.deepEqual(await service.register({
     email: "ana@example.com", displayName: "Ana", publicId: "ana101", age: 17,
@@ -48,6 +87,7 @@ try {
     password: "Senha-super-segura", passwordConfirmation: "Senha-super-segura",
   }, IP_A), { ok: true });
   assert.equal(sent.at(-1).subject, "[DracoCall] Confirme seu e-mail");
+  assert.match(sent.at(-1).expiresIn, /15 minutos/u);
   assert.equal(sent.at(-1).recipientName, "Ana");
   assert.equal(repository.accountByEmail("ana@example.com").publicId, "ana101");
   assert.equal((await service.resendVerification({

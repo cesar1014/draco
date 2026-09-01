@@ -60,6 +60,24 @@ assert.deepEqual(await mailer.send({
   actionLabel: "Abrir",
 }), { messageId: "mail-test", accepted: 1 });
 assert.equal(deliveries[0].from, "DracoCall <conta@example.test>");
+assert.deepEqual(deliveries[0].envelope, {
+  from: "conta@example.test",
+  to: "destino@example.test",
+});
+
+const unavailable = createMailer({
+  SMTP_HOST: "smtp.example.test",
+  SMTP_USER: "conta@example.test",
+  SMTP_PASS: "segredo",
+}, {
+  logoAvailable: false,
+  createTransport: () => ({
+    verify: async () => { throw new Error("credencial recusada"); },
+    sendMail: async () => { throw new Error("não deveria enviar"); },
+  }),
+});
+await assert.rejects(() => unavailable.verify(), /credencial recusada/u);
+assert.equal(unavailable.ready, false, "SMTP recusado não é anunciado como disponível");
 
 const rejected = createMailer({
   SMTP_HOST: "smtp.example.test",

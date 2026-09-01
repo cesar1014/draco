@@ -3594,9 +3594,25 @@ button.add-guild:hover {
   color: var(--text-faint);
 }
 
-.field em {
+.field > span em,
+.field-error {
   color: var(--bad);
   font-style: normal;
+}
+
+.field-help,
+.field-error {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.field-help {
+  color: var(--text-faint);
+}
+
+.field[data-invalid="true"] input {
+  border-color: rgba(255, 95, 122, 0.78);
+  box-shadow: 0 0 0 2px rgba(255, 95, 122, 0.12);
 }
 
 .hint {

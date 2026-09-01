@@ -5,9 +5,14 @@ import { mediaSupported } from "@/rtc/MediaManager";
 import { useStore } from "@/state/store";
 
 type Mode = "login" | "register" | "forgot" | "guest" | "password" | "verified" | "login-address";
+type RegisterField = "email" | "displayName" | "publicId" | "age" | "password" | "confirmation";
+type RegisterErrors = Partial<Record<RegisterField, string>>;
 
 const validNewPassword = (value: string) =>
   value.length >= 8 && value.length <= 128 && /\p{Ll}/u.test(value) && /\p{Lu}/u.test(value);
+const validEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value.trim());
+const validPublicId = (value: string) =>
+  /^[a-z0-9](?:[a-z0-9_.-]{1,30}[a-z0-9])$/u.test(value.trim().replace(/^@/u, "").toLowerCase());
 
 declare global {
   interface Window {
@@ -72,6 +77,7 @@ export function JoinScreen() {
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [registerErrors, setRegisterErrors] = useState<RegisterErrors>({});
   const [botToken, setBotToken] = useState<string | null>(null);
   const turnstileHost = useRef<HTMLDivElement>(null);
   const turnstileWidget = useRef<string | null>(null);
@@ -130,9 +136,38 @@ export function JoinScreen() {
   const numericAge = Number(age);
   const adultAge = Number.isInteger(numericAge) && numericAge >= 18 && numericAge <= 120;
 
+  function clearRegisterError(field: RegisterField) {
+    setRegisterErrors((current) => current[field] ? { ...current, [field]: undefined } : current);
+  }
+
+  function registrationErrors(): RegisterErrors {
+    const errors: RegisterErrors = {};
+    if (!validEmail(email)) errors.email = "Digite um e-mail válido.";
+    if (username.trim().replace(/\s+/gu, " ").length < 2) {
+      errors.displayName = "Digite um nome de pelo menos 2 caracteres.";
+    }
+    if (!validPublicId(publicId)) {
+      errors.publicId = "Use de 3 a 32 caracteres: letras, números, ponto, hífen ou sublinhado.";
+    }
+    if (!adultAge) errors.age = "Informe uma idade entre 18 e 120 anos.";
+    if (!validNewPassword(password)) {
+      errors.password = "Use de 8 a 128 caracteres, com letra maiúscula e minúscula.";
+    }
+    if (!confirmation || password !== confirmation) errors.confirmation = "As duas senhas precisam ser iguais.";
+    return errors;
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (connecting) return;
+    if (mode === "register") {
+      const errors = registrationErrors();
+      if (Object.keys(errors).length > 0) {
+        setRegisterErrors(errors);
+        setMessage(null);
+        return;
+      }
+    }
     if (turnstileSiteKey && botProtected && !botToken) {
       setMessage("Conclua a verificação antirobô.");
       return;
@@ -142,24 +177,39 @@ export function JoinScreen() {
     if (mode === "login") {
       await connect(email, password, botToken);
     } else if (mode === "register") {
-      if (!validNewPassword(password)) {
-        setMessage("A senha precisa ter no mínimo 8 caracteres, uma letra maiúscula e uma minúscula.");
-      } else if (password !== confirmation) {
-        setMessage("As duas senhas precisam ser iguais.");
-      } else if (!adultAge) {
-        setMessage("O Draco é exclusivo para pessoas com 18 anos ou mais.");
+      const error = await register(
+        email,
+        username,
+        publicId,
+        numericAge,
+        password,
+        confirmation,
+        botToken,
+      );
+      if (!error) {
+        setRegisterErrors({});
+        setMessage("E-mail de confirmação enviado. Confirme em até 15 minutos para concluir o cadastro.");
+        setMode("login");
       } else {
-        const error = await register(
-          email,
-          username,
-          publicId,
-          numericAge,
-          password,
-          confirmation,
-          botToken,
-        );
-        setMessage(error ?? "Conta criada. Abra o e-mail de confirmação para liberar o acesso.");
-        if (!error) setMode("login");
+        const field = error.code === "email-taken" || error.code === "bad-email"
+          ? "email"
+          : error.code === "public-id-taken" || error.code === "bad-public-id"
+            ? "publicId"
+            : error.code === "bad-username"
+              ? "displayName"
+              : error.code === "adult-required"
+                ? "age"
+                : error.code === "bad-password-format"
+                  ? "password"
+                  : error.code === "password-mismatch"
+                    ? "confirmation"
+                    : null;
+        if (field) {
+          setRegisterErrors({ [field]: error.message });
+          setMessage(null);
+        } else {
+          setMessage(error.message);
+        }
       }
     } else if (mode === "forgot") {
       const error = await requestPassword(email, botToken);
@@ -206,6 +256,7 @@ export function JoinScreen() {
     setConfirmation("");
     setAge("");
     setPublicId("");
+    setRegisterErrors({});
     setMessage(null);
     useStore.setState({ joinError: null });
   }
@@ -217,7 +268,7 @@ export function JoinScreen() {
       <Constellation exploding={false} />
       <div className="join-glow" aria-hidden="true" />
 
-      <form className="join-card account-card" onSubmit={submit}>
+      <form className="join-card account-card" onSubmit={submit} noValidate>
         <div className="join-logo"><BrandMark size={72} /></div>
         <h1>Draco</h1>
         <p className="join-subtitle">
@@ -225,56 +276,78 @@ export function JoinScreen() {
         </p>
 
         {(mode === "login" || mode === "register" || mode === "forgot") && (
-          <label className="field">
+          <label className="field" data-invalid={mode === "register" && Boolean(registerErrors.email)}>
             <span>E-mail <em>*</em></span>
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" autoFocus placeholder="voce@email.com" />
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => { setEmail(event.target.value); clearRegisterError("email"); }}
+              autoComplete="email"
+              autoFocus
+              placeholder="voce@email.com"
+              aria-invalid={mode === "register" && Boolean(registerErrors.email)}
+            />
+            {mode === "register" && registerErrors.email && <small className="field-error">{registerErrors.email}</small>}
           </label>
         )}
 
         {(mode === "register" || mode === "guest") && (
-          <label className="field">
+          <label className="field" data-invalid={mode === "register" && Boolean(registerErrors.displayName)}>
             <span>{mode === "guest" ? "Apelido temporário" : "Nome exibido"} <em>*</em></span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} maxLength={32} autoComplete="nickname" autoFocus={mode === "guest"} />
-            {mode === "register" && <em>Não precisa ser único; outras pessoas podem usar o mesmo nome.</em>}
+            <input
+              value={username}
+              onChange={(event) => { setUsername(event.target.value); clearRegisterError("displayName"); }}
+              maxLength={32}
+              autoComplete="nickname"
+              autoFocus={mode === "guest"}
+              aria-invalid={mode === "register" && Boolean(registerErrors.displayName)}
+            />
+            {mode === "register" && <small className="field-help">Não precisa ser único; outras pessoas podem usar o mesmo nome.</small>}
+            {mode === "register" && registerErrors.displayName && <small className="field-error">{registerErrors.displayName}</small>}
           </label>
         )}
 
         {mode === "register" && (
-          <label className="field">
+          <label className="field" data-invalid={Boolean(registerErrors.publicId)}>
             <span>ID público <em>*</em></span>
             <input
               value={publicId}
-              onChange={(event) => setPublicId(event.target.value.toLowerCase())}
+              onChange={(event) => { setPublicId(event.target.value.toLowerCase()); clearRegisterError("publicId"); }}
               minLength={3}
               maxLength={32}
-              autoComplete="username"
-              placeholder="cesar1014"
+              autoComplete="off"
+              placeholder="seu.id"
               spellCheck={false}
+              aria-invalid={Boolean(registerErrors.publicId)}
             />
-            <em>Único e usado pelos amigos para encontrar você. Letras, números, ponto, hífen ou sublinhado.</em>
+            <small className="field-help">Único e usado pelos amigos para encontrar você. Letras, números, ponto, hífen ou sublinhado.</small>
+            {registerErrors.publicId && <small className="field-error">{registerErrors.publicId}</small>}
           </label>
         )}
 
         {ageRequired && (
-          <label className="field">
+          <label className="field" data-invalid={mode === "register" && Boolean(registerErrors.age)}>
             <span>Idade <em>*</em></span>
-            <input type="number" inputMode="numeric" value={age} onChange={(event) => setAge(event.target.value)} min={18} max={120} step={1} autoComplete="off" placeholder="18 ou mais" />
-            <em>É necessário ter 18 anos ou mais.</em>
+            <input type="number" inputMode="numeric" value={age} onChange={(event) => { setAge(event.target.value); clearRegisterError("age"); }} min={18} max={120} step={1} autoComplete="off" placeholder="18 ou mais" aria-invalid={mode === "register" && Boolean(registerErrors.age)} />
+            <small className="field-help">É necessário ter 18 anos ou mais.</small>
+            {mode === "register" && registerErrors.age && <small className="field-error">{registerErrors.age}</small>}
           </label>
         )}
 
         {(mode === "login" || mode === "register" || mode === "password") && (
-          <label className="field">
+          <label className="field" data-invalid={mode === "register" && Boolean(registerErrors.password)}>
             <span>Senha <em>*</em></span>
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} />
-            {mode !== "login" && <em>Mínimo de 8 caracteres, com letra maiúscula e minúscula.</em>}
+            <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); clearRegisterError("password"); }} minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-invalid={mode === "register" && Boolean(registerErrors.password)} />
+            {mode !== "login" && <small className="field-help">Mínimo de 8 caracteres, com letra maiúscula e minúscula.</small>}
+            {mode === "register" && registerErrors.password && <small className="field-error">{registerErrors.password}</small>}
           </label>
         )}
 
         {(mode === "register" || mode === "password") && (
-          <label className="field">
+          <label className="field" data-invalid={mode === "register" && Boolean(registerErrors.confirmation)}>
             <span>Confirmar senha <em>*</em></span>
-            <input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={8} maxLength={128} autoComplete="new-password" />
+            <input type="password" value={confirmation} onChange={(event) => { setConfirmation(event.target.value); clearRegisterError("confirmation"); }} minLength={8} maxLength={128} autoComplete="new-password" aria-invalid={mode === "register" && Boolean(registerErrors.confirmation)} />
+            {mode === "register" && registerErrors.confirmation && <small className="field-error">{registerErrors.confirmation}</small>}
           </label>
         )}
 
@@ -284,7 +357,7 @@ export function JoinScreen() {
         {(message || joinError) && <p className={success ? "join-success" : "join-error"}>{message ?? joinError}</p>}
 
         {mode !== "verified" && mode !== "login-address" && (
-          <button type="submit" className="join-submit" disabled={connecting || Boolean(turnstileSiteKey && botProtected && !botToken) || (mode !== "guest" && mode !== "password" && !email.trim()) || (mode === "login" && password.length < 8) || ((mode === "register" || mode === "password") && (!validNewPassword(password) || confirmation.length < 8)) || ((mode === "register" || mode === "guest") && username.trim().length < 2) || (mode === "register" && publicId.trim().replace(/^@/u, "").length < 3) || (ageRequired && !adultAge)}>
+          <button type="submit" className="join-submit" disabled={connecting || Boolean(turnstileSiteKey && botProtected && !botToken) || (mode === "login" && (!email.trim() || password.length < 8)) || (mode === "forgot" && !email.trim()) || (mode === "guest" && (username.trim().length < 2 || !adultAge)) || (mode === "password" && (!validNewPassword(password) || confirmation.length < 8))}>
             {connecting ? "Aguarde…" : mode === "register" ? "Criar conta" : mode === "forgot" ? "Enviar link" : mode === "guest" ? "Entrar como visitante" : mode === "password" ? "Salvar senha" : "Entrar"}
           </button>
         )}

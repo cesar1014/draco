@@ -150,8 +150,8 @@ export function createMailer(env = process.env, {
   // autenticada e evita um remetente fictício que falha em SPF/DMARC.
   const from = env.EMAIL_FROM?.trim() || (user?.includes("@") ? `${BRAND_NAME} <${user}>` : "");
   const port = Number(env.SMTP_PORT ?? 587);
-  const ready = Boolean(host && user && pass && from && Number.isInteger(port));
-  const transport = ready
+  const configured = Boolean(host && user && pass && from && Number.isInteger(port));
+  const transport = configured
     ? createTransport({
         host,
         port,
@@ -163,22 +163,37 @@ export function createMailer(env = process.env, {
       })
     : null;
   const includeLogo = logoAvailable;
+  let available = configured;
 
   return {
-    ready,
+    get ready() {
+      return available;
+    },
     async verify() {
-      if (!transport) return false;
-      await transport.verify();
-      return true;
+      if (!transport) {
+        available = false;
+        return false;
+      }
+      try {
+        await transport.verify();
+        available = true;
+        return true;
+      } catch (error) {
+        available = false;
+        throw error;
+      }
     },
     async send({ to, subject, ...content }) {
-      if (!transport) throw new Error("SMTP não configurado");
+      if (!transport || !available) throw new Error("SMTP não está disponível");
       const rendered = renderActionEmail({ ...content, includeLogo });
       const result = await transport.sendMail({
         from,
         to,
         subject,
         ...rendered,
+        // O remetente do envelope alinhado à conta autenticada melhora SPF/DMARC
+        // quando o nome visível foi personalizado em EMAIL_FROM.
+        ...(user.includes("@") ? { envelope: { from: user, to } } : {}),
         ...(includeLogo
           ? { attachments: [{ filename: "dracocall.png", path: logoPath, cid: LOGO_CID }] }
           : {}),

@@ -247,6 +247,12 @@ const { auth, source: secretSource } = createSessionAuthority({ readSetting, wri
 const mailer = createMailer(process.env);
 const accountService = createAccountService({ auth, mailer, colorForName, env: process.env });
 const accountLimiter = new PersistentRateLimiter(accountService.repository.database);
+accountService.cleanupExpiredRegistrations();
+const registrationCleanup = setInterval(
+  () => accountService.cleanupExpiredRegistrations(),
+  15_000,
+);
+registrationCleanup.unref();
 const telemetry = new Telemetry();
 const attachments = new AttachmentRepository(accountService.repository.database, objectStorage, process.env);
 const communication = new CommunicationRepository(accountService.repository.database, attachments);
@@ -609,6 +615,7 @@ async function shutdown(signal) {
   try {
     await new Promise((resolve) => io.close(resolve));
     clearInterval(uploadCleanup);
+    clearInterval(registrationCleanup);
     accountService.close();
     telemetry.close();
     closeState();

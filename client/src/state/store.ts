@@ -447,7 +447,7 @@ interface Store {
     password: string,
     passwordConfirmation: string,
     botToken?: string | null,
-  ) => Promise<string | null>;
+  ) => Promise<{ code?: string; message: string } | null>;
   resendVerification: (email: string, password: string, botToken?: string | null) => Promise<string | null>;
   verifyEmail: (token: string) => Promise<string | null>;
   confirmLoginAddress: (token: string) => Promise<string | null>;
@@ -1532,7 +1532,7 @@ export const useStore = create<Store>()((set, get) => {
         passwordConfirmation,
         botToken,
       );
-      return reply.ok ? null : describeAuthError(reply.error);
+      return reply.ok ? null : { code: reply.error, message: describeAuthError(reply.error) };
     },
 
     async resendVerification(email, password, botToken = null) {

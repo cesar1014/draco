@@ -16,6 +16,7 @@ function mapAccount(row) {
     isSystemAdmin: row.is_system_admin === 1,
     sessionVersion: row.session_version,
     disabledAt: row.disabled_at ?? null,
+    createdAt: row.created_at,
   };
 }
 
@@ -44,6 +45,26 @@ export class AccountRepository {
         JOIN users u ON u.id = a.user_id
         LEFT JOIN profiles p ON p.user_id = a.user_id
         WHERE a.user_id = ?
+      `),
+      deletePendingAccount: database.prepare(`
+        DELETE FROM users
+        WHERE id = @userId
+          AND EXISTS (
+            SELECT 1 FROM accounts a
+            WHERE a.user_id = users.id
+              AND a.email_verified_at IS NULL
+              AND a.is_system_admin = 0
+          )
+      `),
+      deleteExpiredPendingAccounts: database.prepare(`
+        DELETE FROM users
+        WHERE id IN (
+          SELECT a.user_id
+          FROM accounts a
+          WHERE a.email_verified_at IS NULL
+            AND a.is_system_admin = 0
+            AND a.created_at <= @cutoff
+        )
       `),
       insertUser: database.prepare(`
         INSERT INTO users (id, created_at, updated_at) VALUES (@userId, @now, @now)
@@ -401,6 +422,14 @@ export class AccountRepository {
 
   accountById(userId) {
     return mapAccount(this.statements.accountById.get(userId));
+  }
+
+  deletePendingAccount(userId) {
+    return this.statements.deletePendingAccount.run({ userId }).changes > 0;
+  }
+
+  deleteExpiredPendingAccounts(cutoff) {
+    return this.statements.deleteExpiredPendingAccounts.run({ cutoff }).changes;
   }
 
   createAccount({

@@ -15,7 +15,7 @@ A Parte 2 e o endurecimento de segurança solicitado estão concluídos.
 - E-mails de confirmação, novo dispositivo e senha usam template responsivo com logo e identidade DracoCall, texto alternativo e dados dinâmicos escapados.
 - Nome exibido foi separado do ID público único; amizades usam o ID e o perfil permite alterar ambos sem trocar a identidade interna.
 - O dono pode renomear o servidor, com atualização imediata para os membros e registro de auditoria.
-- SMTP é verificado no boot, rejeições de destinatário viram erro e a confirmação de cadastro pode ser reenviada com as credenciais da conta.
+- SMTP é verificado no boot; falha/rejeição desfaz o cadastro, e contas não confirmadas são apagadas em 15 minutos para liberar e-mail e ID.
 - Autorizar um novo dispositivo pelo link já cria a sessão e entra diretamente; menus, gavetas e modais receberam layout específico para mobile.
 
 ## Validação final

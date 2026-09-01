@@ -10,7 +10,7 @@ import {
 } from "./passwords.js";
 import { sanitizePublicId, sanitizeUsername, validAdultAge } from "./security.js";
 
-const VERIFY_TTL = 24 * 60 * 60 * 1000;
+const VERIFY_TTL = 15 * 60 * 1000;
 const RESET_TTL = 60 * 60 * 1000;
 const SETUP_TTL = 48 * 60 * 60 * 1000;
 const NEW_DEVICE_TTL = 15 * 60 * 1000;
@@ -46,13 +46,20 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   const accounts = repository ?? createAccountRepository();
   const origin = appOrigin(env);
 
+  function cleanupExpiredRegistrations(now = Date.now()) {
+    return accounts.deleteExpiredPendingAccounts(now - VERIFY_TTL);
+  }
+
   async function actionMail(account, purpose, context = {}) {
     if (!mailer?.ready) return { ok: false, error: "email-unavailable" };
     const raw = createActionToken();
     const setup = purpose === "admin_setup";
     const verify = purpose === "verify_email";
     const newDevice = purpose === "new_device";
-    const expiresAt = Date.now() + (newDevice ? NEW_DEVICE_TTL : setup ? SETUP_TTL : verify ? VERIFY_TTL : RESET_TTL);
+    const expiresAt = verify
+      ? account.createdAt + VERIFY_TTL
+      : Date.now() + (newDevice ? NEW_DEVICE_TTL : setup ? SETUP_TTL : RESET_TTL);
+    if (expiresAt <= Date.now()) throw new Error("cadastro pendente expirado");
     if (newDevice) {
       if (!context.addressHash) throw new Error("endereço ausente no desafio de login");
       accounts.createLoginChallenge({
@@ -84,7 +91,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
           text: "Só falta confirmar que este endereço pertence a você para liberar sua conta no DracoCall.",
           actionLabel: "Confirmar e-mail",
           preheader: "Confirme seu endereço de e-mail para começar a usar o DracoCall.",
-          expiresIn: "Este link expira em 24 horas e só pode ser usado uma vez.",
+          expiresIn: "Este link expira 15 minutos após o cadastro e só pode ser usado uma vez.",
         }
       : newDevice
         ? {
@@ -143,6 +150,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     },
     rawAddress,
   ) {
+    cleanupExpiredRegistrations();
     const email = normalizeEmail(rawEmail);
     const displayName = sanitizeUsername(rawDisplayName ?? legacyUsername);
     const publicId = sanitizePublicId(rawPublicId ?? legacyUsername);
@@ -158,17 +166,30 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     if (accounts.accountByEmail(email)) return { ok: false, error: "email-taken" };
     if (accounts.accountByPublicId(publicId)) return { ok: false, error: "public-id-taken" };
 
-    const account = accounts.createAccount({
-      userId: randomUUID(),
-      email,
-      publicId,
-      displayName,
-      passwordHash: await hashPassword(password),
-      color: colorForName(displayName),
-    });
+    let account;
     try {
-      await actionMail(account, "verify_email");
+      account = accounts.createAccount({
+        userId: randomUUID(),
+        email,
+        publicId,
+        displayName,
+        passwordHash: await hashPassword(password),
+        color: colorForName(displayName),
+      });
     } catch (error) {
+      if (String(error?.code ?? "").startsWith("SQLITE_CONSTRAINT")) {
+        if (accounts.accountByEmail(email)) return { ok: false, error: "email-taken" };
+        if (accounts.accountByPublicId(publicId)) return { ok: false, error: "public-id-taken" };
+      }
+      throw error;
+    }
+    try {
+      const sent = await actionMail(account, "verify_email");
+      if (!sent.ok) throw new Error("SMTP indisponível durante o cadastro");
+    } catch (error) {
+      // Sem entrega aceita pelo SMTP não existe cadastro utilizável. Remover a
+      // conta também libera imediatamente o e-mail e o ID para outra tentativa.
+      accounts.deletePendingAccount(account.userId);
       return { ok: false, error: "email-failed", detail: error };
     }
     return { ok: true };
@@ -218,6 +239,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     deviceToken: presentedDeviceToken,
     legacyDeviceToken = null,
   }, rawAddress, headers = {}) {
+    cleanupExpiredRegistrations();
     const email = normalizeEmail(rawEmail);
     const account = email ? accounts.accountByEmail(email) : null;
     // Mesmo trabalho de hash quando o e-mail não existe reduz a diferença de
@@ -308,6 +330,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   }
 
   async function resendVerification({ email: rawEmail, password }) {
+    cleanupExpiredRegistrations();
     const email = normalizeEmail(rawEmail);
     const account = email ? accounts.accountByEmail(email) : null;
     const fallback = "scrypt$32768$8$3$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -370,6 +393,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   }
 
   async function verifyEmail(rawToken) {
+    cleanupExpiredRegistrations();
     const tokenHash = hashActionToken(rawToken);
     const token = accounts.token(tokenHash);
     if (
@@ -386,6 +410,7 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
   }
 
   async function requestPassword(rawEmail, purpose = "password_reset") {
+    cleanupExpiredRegistrations();
     const email = normalizeEmail(rawEmail);
     const account = email ? accounts.accountByEmail(email) : null;
     // Resposta deliberadamente igual para endereço existente ou não.
@@ -509,9 +534,12 @@ export function createAccountService({ repository, auth, mailer, colorForName, e
     revokeSession,
     revokeAllSessions,
     logout,
+    cleanupExpiredRegistrations,
     bootstrapSystemAdmin,
     publicAccount,
-    emailReady: Boolean(mailer?.ready),
+    get emailReady() {
+      return Boolean(mailer?.ready);
+    },
     close: () => {
       if (accounts.database?.open) accounts.database.close();
     },
