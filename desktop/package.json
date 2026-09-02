@@ -1,57 +1,62 @@
 {
-  "name": "draco-desktop",
+  "name": "draco",
   "version": "1.0.1",
   "private": true,
-  "description": "Draco para Windows, com seletor de telas e janelas.",
-  "author": "Cesar",
-  "main": "main.js",
+  "type": "module",
+  "description": "Draco: voz, vídeo e compartilhamento de tela em grupo, direto entre os navegadores.",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win"
+    "dev": "concurrently -k -n api,web -c blue,magenta npm:dev:server npm:dev:client",
+    "dev:server": "node server/index.js --dev",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "share": "concurrently -k -n app,tunnel -c blue,green npm:start npm:tunnel",
+    "lan": "npm run build && node server/index.js --https",
+    "tunnel": "cloudflared tunnel --url http://localhost:3100",
+    "icons": "node tools/make-icons.mjs",
+    "app": "npm --prefix desktop start",
+    "app:install": "cd desktop && npm install",
+    "app:build": "npm --prefix desktop run dist",
+    "test": "npm run typecheck && npm run test:logic && npm run test:accounts && npm run test:mail && npm run test:social && npm run test:server && npm run test:persistence && npm run test:backup && npm run test:storage && npm run test:media && npm run test:screen && npm run test:security",
+    "typecheck": "tsc --noEmit",
+    "test:logic": "node tools/test-server-logic.mjs",
+    "test:accounts": "node tools/test-accounts.mjs",
+    "test:mail": "node tools/test-mail.mjs",
+    "test:social": "node tools/test-social.mjs",
+    "test:server": "node tools/test-signaling.mjs",
+    "test:persistence": "node tools/test-persistence.mjs",
+    "test:backup": "node tools/test-backup.mjs",
+    "test:storage": "node tools/test-storage.mjs",
+    "test:media": "node tools/test-media.mjs",
+    "test:screen": "node tools/test-screenshare.mjs",
+    "test:security": "npm run build && node tools/test-security.mjs",
+    "db:backup": "node tools/backup-sqlite.mjs",
+    "db:restore": "node tools/restore-sqlite.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.10.0",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "helmet": "8.3.0",
+    "nodemailer": "^9.0.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "electron": "41.10.7",
-    "electron-builder": "26.15.3"
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^10.0.5",
+    "esbuild": "0.25.12",
+    "selfsigned": "^5.5.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
   },
   "engines": {
     "node": ">=24.0.0 <25"
-  },
-  "build": {
-    "npmRebuild": false,
-    "appId": "com.cesar.draco",
-    "productName": "Draco",
-    "artifactName": "draco-setup-${version}.${ext}",
-    "files": [
-      "main.js",
-      "preload.js",
-      "updater.js",
-      "status.html",
-      "icon.png",
-      "!node_modules"
-    ],
-    "directories": {
-      "output": "out"
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "icon": "icon.png"
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "cesar1014",
-      "repo": "draco"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "shortcutName": "Draco"
-    }
-  },
-  "dependencies": {
-    "electron-updater": "^6.8.9"
   }
 }
