@@ -29,7 +29,7 @@
     "test:storage": "node tools/test-storage.mjs",
     "test:media": "node tools/test-media.mjs",
     "test:screen": "node tools/test-screenshare.mjs",
-    "test:security": "node tools/test-security.mjs",
+    "test:security": "npm run build && node tools/test-security.mjs",
     "db:backup": "node tools/backup-sqlite.mjs",
     "db:restore": "node tools/restore-sqlite.mjs"
   },
