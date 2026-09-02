@@ -91,6 +91,14 @@ assert.equal(acceptedEvent.detail.aceitos, 1);
 assert.equal(acceptedEvent.detail.rejeitados, 0);
 assert.equal(acceptedEvent.detail.resposta, "250 2.0.0 enfileirado");
 
+const mail = {
+  subject: "[DracoCall] Teste",
+  title: "Teste de entrega",
+  text: "Mensagem transacional.",
+  action,
+  actionLabel: "Abrir",
+};
+
 const unavailable = createMailer({
   SMTP_HOST: "smtp.example.test",
   SMTP_USER: "conta@example.test",
@@ -99,12 +107,62 @@ const unavailable = createMailer({
   logoAvailable: false,
   log: testLog,
   createTransport: () => ({
-    verify: async () => { throw new Error("credencial recusada"); },
+    verify: async () => {
+      const error = new Error("535 5.7.8 credencial recusada");
+      error.code = "EAUTH";
+      error.responseCode = 535;
+      throw error;
+    },
     sendMail: async () => { throw new Error("não deveria enviar"); },
   }),
 });
 await assert.rejects(() => unavailable.verify(), /credencial recusada/u);
-assert.equal(unavailable.ready, false, "SMTP recusado não é anunciado como disponível");
+assert.equal(unavailable.ready, false, "credencial recusada não é anunciada como disponível");
+await assert.rejects(
+  () => unavailable.send({ to: "destino@example.test", ...mail }),
+  /credencial recusada/u,
+  "credencial recusada bloqueia o envio em vez de tentar",
+);
+
+// Uma falha passageira no boot não pode desligar o e-mail do processo inteiro.
+const flaky = createMailer({
+  SMTP_HOST: "smtp.example.test",
+  SMTP_USER: "conta@example.test",
+  SMTP_PASS: "segredo",
+}, {
+  logoAvailable: false,
+  log: testLog,
+  createTransport: () => ({
+    verify: async () => {
+      const error = new Error("connect ETIMEDOUT 203.0.113.9:587");
+      error.code = "ETIMEDOUT";
+      error.command = "CONN";
+      throw error;
+    },
+    sendMail: async (message) => ({
+      accepted: [message.to],
+      rejected: [],
+      messageId: "flaky-test",
+      response: "250 2.0.0 enfileirado",
+    }),
+  }),
+});
+await assert.rejects(() => flaky.verify(), /ETIMEDOUT/u);
+assert.equal(flaky.ready, true, "SMTP fora do ar no boot continua disponível para novas tentativas");
+const bootEvent = mailEvents.findLast((event) => event.message === "SMTP não verificado");
+assert.equal(bootEvent.detail.categoria, "temporaria");
+assert.equal(bootEvent.detail.codigo, "ETIMEDOUT");
+assert.equal(bootEvent.detail.comando, "CONN");
+assert.equal(
+  JSON.stringify(bootEvent.detail).includes("segredo"),
+  false,
+  "o diagnóstico do boot não carrega a senha",
+);
+assert.equal(
+  (await flaky.send({ to: "destino@example.test", ...mail })).accepted,
+  1,
+  "a requisição seguinte tenta enviar uma vez, sem depender do boot",
+);
 
 const rejected = createMailer({
   SMTP_HOST: "smtp.example.test",

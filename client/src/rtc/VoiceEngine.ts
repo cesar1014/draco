@@ -241,6 +241,17 @@ export class VoiceEngine implements CallEngine {
   }
 
   /**
+   * Em malha não há publicação num servidor pra encerrar: acabar com a transmissão
+   * é soltar a trilha de cada sender, que é o que `setLocalTrack` já faz. O
+   * `track` dá a mesma garantia do caminho com SFU — uma parada atrasada da
+   * transmissão anterior não derruba a que subiu depois.
+   */
+  async unpublish(slot: MediaSlot, track?: MediaStreamTrack | null): Promise<void> {
+    if (track !== undefined && (this.#localTracks.get(slot) ?? null) !== (track ?? null)) return;
+    await this.setLocalTrack(slot, null);
+  }
+
+  /**
    * A malha não tem assinatura no servidor: o próprio transmissor corta a tela
    * de cada sender até aquele par clicar em assistir. Microfone e câmera não
    * passam por esta lista.

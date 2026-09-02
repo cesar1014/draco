@@ -57,6 +57,14 @@ export const newTracks = (config, sessionId, body) =>
 export const renegotiate = (config, sessionId, sessionDescription) =>
   call(config, "PUT", `/sessions/${sessionId}/renegotiate`, { sessionDescription });
 
+/**
+ * Encerra trilhas publicadas. `force` fecha sem renegociar: quem para de
+ * transmitir também para o transceiver do próprio lado, e a transmissão seguinte
+ * sobe com nome novo, então não há descrição pendente pra combinar.
+ */
+export const closeTracks = (config, sessionId, tracks) =>
+  call(config, "PUT", `/sessions/${sessionId}/tracks/close`, { tracks, force: true });
+
 export function createSfuHealth(config, { intervalMs = 60_000 } = {}) {
   let status = config ? "DEGRADED" : "UNAVAILABLE";
   let failures = 0;

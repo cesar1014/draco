@@ -17,7 +17,7 @@
     "app": "npm --prefix desktop start",
     "app:install": "cd desktop && npm install",
     "app:build": "npm --prefix desktop run dist",
-    "test": "npm run typecheck && npm run test:logic && npm run test:accounts && npm run test:mail && npm run test:social && npm run test:server && npm run test:persistence && npm run test:backup && npm run test:storage && npm run test:media && npm run test:security",
+    "test": "npm run typecheck && npm run test:logic && npm run test:accounts && npm run test:mail && npm run test:social && npm run test:server && npm run test:persistence && npm run test:backup && npm run test:storage && npm run test:media && npm run test:screen && npm run test:security",
     "typecheck": "tsc --noEmit",
     "test:logic": "node tools/test-server-logic.mjs",
     "test:accounts": "node tools/test-accounts.mjs",
@@ -28,6 +28,7 @@
     "test:backup": "node tools/test-backup.mjs",
     "test:storage": "node tools/test-storage.mjs",
     "test:media": "node tools/test-media.mjs",
+    "test:screen": "node tools/test-screenshare.mjs",
     "test:security": "node tools/test-security.mjs",
     "db:backup": "node tools/backup-sqlite.mjs",
     "db:restore": "node tools/restore-sqlite.mjs"

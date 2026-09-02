@@ -205,6 +205,12 @@ export interface ProfileReply extends Ack {
 interface SfuPublishReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
 }
+interface SfuUnpublishReply extends SfuReply {
+  /** `false` quando o SFU recusou o fechamento; o registro daqui saiu de qualquer jeito. */
+  closed?: boolean;
+  /** O servidor já tem outra publicação neste slot: o pedido era de uma antiga. */
+  stale?: boolean;
+}
 interface SfuSubscribeReply extends SfuReply {
   description?: RTCSessionDescriptionInit | null;
   requiresImmediateRenegotiation?: boolean;
@@ -237,12 +243,18 @@ interface ClientEvents {
   "sfu:publish": (
     payload: {
       description: RTCSessionDescriptionInit;
-      tracks: Array<{ mid: string; slot: MediaSlot }>;
+      tracks: Array<{ mid: string; slot: MediaSlot; publicationId: string }>;
     },
     ack: (reply: SfuPublishReply) => void,
   ) => void;
+  "sfu:unpublish": (
+    payload: { tracks: Array<{ slot: MediaSlot; mid: string | null; publicationId: string }> },
+    ack: (reply: SfuUnpublishReply) => void,
+  ) => void;
   "sfu:subscribe": (
-    payload: { tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string }> },
+    payload: {
+      tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string; trackName: string | null }>;
+    },
     ack: (reply: SfuSubscribeReply) => void,
   ) => void;
   "sfu:renegotiate": (
@@ -408,12 +420,17 @@ export const sfuJoin = (socket: AppSocket) =>
 export const sfuPublish = (
   socket: AppSocket,
   description: RTCSessionDescriptionInit,
-  tracks: Array<{ mid: string; slot: MediaSlot }>,
+  tracks: Array<{ mid: string; slot: MediaSlot; publicationId: string }>,
 ) => ask<SfuPublishReply>((resolve) => socket.emit("sfu:publish", { description, tracks }, resolve));
+
+export const sfuUnpublish = (
+  socket: AppSocket,
+  tracks: Array<{ slot: MediaSlot; mid: string | null; publicationId: string }>,
+) => ask<SfuUnpublishReply>((resolve) => socket.emit("sfu:unpublish", { tracks }, resolve));
 
 export const sfuSubscribe = (
   socket: AppSocket,
-  tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string }>,
+  tracks: Array<{ memberId: string; slot: MediaSlot; sessionId: string; trackName: string | null }>,
 ) => ask<SfuSubscribeReply>((resolve) => socket.emit("sfu:subscribe", { tracks }, resolve));
 
 export const sfuRenegotiate = (

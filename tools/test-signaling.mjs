@@ -409,6 +409,11 @@ try {
     (await emit(a, "sfu:subscribe", { tracks: [{ memberId: idB, slot: "mic" }] })).error,
     "no-sfu",
   );
+  check(
+    "sfu:unpublish recusa sem credenciais",
+    (await emit(a, "sfu:unpublish", { tracks: [{ slot: "screen", publicationId: "k7Qm2xTb" }] })).error,
+    "no-sfu",
+  );
 
   // --- estado de voz -------------------------------------------------------
   const stateOnC = waitFor(c, "member:state");

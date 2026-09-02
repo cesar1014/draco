@@ -5,6 +5,11 @@
  * mão: ligar a câmera/tela, desligar e ligar de novo, acumulando publicações até
  * a imagem ficar presa em "Conectando".
  *
+ * A tela pede uma garantia a mais: parar tem que fechar a publicação no SFU, e
+ * cada transmissão nova sobe com identificador próprio. Sem isso o servidor
+ * continua anunciando uma transmissão que já acabou, e quem clica pra assistir
+ * espera para sempre por uma trilha que ninguém alimenta.
+ *
  * A segunda metade cobre o outro defeito da mesma família: compartilhar a tela
  * inteira com o som marcado e a transmissão começar muda, porque o Windows recusa
  * o loopback junto de uma fonte `screen:` em algumas configurações.
@@ -199,10 +204,22 @@ class FakePeerConnection {
   }
 }
 
+/** Que tipo de mídia cada slot carrega, como o motor espera encontrar. */
+const KIND = { mic: "audio", camera: "video", screen: "video", screenAudio: "audio" };
+
 /** Transporte que conta o que o motor pediu ao servidor, e pode recusar o que se pedir. */
 function transportWith(overrides = {}) {
-  const calls = { join: 0, publish: [], subscribe: [], renegotiate: [] };
-  const state = { rejectPublish: false, stale: false, acceptRenegotiate: true, subscribeError: null, ...overrides };
+  const calls = { join: 0, publish: [], published: [], unpublish: [], subscribe: [], renegotiate: [] };
+  const state = {
+    rejectPublish: false,
+    stale: false,
+    acceptRenegotiate: true,
+    subscribeError: null,
+    // Com `attach`, o transporte devolve as trilhas assinadas como a Cloudflare
+    // devolveria, e o motor tem o que entregar a quem está assistindo.
+    attach: false,
+    ...overrides,
+  };
   return {
     calls,
     state,
@@ -212,13 +229,25 @@ function transportWith(overrides = {}) {
     },
     publish: async (_description, tracks) => {
       calls.publish.push(tracks.map((entry) => entry.slot));
+      calls.published.push(...tracks);
       if (state.rejectPublish) return { description: null, stale: state.stale };
       return { description: { type: "answer", sdp: "v=0 sfu" }, stale: false };
+    },
+    unpublish: async (tracks) => {
+      calls.unpublish.push(...tracks);
     },
     subscribe: async (refs) => {
       calls.subscribe.push(refs.map((ref) => `${ref.memberId}|${ref.slot}`));
       if (state.subscribeError) throw new Error(state.subscribeError);
-      return { description: null, tracks: [] };
+      if (!state.attach) return { description: null, tracks: [] };
+      const recv = FakePeerConnection.instances[1];
+      return {
+        description: { type: "offer", sdp: "v=0 sfu-offer" },
+        tracks: refs.map((ref) => ({
+          mid: recv.addTransceiver(new FakeTrack(KIND[ref.slot])).mid,
+          trackName: ref.trackName ?? null,
+        })),
+      };
     },
     renegotiate: async (role) => {
       calls.renegotiate.push(role);
@@ -317,17 +346,119 @@ await test("replaceTrack recusado republica a captura atual", async () => {
   assert.equal(send.getTransceivers().length, 2, "uma publicação nova substitui a inválida");
 });
 
-await test("liga e desliga a tela cinco vezes sem acumular transceivers", async () => {
+/** O identificador com que a última publicação do slot subiu. */
+const publicationId = (transport, slot) =>
+  transport.calls.published.filter((entry) => entry.slot === slot).at(-1)?.publicationId ?? null;
+
+/** As publicações que ainda estão enviando algo nesta conexão. */
+const livePublications = (pc) =>
+  pc.getTransceivers().filter((entry) => entry.currentDirection !== "stopped" && entry.sender.track);
+
+await test("cinco transmissões de tela seguidas, cada uma com publicação própria", async () => {
+  const transport = transportWith();
+  const { engine, send } = makeEngine(transport);
+  const mic = new FakeTrack("audio");
+  await engine.setLocalTrack("mic", mic);
+
+  const publicados = [];
+  for (let round = 0; round < 5; round += 1) {
+    const video = new FakeTrack("video");
+    const audio = new FakeTrack("audio");
+    await engine.setLocalTrack("screen", video);
+    await engine.setLocalTrack("screenAudio", audio);
+    publicados.push(publicationId(transport, "screen"));
+
+    await engine.unpublish("screenAudio", audio);
+    await engine.unpublish("screen", video);
+
+    assert.equal(engine.localTrack("screen"), null, "a transmissão sai do estado do motor");
+    assert.equal(engine.localTrack("screenAudio"), null);
+    assert.deepEqual(
+      transport.calls.unpublish.slice(-2).map((entry) => entry.slot),
+      ["screenAudio", "screen"],
+      "imagem e som são fechados no servidor de mídia",
+    );
+  }
+
+  assert.equal(new Set(publicados).size, 5, "cada transmissão sobe com identificador próprio");
+  assert.equal(publicados.filter(Boolean).length, 5, "e nenhuma sobe sem identificador");
+  assert.deepEqual(
+    transport.calls.unpublish.filter((entry) => entry.slot === "screen").map((entry) => entry.publicationId),
+    publicados,
+    "o servidor recebe o identificador da transmissão que acabou, na ordem em que acabaram",
+  );
+
+  const enviando = livePublications(send);
+  assert.equal(enviando.length, 1, "nada continua enviando além do microfone");
+  assert.equal(enviando[0].sender.track, mic, "e o microfone atravessa as cinco transmissões");
+});
+
+await test("parar a tela duas vezes encerra uma vez", async () => {
+  const transport = transportWith();
+  const { engine, send } = makeEngine(transport);
+  const video = new FakeTrack("video");
+  await engine.setLocalTrack("screen", video);
+
+  // O botão do app e o "parar de compartilhar" do navegador chegando juntos.
+  await Promise.all([engine.unpublish("screen", video), engine.unpublish("screen", video)]);
+  await engine.unpublish("screen", video);
+
+  assert.equal(transport.calls.unpublish.length, 1, "o servidor recebe um fechamento só");
+  assert.equal(send.getTransceivers()[0].currentDirection, "stopped", "e o `m=` da tela está parado");
+  assert.equal(livePublications(send).length, 0);
+});
+
+await test("parada atrasada da transmissão anterior não derruba a que está no ar", async () => {
+  const transport = transportWith();
+  const { engine, send } = makeEngine(transport);
+
+  const primeira = new FakeTrack("video");
+  await engine.setLocalTrack("screen", primeira);
+  const idPrimeira = publicationId(transport, "screen");
+  await engine.unpublish("screen", primeira);
+
+  const segunda = new FakeTrack("video");
+  await engine.setLocalTrack("screen", segunda);
+  assert.notEqual(publicationId(transport, "screen"), idPrimeira, "a transmissão nova tem outro nome");
+
+  // Retorno de chamada atrasado da primeira, com a segunda já transmitindo.
+  await engine.unpublish("screen", primeira);
+
+  assert.equal(engine.localTrack("screen"), segunda, "a transmissão no ar continua publicada");
+  assert.equal(transport.calls.unpublish.length, 1, "e nada além da primeira foi fechado");
+  const enviando = livePublications(send);
+  assert.equal(enviando.length, 1);
+  assert.equal(enviando[0].sender.track, segunda);
+});
+
+await test("tela sem som não publica áudio nem pede fechamento à toa", async () => {
   const transport = transportWith();
   const { engine } = makeEngine(transport);
 
-  for (let round = 0; round < 5; round += 1) {
-    await engine.setLocalTrack("screen", new FakeTrack("video"));
-    await engine.setLocalTrack("screen", null);
-  }
-  assert.equal(transport.calls.publish.length, 1, "a publicação é criada uma vez");
-  assert.equal(FakePeerConnection.instances[0].getTransceivers().length, 1, "não acumula m-lines");
-  assert.equal(FakePeerConnection.instances[0].getTransceivers()[0].sender.track, null);
+  const video = new FakeTrack("video");
+  await engine.setLocalTrack("screen", video);
+  await engine.setLocalTrack("screenAudio", null);
+  assert.deepEqual(transport.calls.publish, [["screen"]], "sem som capturado não há segunda publicação");
+
+  await engine.unpublish("screenAudio", null);
+  await engine.unpublish("screen", video);
+  assert.deepEqual(
+    transport.calls.unpublish.map((entry) => entry.slot),
+    ["screen"],
+    "só a imagem tinha o que fechar",
+  );
+});
+
+await test("sair da call não pede fechamento de trilha em sessão que já morreu", async () => {
+  const transport = transportWith();
+  const { engine } = makeEngine(transport);
+
+  const video = new FakeTrack("video");
+  await engine.setLocalTrack("screen", video);
+  engine.close();
+  await engine.unpublish("screen", video);
+
+  assert.equal(transport.calls.unpublish.length, 0, "as duas sessões inteiras já foram descartadas");
 });
 
 await test("malha só envia tela e som ao par que clicou para assistir", async () => {
@@ -367,6 +498,45 @@ await test("malha só envia tela e som ao par que clicou para assistir", async (
   const closing = engine.setScreenViewers([]);
   await Promise.all([opening, closing]);
   assert.equal(screenSender.track, null, "um clique antigo não vence o fechamento mais novo");
+  engine.close();
+});
+
+await test("na malha, parar a tela solta os senders dela e deixa voz e câmera de pé", async () => {
+  FakePeerConnection.instances = [];
+  const engine = new VoiceEngine({
+    selfId: "transmissor",
+    configuration: {},
+    sendSignal: () => {},
+    onRemoteTrack: () => {},
+  });
+  engine.syncRemote([{ memberId: "espectador", slot: "mic", sessionId: null }]);
+  const [peer] = FakePeerConnection.instances;
+  const mic = new FakeTrack("audio");
+  const camera = new FakeTrack("video");
+  const video = new FakeTrack("video");
+  const audio = new FakeTrack("audio");
+
+  await engine.setLocalTrack("mic", mic);
+  await engine.setLocalTrack("camera", camera);
+  await engine.setLocalTrack("screen", video);
+  await engine.setLocalTrack("screenAudio", audio);
+  await engine.setScreenViewers(["espectador"]);
+  assert.equal(peer.getTransceivers()[2].sender.track, video, "o espectador está recebendo a tela");
+
+  await engine.unpublish("screenAudio", audio);
+  await engine.unpublish("screen", video);
+  assert.equal(peer.getTransceivers()[2].sender.track, null, "e deixa de receber quando a transmissão acaba");
+  assert.equal(peer.getTransceivers()[3].sender.track, null);
+  assert.equal(engine.localTrack("screen"), null);
+  assert.equal(peer.getTransceivers()[0].sender.track, mic, "o microfone continua indo");
+  assert.equal(peer.getTransceivers()[1].sender.track, camera, "e a câmera também");
+
+  // Parada atrasada da anterior com outra transmissão no ar.
+  const nova = new FakeTrack("video");
+  await engine.setLocalTrack("screen", nova);
+  await engine.setScreenViewers(["espectador"]);
+  await engine.unpublish("screen", video);
+  assert.equal(peer.getTransceivers()[2].sender.track, nova, "a transmissão nova segue no ar");
   engine.close();
 });
 
@@ -462,6 +632,41 @@ await test("assinatura de quem reconectou troca junto com a sessão", async () =
   engine.syncRemote([{ memberId: "alguem", slot: "camera", sessionId: "s2" }]);
   await sleep(20);
   assert.equal(transport.calls.subscribe.length, 2, "a sessão nova é assinada de novo");
+});
+
+await test("assistir acompanha a publicação da tela, e fechar libera a recepção", async () => {
+  const transport = transportWith({ attach: true });
+  const relatos = [];
+  const { engine } = makeEngine(transport, {
+    onRemoteTrack: (memberId, slot, _stream, live) => relatos.push(`${memberId}|${slot}|${live}`),
+  });
+
+  engine.syncRemote([
+    { memberId: "dono", slot: "screen", sessionId: "s1", trackName: "dono-screen-aaa" },
+  ]);
+  await sleep(20);
+  assert.deepEqual(relatos, ["dono|screen|true"], "quem clicou pra assistir recebe a trilha");
+
+  // O dono parou e começou outra transmissão: mesma sessão, publicação nova.
+  engine.syncRemote([
+    { memberId: "dono", slot: "screen", sessionId: "s1", trackName: "dono-screen-bbb" },
+  ]);
+  await sleep(20);
+  assert.equal(transport.calls.subscribe.length, 2, "a publicação nova é assinada em lugar da antiga");
+  assert.equal(relatos.at(-2), "dono|screen|false", "a antiga é anunciada como encerrada");
+  assert.equal(relatos.at(-1), "dono|screen|true", "e a nova entra no lugar");
+
+  // Fechou a tela: a assinatura é soltada e a recepção para.
+  engine.syncRemote([]);
+  await sleep(20);
+  assert.equal(relatos.at(-1), "dono|screen|false", "o elemento de vídeo é avisado do fim");
+
+  engine.syncRemote([
+    { memberId: "dono", slot: "screen", sessionId: "s1", trackName: "dono-screen-bbb" },
+  ]);
+  await sleep(20);
+  assert.equal(transport.calls.subscribe.length, 3, "e voltar a assistir pede a trilha de novo");
+  engine.close();
 });
 
 await test("fechar o motor solta os temporizadores e as conexões", async () => {

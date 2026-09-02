@@ -20,7 +20,7 @@ import { GUILD_PERMISSIONS, sanitizePermissions } from "./permissions.js";
 import { SocialRepository } from "./data/social-repository.js";
 import { CommunicationRepository } from "./data/communication-repository.js";
 import { AdminRepository } from "./data/admin-repository.js";
-import { createSession, createSfuHealth, newTracks, renegotiate, sfuConfig } from "./sfu.js";
+import { closeTracks, createSession, createSfuHealth, newTracks, renegotiate, sfuConfig } from "./sfu.js";
 import { sessionCookie } from "./cookies.js";
 import {
   acceptInvite,
@@ -46,6 +46,7 @@ import {
   hasGuildPermission,
   isGuildMember,
   isGuildOwner,
+  dropSfuTracks,
   invalidateSfuSession,
   leaveGuild,
   listBans,
@@ -114,6 +115,17 @@ const LIMITS = {
 
 /** Trilhas que uma pessoa pode publicar. Espelha `SLOT_ORDER` no cliente. */
 const SLOTS = ["mic", "camera", "screen", "screenAudio"];
+
+/**
+ * Nome da trilha no SFU. O identificador da publicação entra no nome porque cada
+ * transmissão é uma publicação nova: parar e recomeçar a tela não pode reutilizar
+ * o nome de uma trilha que o SFU ainda está encerrando, senão a segunda esbarra
+ * na primeira e ninguém vê nada.
+ */
+const trackNameFor = (memberId, slot, publicationId) => `${memberId}-${slot}-${publicationId}`;
+
+/** Gerado pelo cliente por publicação: texto curto, sem separador que confunda o nome. */
+const isPublicationId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{6,64}$/u.test(value);
 
 const log = logger("SIGNAL");
 const sfuLog = logger("SFU");
@@ -925,11 +937,12 @@ export function attachSignaling(io, env = process.env, {
       const sessionDescription = sanitizeDescription(payload?.description);
       const entries = (Array.isArray(payload?.tracks) ? payload.tracks : [])
         .filter((track) => isId(track?.mid, 16) && SLOTS.includes(track?.slot))
+        .filter((track) => isPublicationId(track?.publicationId))
         .slice(0, SLOTS.length);
       const tracks = entries.map((track) => ({
         location: "local",
         mid: track.mid,
-        trackName: `${member.id}-${track.slot}`,
+        trackName: trackNameFor(member.id, track.slot, track.publicationId),
       }));
       if (!sessionDescription || tracks.length === 0) return reply({ ok: false, error: "bad-request" });
 
@@ -943,7 +956,7 @@ export function attachSignaling(io, env = process.env, {
           return reply({ ok: false, error: "stale-session" });
         }
         const published = Object.fromEntries(
-          entries.map((track) => [track.slot, `${member.id}-${track.slot}`]),
+          entries.map((track) => [track.slot, trackNameFor(member.id, track.slot, track.publicationId)]),
         );
         const updated = setSfuTracks(member.id, published);
         if (updated) emitPresence("member:state", updated);
@@ -962,6 +975,56 @@ export function attachSignaling(io, env = process.env, {
         }
         reply({ ok: false, error: "sfu-failed" });
       }
+    });
+
+    /**
+     * Encerra publicações de verdade. Parar de transmitir não é `replaceTrack(null)`:
+     * sem fechar a trilha no SFU o servidor continuaria anunciando a tela como no
+     * ar, e a transmissão seguinte esbarraria na anterior.
+     */
+    socket.on("sfu:unpublish", async (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      const member = sfuMember(reply);
+      if (!member) return;
+      if (!member.sfuSessionId) return reply({ ok: false, error: "no-session" });
+
+      const entries = (Array.isArray(payload?.tracks) ? payload.tracks : [])
+        .filter((track) => SLOTS.includes(track?.slot) && isPublicationId(track?.publicationId))
+        .slice(0, SLOTS.length);
+      if (entries.length === 0) return reply({ ok: false, error: "bad-request" });
+
+      // O identificador amarra o pedido à publicação que o cliente conhece. Um
+      // encerramento atrasado da transmissão anterior não derruba a que subiu
+      // depois: o nome guardado aqui já é outro, e o pedido cai como obsoleto.
+      const closing = entries.filter(
+        (track) => member.sfuTracks?.[track.slot] === trackNameFor(member.id, track.slot, track.publicationId),
+      );
+      if (closing.length === 0) return reply({ ok: true, closed: false, stale: true });
+      const slots = closing.map((track) => track.slot);
+      const publishedIn = member.sfuSessionId;
+
+      // Esquecer antes de fechar: mesmo que a chamada à Cloudflare falhe, ninguém
+      // mais assina um nome que não vai voltar, e a próxima publicação é outra.
+      const dropped = dropSfuTracks(member.id, slots);
+      if (dropped) emitPresence("member:state", dropped);
+      if (slots.includes("screen")) clearScreenViewers(member.voiceChannelId, member.id);
+
+      let closed = false;
+      try {
+        await closeTracks(sfu, publishedIn, closing.map((track) => ({
+          ...(isId(track.mid, 16) ? { mid: track.mid } : {}),
+          trackName: trackNameFor(member.id, track.slot, track.publicationId),
+        })));
+        closed = true;
+        sfuLog.debug("trilhas encerradas", { userId: member.id, slots });
+      } catch (error) {
+        // A sessão de envio inteira já foi embora em alguns casos, e aí não há o
+        // que fechar. Nos outros a trilha expira sozinha no SFU; o cliente não
+        // fica preso esperando por isso.
+        if (!deadSfuSession(error)) sfuHealth.markFailure(error);
+        sfuLog.warn("falha ao encerrar trilhas", { userId: member.id, slots, motivo: reason(error) });
+      }
+      reply({ ok: true, closed });
     });
 
     /**
@@ -988,6 +1051,10 @@ export function attachSignaling(io, env = process.env, {
         if (entry.sessionId !== owner.sfuSessionId) continue;
         const trackName = owner.sfuTracks?.[entry.slot];
         if (!trackName) continue;
+        // Mesmo motivo, um nível abaixo: parar e recomeçar a tela publica um nome
+        // novo na mesma sessão, e assinar o nome antigo devolveria uma trilha
+        // encerrada. Quem não manda o nome pega o que está publicado agora.
+        if (isId(entry.trackName, 128) && entry.trackName !== trackName) continue;
         tracks.push({ location: "remote", sessionId: owner.sfuSessionId, trackName });
       }
       if (tracks.length === 0) return reply({ ok: false, error: "no-tracks" });

@@ -33,8 +33,12 @@ export interface SfuTransport {
   join(): Promise<boolean>;
   publish(
     description: RTCSessionDescriptionInit,
-    tracks: Array<{ mid: string; slot: MediaSlot }>,
+    tracks: Array<{ mid: string; slot: MediaSlot; publicationId: string }>,
   ): Promise<{ description: RTCSessionDescriptionInit | null; stale: boolean }>;
+  /** Fecha as trilhas no SFU. O identificador diz qual publicação encerrar. */
+  unpublish(
+    tracks: Array<{ slot: MediaSlot; mid: string | null; publicationId: string }>,
+  ): Promise<void>;
   subscribe(tracks: RemoteTrackRef[]): Promise<{
     description: RTCSessionDescriptionInit | null;
     tracks: SfuTrackReply[];
@@ -74,6 +78,13 @@ const DEFAULT_PROFILES: Partial<Record<MediaSlot, TrackProfile>> = {
 type PublicationState = "publishing" | "live" | "stale";
 
 interface Publication {
+  /**
+   * Identifica esta publicação no SFU: entra no nome da trilha e volta no pedido
+   * de encerramento. Cada `#publish` gera um novo, e é o que separa uma
+   * transmissão de tela da seguinte — inclusive quando a anterior ainda está
+   * sendo desfeita do outro lado.
+   */
+  id: string;
   state: PublicationState;
   transceiver: RTCRtpTransceiver;
   sender: RTCRtpSender;
@@ -96,6 +107,21 @@ const ICE_GRACE_MS = 6000;
 const MAX_ICE_RESTARTS = 2;
 
 const slotKey = (memberId: string, slot: MediaSlot) => `${memberId}|${slot}`;
+
+/**
+ * A mesma referência? Sessão e nome da trilha juntos: uma reconexão do dono troca
+ * a sessão, e parar e recomeçar a tela troca só o nome, dentro da mesma sessão.
+ * Ignorar o segundo caso deixaria a assinatura pendurada numa trilha encerrada.
+ */
+const sameRef = (a: RemoteTrackRef, b: RemoteTrackRef) =>
+  a.sessionId === b.sessionId && (a.trackName ?? null) === (b.trackName ?? null);
+
+/** Identificador de publicação. Curto, sem `-`, que separa as partes do nome da trilha. */
+const newPublicationId = (): string => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid.replace(/-/gu, "").slice(0, 16);
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+};
 
 export class SfuEngine implements CallEngine {
   readonly #send: RTCPeerConnection;
@@ -201,8 +227,8 @@ export class SfuEngine implements CallEngine {
 
     const publication = this.#publications.get(slot);
     // Publicação viva aceita inclusive `null`: o transceiver e o nome conhecido
-    // pelo SFU continuam de pé, só o fluxo para. Compartilhar novamente usa a
-    // mesma publicação, sem acumular `m=` nem deixar o servidor na captura velha.
+    // pelo SFU continuam de pé, só o fluxo para. É o que faz a câmera religar sem
+    // renegociar. Encerrar de vez é outra operação: `unpublish`.
     if (publication && this.#usable(publication)) {
       await this.#enqueueSend(async () => {
         // Liga/desliga pode acontecer enquanto outra operação ainda está na
@@ -229,6 +255,45 @@ export class SfuEngine implements CallEngine {
     await this.#applyEncodings();
   }
 
+  /**
+   * Encerra a publicação do slot. Não é `replaceTrack(null)`: solta a trilha do
+   * sender, para o transceiver e pede ao servidor que feche a trilha no SFU, que
+   * de outro modo continuaria anunciando a transmissão como no ar.
+   *
+   * `track` amarra o pedido a uma transmissão específica — uma parada atrasada da
+   * anterior não derruba a que já subiu. Idempotente: a publicação é retirada do
+   * mapa antes do primeiro `await`, então o botão, o `onended` do navegador e uma
+   * falha de rede chegando juntos encerram uma vez só.
+   */
+  async unpublish(slot: MediaSlot, track?: MediaStreamTrack | null): Promise<void> {
+    if (track !== undefined && this.#localTracks.get(slot) !== (track ?? null)) return;
+    const publication = this.#publications.get(slot);
+    this.#publications.delete(slot);
+    this.#localTracks.set(slot, null);
+    if (!publication) return;
+
+    // Lido antes de parar: depois da renegociação seguinte o `mid` pode não estar
+    // mais lá, e é por ele que o SFU acha a linha do SDP a fechar.
+    const mid = publication.transceiver.mid;
+    publication.state = "stale";
+    await this.#enqueueSend(async () => {
+      try {
+        await publication.sender.replaceTrack(null);
+      } catch {
+        // Transceiver já encerrado ou conexão fechada: o fluxo parou de todo jeito.
+      }
+      try {
+        publication.transceiver.stop();
+      } catch {
+        // Navegador sem `stop()`: o `m=` fica mudo e a publicação seguinte usa outro.
+      }
+    });
+    // Com a conexão fechada não há sessão do lado de lá pra fechar trilha nenhuma:
+    // sair da call já descarta as duas sessões inteiras no servidor.
+    if (this.#closed) return;
+    await this.options.transport.unpublish([{ slot, mid, publicationId: publication.id }]);
+  }
+
   async setTrackProfile(slot: MediaSlot, profile: TrackProfile): Promise<void> {
     this.#profiles.set(slot, profile);
     await this.#applyEncodings();
@@ -246,7 +311,7 @@ export class SfuEngine implements CallEngine {
     const wanted = new Map(tracks.map((ref) => [slotKey(ref.memberId, ref.slot), ref]));
     for (const [key, current] of [...this.#subscriptions]) {
       const ref = wanted.get(key);
-      if (ref && ref.sessionId === current.ref.sessionId) continue;
+      if (ref && sameRef(ref, current.ref)) continue;
       this.#release(key);
     }
 
@@ -435,19 +500,26 @@ export class SfuEngine implements CallEngine {
       }
 
       const transceiver = this.#send.addTransceiver(track, { direction: "sendonly" });
-      this.#publications.set(slot, { state: "publishing", transceiver, sender: transceiver.sender });
+      // Nome novo a cada publicação: a anterior pode ainda estar sendo encerrada
+      // do outro lado, e reutilizar o nome faria uma esbarrar na outra.
+      this.#publications.set(slot, {
+        id: newPublicationId(),
+        state: "publishing",
+        transceiver,
+        sender: transceiver.sender,
+      });
 
       const offer = await this.#send.createOffer();
       await this.#setLocal(this.#send, offer);
 
       // Todas as pendentes de uma vez: o SDP que acabou de ser criado descreve
       // tudo, e mandar só a última deixaria as outras sem nome no SFU.
-      const pending: Array<{ mid: string; slot: MediaSlot }> = [];
+      const pending: Array<{ mid: string; slot: MediaSlot; publicationId: string }> = [];
       for (const [candidate, publication] of this.#publications) {
         if (publication.state === "live") continue;
         const mid = publication.transceiver.mid;
         if (!mid) continue;
-        pending.push({ mid, slot: candidate });
+        pending.push({ mid, slot: candidate, publicationId: publication.id });
       }
       if (pending.length === 0) return;
 
@@ -524,9 +596,12 @@ export class SfuEngine implements CallEngine {
       }
     }
 
-    // Nome → dono. O servidor batiza cada trilha como `<memberId>-<slot>`, e é
-    // esse nome que volta aqui associado ao `mid`.
-    const byName = new Map(live.map((ref) => [`${ref.memberId}-${ref.slot}`, ref]));
+    // Nome → dono. O servidor batiza cada trilha com o id da publicação, e é esse
+    // nome que volta aqui junto do `mid`. Ele vem na referência porque uma
+    // transmissão nova publica outro nome dentro da mesma sessão do dono.
+    const byName = new Map(
+      live.flatMap((ref) => (ref.trackName ? [[ref.trackName, ref] as const] : [])),
+    );
     const attached = new Set<string>();
     for (const entry of result.tracks) {
       if (!entry.mid || !entry.trackName) continue;
@@ -550,7 +625,7 @@ export class SfuEngine implements CallEngine {
   /** Esta referência ainda é a que está pendurada nesta chave? */
   #pending(ref: RemoteTrackRef): boolean {
     const current = this.#subscriptions.get(slotKey(ref.memberId, ref.slot));
-    return current?.ref.sessionId === ref.sessionId;
+    return current ? sameRef(current.ref, ref) : false;
   }
 
   #forget(ref: RemoteTrackRef): void {

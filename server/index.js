@@ -567,7 +567,15 @@ if (mailer.ready) {
   try {
     smtpVerified = await mailer.verify();
   } catch (error) {
-    log.error("configuração SMTP recusada", { motivo: reason(error) });
+    // O `mailer` já registrou o diagnóstico sanitizado e decidiu se ainda pode
+    // enviar: credencial recusada bloqueia, falha passageira só não confirma nada.
+    if (mailer.ready) {
+      log.warn("SMTP não confirmado no boot; o envio será tentado sob demanda", {
+        motivo: reason(error),
+      });
+    } else {
+      log.error("configuração SMTP recusada", { motivo: reason(error) });
+    }
   }
 }
 const adminBootstrap = await accountService.bootstrapSystemAdmin();

@@ -34,11 +34,35 @@ function safeSmtpText(value) {
     .slice(0, 240);
 }
 
+/**
+ * Respostas que dizem "esta credencial não serve": repetir com a mesma senha dá
+ * no mesmo. Um 4xx é o contrário — o servidor está pedindo pra tentar mais tarde.
+ */
+const AUTH_RESPONSES = new Set([530, 534, 535]);
+
+/**
+ * Categoria do erro, que decide se o envio continua valendo. Só credencial
+ * recusada é definitiva: tempo esgotado, DNS, conexão cortada ou servidor ainda
+ * subindo não dizem nada sobre a requisição seguinte, e desligar o e-mail do
+ * processo por causa de uma dessas deixaria os cadastros sem confirmação até
+ * alguém reiniciar a máquina. O que não se reconhece conta como temporário.
+ */
+function smtpCategory(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const response = Number.isInteger(error?.responseCode) ? error.responseCode : null;
+  if (code === "EAUTH" || (response !== null && AUTH_RESPONSES.has(response))) return "autenticacao";
+  if (code === "ERECIPIENT" || code === "EENVELOPE") return "destinatario";
+  // Recusa definitiva de um endereço: é sobre a mensagem, não sobre o servidor.
+  if (response !== null && response >= 500 && response < 600) return "destinatario";
+  return "temporaria";
+}
+
 function smtpFailure(error) {
   return {
     codigo: typeof error?.code === "string" ? error.code : "SMTP_ERROR",
     respostaCodigo: Number.isInteger(error?.responseCode) ? error.responseCode : null,
     comando: typeof error?.command === "string" ? error.command : null,
+    categoria: smtpCategory(error),
     resposta: safeSmtpText(error?.response ?? error?.message),
   };
 }
@@ -229,6 +253,8 @@ export function createMailer(env = process.env, {
       }
       try {
         await transport.verify();
+        // Verificação boa também solta um bloqueio anterior: credencial corrigida
+        // volta a valer sem reiniciar o processo.
         available = true;
         log.info("SMTP autenticado", {
           servidor: host,
@@ -238,12 +264,19 @@ export function createMailer(env = process.env, {
         });
         return true;
       } catch (error) {
-        available = false;
+        const detail = smtpFailure(error);
+        // Uma falha aqui não prova que o SMTP não serve: o servidor pode estar
+        // subindo, o DNS pode demorar, a rede pode ter caído por um minuto. Só
+        // credencial recusada bloqueia o envio até a configuração ser corrigida;
+        // o resto é tentado de novo quando alguém pedir um e-mail.
+        if (detail.categoria === "autenticacao") available = false;
+        log.warn("SMTP não verificado", { servidor: host, porta: port, ...detail });
         throw error;
       }
     },
     async send({ to, subject, ...content }) {
-      if (!transport || !available) throw new Error("SMTP não está disponível");
+      if (!transport) throw new Error("SMTP não está configurado");
+      if (!available) throw new Error("SMTP não está disponível: credencial recusada");
       const rendered = renderActionEmail({ ...content, includeLogo });
       let result;
       try {
@@ -272,9 +305,10 @@ export function createMailer(env = process.env, {
         }
       } catch (error) {
         const detail = smtpFailure(error);
-        // Credencial revogada não é temporária. O front deixa de anunciar que
-        // consegue enviar até que a configuração seja corrigida e reiniciada.
-        if (detail.codigo === "EAUTH" || detail.respostaCodigo === 535) available = false;
+        // Credencial revogada não é temporária: o front deixa de anunciar que
+        // consegue enviar até a configuração ser corrigida. Falha passageira não
+        // bloqueia nada — o pedido seguinte tenta uma vez, como este tentou.
+        if (detail.categoria === "autenticacao") available = false;
         log.error("envio SMTP falhou", {
           destinatario: domain(to),
           assunto: subject,

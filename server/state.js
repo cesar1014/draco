@@ -282,8 +282,10 @@ export function setVoiceState(userId, patch) {
   for (const key of ["muted", "deafened", "camOn", "screenOn", "speaking"]) {
     if (typeof patch?.[key] === "boolean") member[key] = patch[key];
   }
-  // Câmera e tela desligadas usam `replaceTrack(null)`: a publicação continua
-  // válida e volta sem renegociar. Os flags impedem assiná-la enquanto desligada.
+  // Câmera desligada usa `replaceTrack(null)`: a publicação continua válida e
+  // volta sem renegociar, e o flag impede assiná-la enquanto está desligada. A
+  // tela é outra história: cada transmissão é uma publicação própria, encerrada
+  // por `sfu:unpublish`, e o flag aqui só acompanha o que já saiu do ar.
   return member;
 }
 
@@ -323,6 +325,20 @@ export function setSfuTracks(userId, tracks) {
   const member = members.get(userId);
   if (!member) return null;
   member.sfuTracks = { ...member.sfuTracks, ...tracks };
+  return member;
+}
+
+/**
+ * Apaga o registro de trilhas encerradas. Sem isto o servidor continuaria
+ * oferecendo pra assinar um nome que o SFU já fechou, e quem clicasse em
+ * assistir esperaria por uma trilha que não vem mais.
+ */
+export function dropSfuTracks(userId, slots) {
+  const member = members.get(userId);
+  if (!member) return null;
+  const tracks = { ...member.sfuTracks };
+  for (const slot of slots) delete tracks[slot];
+  member.sfuTracks = tracks;
   return member;
 }
 

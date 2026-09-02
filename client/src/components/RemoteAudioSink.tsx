@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStreamRef } from "@/hooks/useStreamRef";
 import { audioContext, resumeAudio } from "@/rtc/SpeakingDetector";
 import { prefsFor, useStore } from "@/state/store";
@@ -108,6 +109,51 @@ function useBoost(stream: MediaStream, volume: number): MediaStream {
   return out ?? stream;
 }
 
+/** Prefixo da WebKit: no Safari o campo padrão não existe. */
+interface WebkitDocument extends Document {
+  webkitFullscreenElement?: Element | null;
+}
+
+/**
+ * O nó que hospeda os `<audio>`, sempre dentro do que está sendo desenhado.
+ *
+ * Em tela cheia o navegador desenha apenas o elemento pedido e sua subárvore; o
+ * som da call sai de elementos montados no topo da aplicação, fora dela. Em vez
+ * de depender de como cada navegador trata mídia fora da subárvore desenhada, o
+ * mesmo nó vai para dentro do elemento em tela cheia e volta ao sair.
+ *
+ * Mover é literal: um `appendChild` num passo só não interrompe o que está
+ * tocando — quem pausa é a saída do documento, e aqui o nó nunca fica fora dele.
+ * O React continua desenhando neste mesmo nó, então nada é recriado e não existe
+ * um segundo elemento tocando a mesma trilha.
+ */
+function useSinkHost(): HTMLDivElement {
+  const [host] = useState(() => {
+    const node = document.createElement("div");
+    node.className = "audio-sink";
+    node.setAttribute("aria-hidden", "true");
+    return node;
+  });
+
+  useEffect(() => {
+    const doc = document as WebkitDocument;
+    const place = () => {
+      const target = document.fullscreenElement ?? doc.webkitFullscreenElement ?? document.body;
+      if (host.parentNode !== target) target.appendChild(host);
+    };
+    place();
+    document.addEventListener("fullscreenchange", place);
+    document.addEventListener("webkitfullscreenchange", place);
+    return () => {
+      document.removeEventListener("fullscreenchange", place);
+      document.removeEventListener("webkitfullscreenchange", place);
+      host.remove();
+    };
+  }, [host]);
+
+  return host;
+}
+
 export function RemoteAudioSink() {
   const remote = useStore((state) => state.remote);
   const members = useStore((state) => state.members);
@@ -115,9 +161,10 @@ export function RemoteAudioSink() {
   const deafened = useStore((state) => state.deafened);
   const watching = useStore((state) => state.watching);
   const outputDeviceId = useStore((state) => state.settings.outputDeviceId);
+  const host = useSinkHost();
 
-  return (
-    <div className="audio-sink" aria-hidden="true">
+  return createPortal(
+    <>
       {Object.entries(remote).flatMap(([peerId, peer]) => {
         const username = members[peerId]?.username ?? "";
         const prefs = prefsFor(people, username);
@@ -146,6 +193,7 @@ export function RemoteAudioSink() {
           ),
         ];
       })}
-    </div>
+    </>,
+    host,
   );
 }

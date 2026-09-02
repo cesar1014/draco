@@ -34,6 +34,12 @@ export interface RemoteTrackRef {
    * continuaria valendo e a segunda entrada dela ficaria muda.
    */
   sessionId: string | null;
+  /**
+   * Nome da trilha no SFU, ou `null` em malha. Cada transmissão de tela publica
+   * um nome próprio na mesma sessão: comparar o nome é o que faz a assinatura
+   * antiga ser trocada quando alguém para e recomeça a transmitir.
+   */
+  trackName?: string | null;
 }
 
 /** Uma rodada de leitura das conexões. */
@@ -47,6 +53,13 @@ export interface EngineSample {
 export interface CallEngine {
   /** Anexa (ou remove, com `null`) uma trilha local. Não renegocia. */
   setLocalTrack(slot: MediaSlot, track: MediaStreamTrack | null): Promise<void>;
+  /**
+   * Encerra a publicação do slot: solta o sender, para o transceiver e fecha a
+   * trilha no servidor de mídia. `track` amarra o pedido a uma transmissão
+   * específica — um encerramento atrasado não derruba a que subiu depois.
+   * Idempotente: chamar duas vezes não é erro.
+   */
+  unpublish(slot: MediaSlot, track?: MediaStreamTrack | null): Promise<void>;
   localTrack(slot: MediaSlot): MediaStreamTrack | null;
   setTrackProfile(slot: MediaSlot, profile: TrackProfile): Promise<void>;
   /** Ajusta o conjunto de trilhas remotas recebidas. Idempotente. */

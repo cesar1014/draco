@@ -91,6 +91,7 @@ import {
   sfuPublish,
   sfuRenegotiate,
   sfuSubscribe,
+  sfuUnpublish,
   unbanMember,
   updateRole as updateGuildRole,
   deleteRole as deleteGuildRole,
@@ -167,6 +168,23 @@ let restartAttempts = 0;
  * levaria à mesma falha, e o cliente ficaria preso em STUN até recarregar.
  */
 let refreshIce = false;
+
+/**
+ * Uma transmissão de tela, do clique em compartilhar até o encerramento.
+ *
+ * As trilhas ficam aqui porque são a identidade da transmissão: é comparando com
+ * elas que um retorno de chamada atrasado descobre que fala de outra sessão. Sem
+ * essa amarração o `onended` da captura anterior derrubava a seguinte.
+ */
+interface ScreenSession {
+  video: MediaStreamTrack;
+  audio: MediaStreamTrack | null;
+}
+
+let screenSession: ScreenSession | null = null;
+
+/** Encerramento em andamento: a transmissão seguinte espera ele antes de publicar. */
+let screenTeardown: Promise<void> = Promise.resolve();
 
 export interface PeerMedia {
   streams: Partial<Record<MediaSlot, MediaStream>>;
@@ -663,6 +681,52 @@ export const useStore = create<Store>()((set, get) => {
     }
   };
 
+  /**
+   * Solta as publicações de uma transmissão. As trilhas vão como prova de posse:
+   * o motor ignora o pedido se o que está publicado já é de outra transmissão.
+   */
+  const unpublishScreen = async (session: ScreenSession | null) => {
+    if (session) {
+      session.video.onended = null;
+      if (session.audio) session.audio.onended = null;
+    }
+    await engine?.unpublish("screenAudio", session?.audio);
+    await engine?.unpublish("screen", session?.video);
+  };
+
+  /**
+   * Único caminho de encerramento da tela. O botão do app, o "Parar de
+   * compartilhar" do navegador, uma falha de mídia e a saída do canal chegam
+   * todos aqui, e chegar duas vezes não é erro: a sessão sai da variável antes do
+   * primeiro `await`, então o segundo pedido não tem o que desfazer.
+   *
+   * `session` amarra o pedido a uma transmissão: um retorno de chamada atrasado da
+   * anterior encontra outra sessão no ar e não toca em nada. Microfone, câmera e a
+   * conexão da call não são afetados.
+   */
+  const stopScreenShare = async (session?: ScreenSession) => {
+    const active = screenSession;
+    if (session && session !== active) {
+      // Aviso atrasado de uma transmissão que já saiu do ar. Solta o que tenha
+      // sobrado dela — as trilhas provam a posse — sem mexer no que está no ar.
+      await unpublishScreen(session);
+      return;
+    }
+    if (!active && !get().screenOn) return;
+    screenSession = null;
+
+    media.closeScreen();
+    dropProfile("screen");
+    // Antes de desfazer a publicação: quem assiste vê a transmissão terminar na
+    // hora, em vez de ficar num último quadro parado esperando o servidor.
+    if (get().screenOn) {
+      set({ screenOn: false });
+      publishVoiceState({ screenOn: false });
+    }
+    screenTeardown = unpublishScreen(session ?? active);
+    await screenTeardown;
+  };
+
   /** Trilhas que devem estar chegando: quem está na call, com o que ligou. */
   const desiredRemote = (): RemoteTrackRef[] => {
     const { members, voiceChannelId, selfId, watching } = get();
@@ -683,7 +747,15 @@ export const useStore = create<Store>()((set, get) => {
           // Vídeo e áudio da tela só entram na assinatura SFU depois do clique.
           if (watching[`${member.id}:screen`] !== true) continue;
         }
-        refs.push({ memberId: member.id, slot, sessionId: member.sfuSessionId });
+        // O nome vai junto: cada transmissão de tela publica um nome próprio
+        // dentro da mesma sessão, e é comparando o nome que a assinatura antiga
+        // é trocada quando alguém para e recomeça a transmitir.
+        refs.push({
+          memberId: member.id,
+          slot,
+          sessionId: member.sfuSessionId,
+          trackName: member.sfuTracks[slot] ?? null,
+        });
       }
     }
     return refs;
@@ -761,7 +833,12 @@ export const useStore = create<Store>()((set, get) => {
       // daquela sessão: a pessoa pode ter reconectado nesse intervalo.
       const tracks = refs
         .filter((ref) => ref.sessionId !== null)
-        .map((ref) => ({ memberId: ref.memberId, slot: ref.slot, sessionId: ref.sessionId! }));
+        .map((ref) => ({
+          memberId: ref.memberId,
+          slot: ref.slot,
+          sessionId: ref.sessionId!,
+          trackName: ref.trackName ?? null,
+        }));
       if (tracks.length === 0) return null;
       const reply = await sfuSubscribe(s, tracks);
       if (!reply.ok) {
@@ -772,6 +849,15 @@ export const useStore = create<Store>()((set, get) => {
         throw new Error(reason);
       }
       return { description: reply.description ?? null, tracks: reply.tracks ?? [] };
+    },
+    unpublish: async (tracks) => {
+      const reply = await sfuUnpublish(s, tracks);
+      // Recusa aqui não trava nada: o servidor já esqueceu a publicação, e a
+      // próxima sobe com nome novo. Registrar basta pra dar pra investigar.
+      if (!reply.ok) console.warn("[sfu] o servidor não encerrou a publicação:", reply.error);
+      else if (reply.closed === false && reply.stale !== true) {
+        console.warn("[sfu] publicação esquecida sem fechar a trilha no servidor de mídia");
+      }
     },
     renegotiate: async (role, description) => (await sfuRenegotiate(s, role, description)).ok,
   });
@@ -929,12 +1015,16 @@ export const useStore = create<Store>()((set, get) => {
     // Reconexão em cima de uma câmera ou tela que já estava no ar: as trilhas
     // continuam vivas, só a conexão que as levava é nova. Reanexar aqui é o que
     // evita fazer a pessoa desligar e religar a transmissão.
-    const localTracks: Array<[MediaSlot, MediaStreamTrack | null]> = [
-      ["camera", media.cameraTrack],
-      ["screen", media.screenTrack],
-      ["screenAudio", media.screenAudioTrack],
+    const localTracks: Array<[MediaSlot, () => MediaStreamTrack | null]> = [
+      ["camera", () => media.cameraTrack],
+      ["screen", () => media.screenTrack],
+      ["screenAudio", () => media.screenAudioTrack],
     ];
-    for (const [slot, track] of localTracks) {
+    for (const [slot, current] of localTracks) {
+      // Lida na hora de publicar, e não antes do laço: desligar a tela no meio da
+      // reconexão publicaria uma trilha já encerrada, e a publicação ficaria viva
+      // sem ninguém pra fechá-la.
+      const track = current();
       if (track) await call.setLocalTrack(slot, track);
     }
     for (const [slot, profile] of chosenProfiles) {
@@ -1836,6 +1926,9 @@ export const useStore = create<Store>()((set, get) => {
       stopStats();
       chosenProfiles.clear();
       media.closeAll();
+      // Sair fecha as sessões inteiras no servidor, então não há trilha a encerrar
+      // uma por uma; largar a referência evita que a próxima transmissão tente.
+      screenSession = null;
       socket?.emit("voice:leave");
       playCue("leave");
       restartAttempts = 0;
@@ -1951,12 +2044,7 @@ export const useStore = create<Store>()((set, get) => {
     async toggleScreen() {
       if (!get().voiceChannelId) return;
       if (get().screenOn) {
-        media.closeScreen();
-        await engine?.setLocalTrack("screen", null);
-        await engine?.setLocalTrack("screenAudio", null);
-        dropProfile("screen");
-        set({ screenOn: false });
-        publishVoiceState({ screenOn: false });
+        await stopScreenShare();
         return;
       }
       if (!screenShareSupported()) {
@@ -1976,35 +2064,57 @@ export const useStore = create<Store>()((set, get) => {
       set({ screenPickerOpen: false, screenOptions: options });
       writeJson(SCREEN_KEY, options);
 
+      const capture = await media.openScreen(options, sourceId).catch((error: unknown) => {
+        if (!userCancelled(error)) set({ mediaError: describeScreenShareError(error) });
+        return null;
+      });
+      if (!capture) return;
+      const { video, audio, systemAudioFailure } = capture;
+
+      // A captura anterior já parou dentro de `openScreen`, a publicação dela não:
+      // trocar de tela sem sair do canal é uma transmissão nova, e a antiga sai do
+      // ar aqui. Publicar antes disso terminar deixaria a trilha velha aberta no
+      // SFU, sem ninguém mais pra fechá-la.
+      const previous = screenSession;
+      screenSession = null;
+      if (previous) screenTeardown = unpublishScreen(previous);
+      await screenTeardown;
+
+      const session: ScreenSession = { video, audio };
+      screenSession = session;
+      // O "Parar de compartilhar" do navegador termina a trilha: sem escutar isso,
+      // os outros ficariam vendo o último quadro pra sempre.
+      video.onended = () => void stopScreenShare(session);
+      // Só o som acabou: a imagem continua, então some apenas a publicação do áudio.
+      if (audio) audio.onended = () => void engine?.unpublish("screenAudio", audio);
+
+      /** Pararam, ou a captura morreu, enquanto esta transmissão subia. */
+      const aborted = async () => {
+        if (screenSession === session && !trackEnded(video)) return false;
+        await (screenSession === session ? stopScreenShare(session) : unpublishScreen(session));
+        return true;
+      };
+
       try {
-        const { video, audio, systemAudioFailure } = await media.openScreen(options, sourceId);
-        // O "Parar de compartilhar" do navegador termina a trilha: sem escutar
-        // isso, os outros ficariam vendo o último quadro pra sempre.
-        video.onended = () => {
-          if (media.screenTrack !== video) return;
-          media.closeScreen();
-          void engine?.setLocalTrack("screen", null);
-          void engine?.setLocalTrack("screenAudio", null);
-          dropProfile("screen");
-          set({ screenOn: false });
-          publishVoiceState({ screenOn: false });
-        };
         await engine?.setLocalTrack("screen", video);
-        if (trackEnded(video) || media.screenTrack !== video) return;
+        if (await aborted()) return;
         await engine?.setLocalTrack("screenAudio", audio);
         await setProfile("screen", {
           maxBitrate: screenBitrate(options),
           maxFramerate: options.frameRate,
           degradationPreference: screenDegradation(options.content),
         });
-        if (trackEnded(video) || media.screenTrack !== video) return;
+        if (await aborted()) return;
         set({
           screenOn: true,
           notice: systemAudioFailure ? describeSystemAudioFailure(systemAudioFailure) : null,
         });
         publishVoiceState({ screenOn: true });
       } catch (error) {
-        if (!userCancelled(error)) set({ mediaError: describeScreenShareError(error) });
+        // A publicação falhou com a tela já capturada: encerra a transmissão
+        // inteira, senão ela ficaria de pé sem nunca chegar a ninguém.
+        set({ mediaError: describeScreenShareError(error) });
+        await stopScreenShare(session);
       }
     },
 
