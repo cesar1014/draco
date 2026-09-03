@@ -371,6 +371,14 @@ function createWindow() {
     },
   });
 
+  // Quem o clique na notificação precisa trazer pra frente é esta janela, e o
+  // registro fica aqui e não no `guardNavigation`: aquele também roda pra popup,
+  // e um popup se registrando como principal roubaria o foco da call.
+  mainWindow = window;
+  window.once("closed", () => {
+    if (mainWindow === window) mainWindow = null;
+  });
+
   // Uma janela nova (popup autorizado) herda estas preferências mas não os
   // handlers; instalá-los pra qualquer `webContents` que apareça é o que impede
   // uma segunda janela de navegar pra onde a principal não pode.
@@ -405,8 +413,6 @@ function guardNavigation(contents) {
     event.preventDefault();
     openSafeExternal(url);
   });
-  mainWindow = window;
-  window.once("closed", () => { if (mainWindow === window) mainWindow = null; });
   contents.setWindowOpenHandler(({ url }) => {
     if (sameOrigin(url)) return { action: "allow" };
     openSafeExternal(url);
