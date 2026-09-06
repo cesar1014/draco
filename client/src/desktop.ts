@@ -167,6 +167,13 @@ export async function claimDesktopSource(
 }
 
 export function reportCaptureFailure(report: CaptureFailure): void {
+  // No console também, e não só no app: fora dele `logCaptureFailure` não existe,
+  // e sem esta linha uma captura que perde o som pelo navegador não deixa rastro
+  // nenhum — a pessoa vê o aviso e não há como saber qual erro o causou.
+  console.warn(
+    `[captura] ${report.stage} (${report.sourceKind}, som=${report.systemAudio}):`,
+    `${report.name}: ${report.message}`,
+  );
   // O `?.` no método, e não só na ponte: até a 1.0.0 esta função não existia, e
   // chamar o que não existe estouraria aqui, em cima da falha de captura que
   // esta linha deveria estar registrando, escondendo justamente o erro que

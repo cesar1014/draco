@@ -821,7 +821,11 @@ await test("Windows recusando o som da tela inteira ainda traz áudio pelo camin
   assert.equal(calls.displayOptions[0].systemAudio, "include", "o navegador oferece áudio da tela inteira");
   assert.equal(calls.displayOptions[0].windowAudio, "system", "e áudio junto da janela");
   assert.equal(calls.user.length, 1, "o caminho legado foi tentado uma vez");
-  assert.deepEqual(calls.claims, [true, false], "a segunda reserva já não pede som");
+  assert.deepEqual(
+    calls.claims,
+    [true, true],
+    "o degrau seguinte ainda pede som: só o último da escada desiste",
+  );
   // Vídeo pedido, e com o id da fonte: sem a trilha de vídeo no pedido, o
   // renderer do Electron 39 morre, e a call cai junto.
   assert.equal(calls.user[0].video.mandatory.chromeMediaSource, "desktop");
@@ -898,8 +902,9 @@ await test("trocar a fonte não deixa o ended da captura antiga fechar a nova", 
 
 await test("sem som nos dois caminhos, a transmissão começa muda e diz o porquê", async () => {
   const calls = fakeMedia({
-    display: (constraints, nth) =>
-      nth === 1 && constraints.audio
+    // Todo pedido com som é recusado: só o degrau mudo da escada passa.
+    display: (constraints) =>
+      constraints.audio
         ? Promise.reject(namedError("NotReadableError"))
         : screenStream([new FakeTrack("video")]),
   });
@@ -911,6 +916,50 @@ await test("sem som nos dois caminhos, a transmissão começa muda e diz o porqu
   assert.match(describeSystemAudioFailure("refused"), /janela do programa/);
   assert.ok(capture.video, "a imagem é o essencial: ela vai de qualquer jeito");
   assert.ok(calls.failures.includes("systemAudioLegacy"), "as duas etapas ficam no log");
+  assert.deepEqual(
+    calls.claims,
+    [true, true, true, false],
+    "a escada inteira foi tentada com som antes de aceitar a transmissão muda",
+  );
+});
+
+/**
+ * O defeito que tirou o som de todo mundo: um campo do pedido de captura que o
+ * navegador não aceita derruba a chamada inteira, com um erro que não tem nada a
+ * ver com áudio. Antes, esse erro caía direto no pedido mudo, e a transmissão
+ * começava sem som em qualquer tela, em qualquer navegador, para qualquer pessoa.
+ */
+await test("hint recusado pelo navegador não custa o som da transmissão", async () => {
+  const calls = fakeMedia({
+    display: (constraints) =>
+      constraints.windowAudio !== undefined || constraints.systemAudio !== undefined
+        ? Promise.reject(namedError("TypeError"))
+        : screenStream([new FakeTrack("video"), new FakeTrack("audio")]),
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "screen:0:0");
+
+  assert.ok(capture.audio, "o degrau sem os hints ainda pede som, e ele veio");
+  assert.equal(capture.systemAudioFailure, null, "então não há aviso a dar");
+  assert.equal(calls.display.length, 2, "um degrau abaixo bastou");
+  assert.deepEqual(calls.display, [true, true], "nenhum dos dois abriu mão do áudio");
+  assert.equal(calls.user.length, 0, "e o caminho legado nem precisou entrar");
+});
+
+await test("compartilhando uma janela, o caminho legado não pede a janela ao loopback", async () => {
+  const calls = fakeMedia({
+    display: () => screenStream([new FakeTrack("video")]),
+    user: legacyStream,
+  });
+
+  const capture = await new MediaManager().openScreen(SHARE, "window:42:0");
+
+  assert.ok(capture.audio, "o loopback do sistema serve pra janela também");
+  assert.equal(
+    calls.user[0].video.mandatory.chromeMediaSourceId,
+    undefined,
+    "com id de janela o pedido vira captura de janela, que não tem loopback nenhum",
+  );
 });
 
 await test("fora do Windows o caminho legado não é tentado", async () => {

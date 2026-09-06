@@ -177,6 +177,45 @@ function displayCaptureOptions(
 }
 
 /**
+ * Escada de tentativas de captura, da mais completa à mais simples.
+ *
+ * O primeiro degrau leva os hints de captura, que são o que faz o Chromium
+ * oferecer o som do monitor e da janela. Eles também são a parte mais nova do
+ * pedido, e é justamente aí que está o risco: um navegador (ou um Chromium
+ * embutido) que conheça um desses campos com outro conjunto de valores recusa o
+ * pedido **inteiro** antes mesmo de abrir o diálogo, com um erro que não tem
+ * nada a ver com áudio. Cair direto no degrau mudo transformaria um campo
+ * desconhecido numa transmissão sem som para todo mundo, sempre — que é
+ * exatamente o defeito que esta escada existe pra impedir.
+ *
+ * Por isso o pedido de som só é abandonado no último degrau: antes dele vêm o
+ * mesmo pedido sem os hints e o pedido mínimo do padrão, que é o que qualquer
+ * navegador com captura de tela entende. Cancelar o diálogo interrompe a escada
+ * em qualquer ponto: desistir é intenção, e reabrir o diálogo seria insistir.
+ */
+function captureLadder(
+  video: MediaTrackConstraints,
+  wantsAudio: boolean,
+): DisplayCaptureOptions[] {
+  const hinted = displayCaptureOptions(video, wantsAudio);
+  if (!wantsAudio) return [hinted];
+
+  const { systemAudio: _system, windowAudio: _window, ...plain } = hinted;
+  return [
+    hinted,
+    // Sem os hints de áudio: o pedido de som continua de pé, que é o que importa.
+    plain,
+    // Só o que o padrão exige, pro caso de um dos campos restantes ser o recusado.
+    { video, audio: true },
+    // Última opção: a imagem sozinha. A interface avisa que o som não veio.
+    displayCaptureOptions(video, false),
+  ];
+}
+
+/** Este degrau ainda está pedindo som? Só o último da escada não está. */
+const asksAudio = (attempt: DisplayCaptureOptions): boolean => attempt.audio === true;
+
+/**
  * Teto de envio pro SFU, que repassa a mesma camada pra todos: sobe uma vez, não
  * uma vez por pessoa. O painel mostra o número antes de começar.
  */
@@ -324,8 +363,8 @@ export type SystemAudioFailure = "refused" | "empty";
 export function describeSystemAudioFailure(failure: SystemAudioFailure): string {
   if (!isDesktopApp()) {
     return failure === "refused"
-      ? "O navegador não deixou levar o som desta tela. Compartilhe uma aba pra mandar o áudio junto."
-      : "A transmissão começou sem som: a tela escolhida não manda áudio. Uma aba do navegador manda.";
+      ? "O navegador recusou o pedido de som. Só a tela inteira e as abas do navegador mandam áudio; escolha uma das duas e tente de novo."
+      : "A transmissão começou sem som: falta marcar “Compartilhar áudio do sistema” (ou “da guia”) na janela de escolha do navegador. Ela vem desmarcada, e só aparece na tela inteira e nas abas.";
   }
   return failure === "refused"
     ? "O Windows recusou o som desta tela. Compartilhe a janela do programa pra levar o áudio junto."
@@ -465,11 +504,13 @@ export class MediaManager {
    * página pode substituir aquele diálogo.
    *
    * A tela é o essencial e o som do sistema é o extra: se o loopback falhar, a
-   * transmissão começa muda em vez de não começar. Antes de desistir do som há
-   * uma segunda tentativa pelo caminho legado do Chromium, que no Windows chega
-   * ao loopback sem passar pelo pedido de captura de tela — o único caminho que
-   * traz som quando é a tela inteira que o sistema recusa. `systemAudioFailure`
-   * volta preenchido quando nem esse funcionou, pro aviso na interface.
+   * transmissão começa muda em vez de não começar. Só que "falhar" é o último
+   * recurso, não o primeiro: o pedido desce a escada de `captureLadder` antes de
+   * abrir mão do áudio, e só depois disso vem a tentativa pelo caminho legado do
+   * Chromium, que no Windows chega ao loopback sem passar pelo pedido de captura
+   * de tela — o único caminho que traz som quando é a tela inteira que o sistema
+   * recusa. `systemAudioFailure` volta preenchido quando nem esse funcionou, pro
+   * aviso na interface.
    */
   async openScreen(
     options: ScreenShareOptions = DEFAULT_SCREEN_OPTIONS,
@@ -497,42 +538,43 @@ export class MediaManager {
       }
     }
 
-    const video = screenConstraints(options);
-    let stream: MediaStream;
+    const ladder = captureLadder(screenConstraints(options), wantsAudio);
+    let stream: MediaStream | null = null;
     let failure: SystemAudioFailure | null = null;
 
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia(
-        displayCaptureOptions(video, wantsAudio),
-      );
-    } catch (error) {
-      if (!wantsAudio || userCancelled(error)) {
-        fail("getDisplayMedia", error);
-        throw error;
-      }
-      // Loopback indisponível derruba o pedido inteiro, mesmo com a tela pronta
-      // pra capturar. Segunda tentativa sem áudio: perder o som do jogo é
-      // aceitável, perder a transmissão não — e o som ainda tem uma chance logo
-      // abaixo, por um caminho que não depende do pedido de tela.
-      fail("systemAudio", error);
-      if (sourceId && isDesktopApp()) {
-        const claim = await claimDesktopSource(sourceId, false);
+    for (const [step, attempt] of ladder.entries()) {
+      // A reserva do app é consumida a cada `getDisplayMedia`: o degrau seguinte
+      // precisa da sua, e ela carrega se este ainda pede som.
+      if (step > 0 && sourceId && isDesktopApp()) {
+        const claim = await claimDesktopSource(sourceId, asksAudio(attempt));
         if (!claim.ok) {
           const gone = new ScreenCaptureError(claim.reason, CLAIM_MESSAGE[claim.reason]);
           fail("claim", gone);
           throw gone;
         }
       }
+
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia(
-          displayCaptureOptions(video, false),
-        );
-      } catch (retryError) {
-        fail("getDisplayMedia", retryError);
-        throw retryError;
+        stream = await navigator.mediaDevices.getDisplayMedia(attempt);
+        // Chegou aqui pelo degrau mudo: a imagem vem, o som não. Perder o som do
+        // jogo é aceitável, perder a transmissão não — e o som ainda tem uma
+        // chance logo abaixo, por um caminho que não depende do pedido de tela.
+        if (wantsAudio && !asksAudio(attempt)) failure = "refused";
+        break;
+      } catch (error) {
+        // Cancelar o diálogo, ou o último degrau falhando, encerram a escada:
+        // no primeiro caso a pessoa desistiu, no segundo não há mais o que tentar.
+        if (userCancelled(error) || step === ladder.length - 1) {
+          fail("getDisplayMedia", error);
+          throw error;
+        }
+        fail("systemAudio", error);
       }
-      failure = "refused";
     }
+
+    // A escada só sai do laço com uma captura na mão ou por uma exceção; o
+    // compilador não sabe disso, e um `throw` aqui é mais honesto que um `!`.
+    if (!stream) throw new Error("captura de tela sem resultado");
 
     const track = stream.getVideoTracks()[0];
     if (!track) {
@@ -597,6 +639,12 @@ export class MediaManager {
     // App até a 1.0.0 não informa a plataforma, e o único instalador é o de
     // Windows: o desconhecido tem mais chance de ser Windows do que de não ser.
     if (!isDesktopApp() || (platform !== null && platform !== "win32")) return null;
+    // O loopback do Chromium é do sistema inteiro, não de uma janela: com um id
+    // `window:` o pedido vira captura de janela, que não tem loopback nenhum, e
+    // a chamada falha levando junto a única chance de som que ainda restava.
+    // Sem id ele cai na tela principal, e a imagem daqui é descartada de todo
+    // jeito — o que interessa é a trilha de áudio, que é a mesma nos dois casos.
+    const loopbackSource = sourceId?.startsWith("screen:") ? sourceId : null;
     try {
       // `mandatory` é o dicionário antigo de constraints, que o TypeScript não
       // descreve mais. O cast é o preço de usar a forma que ainda funciona.
@@ -605,7 +653,7 @@ export class MediaManager {
         video: {
           mandatory: {
             chromeMediaSource: "desktop",
-            ...(sourceId ? { chromeMediaSourceId: sourceId } : {}),
+            ...(loopbackSource ? { chromeMediaSourceId: loopbackSource } : {}),
           },
         },
       } as unknown as MediaStreamConstraints);
